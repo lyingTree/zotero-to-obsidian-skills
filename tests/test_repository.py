@@ -9,7 +9,7 @@ import unittest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT.joinpath("scripts")))
-from validate_repository import DEPENDENCY_URLS, EXPECTED_SKILLS, validate_repository
+from validate_repository import DEPENDENCY_URLS, EXPECTED_SKILLS, RULE_PREFIXES, validate_repository
 
 
 class RepositoryValidationTests(unittest.TestCase):
@@ -19,8 +19,11 @@ class RepositoryValidationTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         for name in EXPECTED_SKILLS:
             self.root.joinpath(name).mkdir()
+            prefix = RULE_PREFIXES[name]
             self.root.joinpath(name, "SKILL.md").write_text(
-                f"---\nname: {name}\ndescription: Valid test skill.\n---\n# Skill\n",
+                f"---\nname: {name}\ndescription: Valid test skill.\n---\n# Skill\n"
+                f"\n## 约束\n\n- [{prefix}-C01] Preserve the source.\n"
+                f"\n## 验收标准\n\n- [ ] [{prefix}-A01] Source is unchanged.\n",
                 encoding="utf-8",
             )
         self.root.joinpath("VERSION").write_text("1.0.0\n", encoding="utf-8")
@@ -81,6 +84,24 @@ class RepositoryValidationTests(unittest.TestCase):
         path = self.root.joinpath(EXPECTED_SKILLS[0], "SKILL.md")
         path.write_text("---\nname: literature-zotero2obsidian\ndescription: 2025-02-30\n---\n", encoding="utf-8")
         self.assertIn("frontmatter", self._codes())
+
+    def test_duplicate_rule_id_cannot_hide_a_separate_check(self):
+        self._append("- [ ] [PIPE-A01] Different check with a reused identity.\n")
+        self.assertEqual(self._codes(), {"duplicate-rule-id"})
+
+    def test_constraint_and_acceptance_rows_require_their_own_ids(self):
+        self._append("- [ ] Unlabelled acceptance.\n\n## 约束\n\n- No rule ID.\n")
+        self.assertEqual(self._codes(), {"rule-unit"})
+
+    def test_wrong_skill_prefix_and_wrong_rule_kind_are_rejected(self):
+        self._append("- [ ] [ZOT-A02] Another skill's ID.\n- [ ] [PIPE-C02] Constraint in acceptance.\n")
+        self.assertEqual(self._codes(), {"rule-id", "rule-checkbox"})
+
+    def test_unknown_skill_is_reported_without_crashing_rule_validation(self):
+        path = self.root.joinpath("literature-unregistered", "SKILL.md")
+        path.parent.mkdir()
+        path.write_text("---\nname: literature-unregistered\ndescription: Unknown test skill.\n---\n", encoding="utf-8")
+        self.assertEqual(self._codes(), {"unknown-skill"})
 
 
 if __name__ == "__main__":

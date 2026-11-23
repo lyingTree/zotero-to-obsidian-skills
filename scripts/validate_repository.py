@@ -26,6 +26,10 @@ EXPECTED_SKILLS = (
     "literature-library-links",
     "literature-supplement-materials",
 )
+RULE_PREFIXES = dict(zip(EXPECTED_SKILLS, (
+    "PIPE", "ZOT", "EXT", "TRN", "WRITE", "NAME", "PROP", "HDR", "BODY", "LINK", "LIB", "SI",
+)))
+RULE_UNIT = re.compile(r"^- (?P<check>\[ \] )?\[(?P<id>[A-Z]+-(?P<kind>[CA])[0-9]{2,})\] (?P<goal>.+)$")
 DEPENDENCY_URLS = {
     "obsidian-cli": "https://github.com/obsidianmd/obsidian-skills.git",
     "zotero-skills": "https://github.com/WenyuChiou/zotero-skills.git",
@@ -142,6 +146,53 @@ def _links(path: Path, root: Path) -> list[Finding]:
     return findings
 
 
+def _rule_units(path: Path, root: Path) -> list[Finding]:
+    """Check traceable rule units; semantic atomicity still requires review.
+
+    Conjunction or punctuation counts cannot establish whether a goal is simple.
+    This gate only prevents missing/duplicate IDs and malformed checklist rows.
+    """
+    relative = path.relative_to(root).as_posix()
+    prefix = RULE_PREFIXES.get(path.parent.name)
+    if prefix is None:
+        return []  # The inventory check reports unknown skills separately.
+    findings: list[Finding] = []
+    seen: set[str] = set()
+    kinds: set[str] = set()
+    section_kind: str | None = None
+    section_level = 0
+    for number, line in _visible_lines(path.read_text(encoding="utf-8-sig")):
+        heading = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading:
+            level, title = len(heading[1]), heading[2]
+            if level <= section_level:
+                section_kind = None
+            if "约束" in title:
+                section_kind, section_level = "C", level
+            elif "验收标准" in title:
+                section_kind, section_level = "A", level
+            continue
+        if section_kind is None or not line.startswith("- "):
+            continue
+        unit = RULE_UNIT.fullmatch(line)
+        if unit is None or not unit["goal"].strip():
+            findings.append(Finding(relative, number, "rule-unit",
+                                    "Give each constraint/check one nonempty goal and one stable ID."))
+            continue
+        identifier, kind = unit["id"], unit["kind"]
+        if identifier in seen:
+            findings.append(Finding(relative, number, "duplicate-rule-id", f"Repeated rule ID: {identifier}"))
+        seen.add(identifier)
+        kinds.add(kind)
+        if not identifier.startswith(prefix + "-") or kind != section_kind:
+            findings.append(Finding(relative, number, "rule-id", f"Expected {prefix}-{section_kind} ID in this section."))
+        if bool(unit["check"]) != (kind == "A"):
+            findings.append(Finding(relative, number, "rule-checkbox", "Use an unchecked box only for acceptance goals."))
+    for kind in sorted({"C", "A"} - kinds):
+        findings.append(Finding(relative, 1, "missing-rule-section", f"Missing {prefix}-{kind} rule units."))
+    return findings
+
+
 def _safe_relative(value: object) -> bool:
     if not isinstance(value, str) or not value or "\\" in value or ":" in value:
         return False
@@ -193,6 +244,7 @@ def validate_repository(root: Path = REPOSITORY_ROOT) -> list[Finding]:
     for name in sorted(actual):
         skill = root.joinpath(name)
         findings.extend(_frontmatter(skill.joinpath("SKILL.md"), root))
+        findings.extend(_rule_units(skill.joinpath("SKILL.md"), root))
         for path in sorted(skill.rglob("*.md")):
             findings.extend(_links(path, root))
     readme = root.joinpath("README.md")
