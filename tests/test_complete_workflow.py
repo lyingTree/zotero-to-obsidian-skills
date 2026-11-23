@@ -100,6 +100,44 @@ class CompleteWorkflowTests(unittest.TestCase):
             )
         self.assertEqual(self.checks_path.read_bytes(), before)
 
+    def test_glossary_leads_are_prepared_without_filling_acceptance_decisions(self):
+        glossary = self.base.joinpath("source-glossary.md")
+        glossary.write_text("| T0201 | optical axis | 光轴 | Geometry, not every optical object. | synthetic |\n", encoding="utf-8")
+        run_path = workflow.initialize_workflow(
+            skills_root=self.skills, work_root=self.base.joinpath("with-glossary"),
+            sources={"main": self.source}, source_roles={"main": "main"},
+            candidate_path=self.candidate, resource_root=self.output,
+            glossary_path=glossary, progress=lambda *_: None,
+        )
+        run = read(run_path)
+        leads = read(Path(run["records"]["glossary_candidates"]))
+        self.assertEqual(leads["blocks"][0]["matches"][0]["entry"]["id"], "T0201")
+        self.assertEqual(leads["blocks"][0]["matches"][0]["decision"], "pending")
+        self.assertEqual([row["status"] for row in read(Path(run["records"]["checks"]))["checks"]], ["not_verified"] * 3)
+
+    def test_legacy_glossary_formats_initialize_complete_pending_workflows(self):
+        for number, text in enumerate((
+            "| sample-optical | optical axis | 光轴 |\n",
+            "ID | English | Chinese\n--- | --- | ---\nsample-optical | optical axis | 光轴\n",
+        )):
+            with self.subTest(glossary_format=number):
+                glossary = self.base.joinpath(f"legacy-glossary-{number}.md")
+                glossary.write_text(text, encoding="utf-8")
+                before = glossary.read_bytes()
+                run_path = workflow.initialize_workflow(
+                    skills_root=self.skills, work_root=self.base.joinpath(f"legacy-run-{number}"),
+                    sources={"main": self.source}, source_roles={"main": "main"},
+                    candidate_path=self.candidate, resource_root=self.output,
+                    glossary_path=glossary, progress=lambda *_: None,
+                )
+                run = read(run_path)
+                leads = read(Path(run["records"]["glossary_candidates"]))
+                self.assertEqual(leads["blocks"][0]["matches"][0]["entry"]["id"], "sample-optical")
+                self.assertEqual(leads["blocks"][0]["matches"][0]["decision"], "pending")
+                self.assertEqual(read(Path(run["records"]["terminology"]))["review_status"], "pending")
+                self.assertEqual([row["status"] for row in read(Path(run["records"]["checks"]))["checks"]], ["not_verified"] * 3)
+                self.assertEqual(glossary.read_bytes(), before)
+
     def test_whole_missing_ledger_is_reported(self):
         self.checks_path.unlink()
         report = workflow.inspect_workflow(self.run_path)
@@ -118,6 +156,33 @@ class CompleteWorkflowTests(unittest.TestCase):
         self.assertEqual(len(workflow.pending_check_batch(self.checks_path)), 2)
         with self.assertRaises(ValueError):
             workflow.pending_check_batch(self.checks_path, limit=0)
+
+    def test_pending_group_cannot_hide_other_groups_or_accept_a_typo(self):
+        ledger = read(self.checks_path)
+        ledger["checks"][1]["id"] = "SECOND-A01"
+        save(self.checks_path, ledger)
+        self.assertEqual([row["id"] for row in workflow.pending_check_batch(self.checks_path, prefix="TEST")], ["TEST-A01"])
+        self.assertEqual([row["id"] for row in workflow.pending_check_batch(self.checks_path, prefix="SECOND")], ["SECOND-A01"])
+        self.assertEqual(len(workflow.pending_check_batch(self.checks_path)), 2)
+        with self.assertRaises(ValueError):
+            workflow.pending_check_batch(self.checks_path, prefix="TYPO")
+
+    def test_summary_limits_display_without_resolving_or_deleting_findings(self):
+        findings = [workflow.CompletionFinding("MISSING", str(i), "Required local fact.") for i in range(50)]
+        report = workflow.CompletionReport(findings=findings + [findings[0]], pending_acceptance=[{"id": "TEST-A01"}])
+        before = report.as_dict()
+        summary = report.summary(examples_per_code=2)
+        self.assertFalse(summary["records_ready"])
+        self.assertEqual(summary["finding_count"], 51)
+        self.assertEqual(summary["distinct_finding_count"], 50)
+        self.assertEqual(summary["counts_by_code"], {"MISSING": 50})
+        self.assertEqual(len(summary["examples_by_code"]["MISSING"]), 2)
+        self.assertEqual(summary["pending_file_goal_count"], 1)
+        self.assertEqual(report.as_dict(), before)
+
+    def test_summary_rejects_zero_examples(self):
+        with self.assertRaises(ValueError):
+            workflow.CompletionReport().summary(examples_per_code=0)
 
     def test_explicit_batch_does_not_resolve_other_goals(self):
         workflow.record_check_batch(self.checks_path, [self.result()], evidence=self.evidence())

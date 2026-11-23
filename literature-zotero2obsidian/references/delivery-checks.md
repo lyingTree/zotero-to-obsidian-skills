@@ -97,12 +97,28 @@ inventory_path = prepare_sources(
 | `metadata` | `field` 为 `title`、`author`、`affiliation`、`publication_date`、`doi`、`email`、`header_note` 或 `external_url`。DOI、邮箱与网址另给来源原值 `value`。 |
 | `paragraph` | 一段原文对应一个单元。 |
 | `section` | 一个来源章节标题对应一个单元。 |
-| `figure` | 用布尔值 `contains_table` 记录图中是否有真正的行列表格。 |
-| `table` | `shape` 给数据行数和列数；`merges` 给源合并范围。嵌图表另给父图 `parent_id`。 |
-| `formula` | 一个来源公式对应一个单元。 |
+| `figure` | `original_number` 保存源编号；`contains_table` 记录图中是否有真正的行列表格。 |
+| `table` | `original_number` 保存源编号；`shape` 给数据行数和列数；`merges` 给源合并范围。嵌图表另给父图 `parent_id`。 |
+| `formula` | 一个来源公式对应一个单元；`original_number` 保存源编号。 |
 | `reference` | `number` 保存来源书目的编号或标签；`bibliography_id` 保存所属书目列表身份；`original_text` 保存该条完整原始书目。 |
-| `citation` | `references` 保存该次调用对应的书目单元 ID。 |
-| `cross_reference` | `target_unit` 保存该次图表、公式或章节调用的实际对象 ID。 |
+| `citation` | `references` 保存该次调用对应的书目单元 ID；`display_text` 保存源调用的实际显示文字。 |
+| `cross_reference` | `target_unit` 保存实际对象 ID；`display_text` 保存源调用的实际显示文字。 |
+
+主文与 SI 的对象都显式登记 `original_number`，有编号时保留原样字符串。来源没有编号时填 `null`，并填写 `original_number_reason`。这同样适用于未编号显示公式和图内独立表格，不能用生成的 Markdown 锚代替来源编号。
+
+在自己的盘点脚本中使用 `handoff_maps.make_source_unit()`，可提前检查合法单元类型、对象编号、图内表分类、表格形状和调用字段。图件的 `contains_table` 是明确的布尔值。表格的 `shape` 使用正整数；`merges` 即使为空也要显式提供。作者单位关系、来源角色和跨单元身份仍由全量交付检查核验，构造成功不代表来源内容已通过。下面变量均取自当前实际来源，不来自候选文字：
+
+```python
+from handoff_maps import make_source_unit
+
+source_call = make_source_unit(
+    UNIT_ID, SOURCE_ID, "citation", SOURCE_LOCATIONS,
+    references=VERIFIED_SOURCE_REFERENCE_IDS,
+    display_text=SOURCE_CALL_TEXT,
+)
+```
+
+每次文内调用单独圈定自己的来源位置。跨页段落不意味着其中每次调用也跨页；涉及多个源块时，在对应交付条目中用 `origin_block` 明确调用所在块。不能从候选脚注编号反建 source citation 清单，否则无法发现源引文漏掉或指错。
 
 每名作者的 metadata 单元另填 `affiliation_numbers` 与 `affiliation_units`。两数组同序一一对应：前者逐项保留源页可见标记，后者指向同一来源内的 affiliation 单元 ID。例如 `{"affiliation_numbers":["2","4"],"affiliation_units":["main-affiliation-2","main-affiliation-4"]}`。源页存在明确但无编号的关系时，编号位置用 `null`，另写 `affiliation_reason` 说明依据。来源不能确定关系时，两数组留空并填写该原因，不从作者姓名推断。
 

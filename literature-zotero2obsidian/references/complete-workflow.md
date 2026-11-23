@@ -2,6 +2,17 @@
 
 从 PDF 新建整篇笔记时，使用 `complete_workflow.py` 的完整入口。局部修复仍使用对应子技能。单独的 `validate_note` 或 `validate_delivery` 没有检查整套工作记录是否齐全，不能替代这里的收尾检查。
 
+## 结束条件
+
+本地文件记录属于本次候选交付。实际库身份、集合和 URI 未提供时可以如实保留未知；逐 ID 结果、译文核对、来源映射和链接映射则可以在本地完成。
+
+1. 每个阶段完成后填写该阶段已经核对的验收 ID。
+2. 收尾报告出现本地缺项时，继续处理该缺项。
+3. `records_ready` 为 `false` 时，保留当前工作状态并继续下一批任务。
+4. 当前来源能支持的本地缺项清零后，再写最终完成报告。
+
+“未完成全部台账”不等于缺少外部环境；不能用这一表述提前结束仍可完成的任务。遇到实际读取失败或来源不可辨认时，按具体对象记录该阻断。不要把一个对象的阻断扩大到其余可完成对象。
+
 ## 开始：先生成清单
 
 在本次工作目录保存 Python 调用脚本，先填写实际路径。以下文件名是示例，不表示实际来源已经读取。
@@ -38,6 +49,8 @@ RUN_PATH = initialize_workflow(
 
 没有 SI 时从两个映射中同时去掉对应来源。中文原文确实无需翻译时，将 `translation_required` 设为 `False`，并在语言分流记录中保存依据。初始化会保存逐页材料、来源哈希、全量验收骨架及 `run.json`；它不会把任何内容判断填成通过。恢复任务时读取已有 `run.json`，不要重新初始化或覆盖旧记录。
 
+提供术语表时，初始化另存 `run.json.records.glossary_candidates` 指向的逐块检索线索。翻译每块前读取它的完整短语命中和核心词线索。词族行只提供原术语表的解释，不代表整个命中短语就是本次概念；按[术语检索步骤](../../literature-translate-zh/references/translation-review.md#自动取得检索线索)决定是否采用。原术语表保持不变。
+
 ## 中间阶段：按对象保存实际判断
 
 沿[分阶段路线](execution-plan.md)完成来源盘点、翻译、排版和链接。`run.json.records` 给出本次必需记录的计划路径；尚未生成的文件应在对应阶段补齐。
@@ -51,11 +64,15 @@ RUN_PATH = initialize_workflow(
 | `translation-review.json` | 逐段自核后 | 每个译文源块有独立核对记录 |
 | `checks.json` | 各阶段持续填写 | 每个验收 ID 有自己的判断 |
 
-记录的字段沿用[交接约定](pipeline-contract.md)。同一个事实可以存一次，再由多个明确 ID 引用其精确位置；不能把整个技能视作一个已通过目标。译文复核使用[翻译核对说明](../../literature-translate-zh/references/translation-review.md)。
+记录的字段沿用[交接约定](pipeline-contract.md)。同一个事实可以存一次，再由多个明确 ID 引用其精确位置；不能把整个技能视作一个已通过目标。译文复核使用[翻译核对说明](../../literature-translate-zh/references/translation-review.md)。首次填写前阅读[完整单段示例](../../literature-translate-zh/references/complete_review_example.py)，理解各目标如何分别闭合；该示例的内容判断只适用于它自带的虚构材料。
 
 完整入口读取以下集合字段；集合可以用列表保存记录，也可以用对象 ID 到记录的映射保存。没有对应对象时保留空集合，并在该验收 ID 记录实际不适用依据：`source-map.json` 的 `blocks`、`objects`、`references`、`citations`；`si-map.json` 的 `sources`、`blocks`、`objects`；`link-map.json` 的 `anchors`、`internal_links`、`library_matches`、`unresolved`。集合存在只说明结构齐全，不证明内容已经核对。
 
 来源单元和交付位置登记后，可调用 `write_maps(RUN_PATH, deliveries)`，由实际 inventory 和明确的交付定位生成这三份映射。返回报告会列出不能可靠派生的字段；补齐实际来源依据后再生成，不能填猜测值绕过诊断。该函数保留 `extracted`／`pending` 状态，既不声称已经看过来源，也不替代逐单项目标的实际核对。首次生成不覆盖旧文件；需要重新生成时在 `run.json.records` 指定新版本路径，保留原文件。
+
+在翻译前按[来源单元字段](delivery-checks.md)使用 `make_source_unit()` 登记对象和调用，能提前发现漏填的来源编号或调用文字。所有候选链接都要有来源显示文字；正文调用可复用对应单元的 `display_text`，邮箱、DOI 和图片嵌入等仍按各自实际来源登记。源页没有文字显示标签时，明确记录空字符串及原因，不从候选生成标签冒充源显示文字。
+
+某条链接的所属单元或源块仍不唯一时，在该单元的 `delivery.link_bindings` 为这一次链接补充 `candidate_locator`、`source_display_text` 和 `origin_block`。`candidate_locator` 取诊断中给出的实际位置；源字段取该来源页面。逐条补完报告中的缺项后再生成三份映射，不能把生成失败仅写进最终报告后结束。
 
 三份映射的 `bindings` 分别绑定当前 `source_inventory`、`candidate` 及按来源 ID 登记的 `sources`。生成以后检查每个对象的源位置、目标位置和对应关系，再把实际比较结果写入相应对象记录及 `checks.json`。当前稿与旧稿的行号相同不代表证据仍然有效。
 
@@ -106,6 +123,8 @@ else:
 
 `pending_check_batch(CHECKS_PATH, limit=20)` 列出下一批尚未完成的文件目标。每条带原规则文字和文件位置，直接读取对应规则、查实际对象、保存证据并填写该 ID。完成当前批次后再取下一批。批次大小只影响展示，不改变目标集合。
 
+可按当前阶段指定 `prefix="HDR"`、`prefix="BODY"` 或其他清单中实际存在的规则前缀。前缀只缩小这一批的展示；某个前缀返回空列表不表示整篇完成。最后用不带前缀的调用确认所有文件目标都已处理。不要到全文结束才首次填写整套台账。
+
 `record_check_batch(CHECKS_PATH, results, evidence=EVIDENCE)` 接收明确的逐 ID 结果。`results` 中每条独立给出 `id`、`status`、`scope`、`evidence`、`reason`；不适用项另给实际 `applicability_condition`。共享证据通过 `check_records.bind_evidence()` 绑定已存在文件。函数不接受整技能通过、默认通过、按关键词推断不适用或改变目标类型。填写格式见[单项记录](acceptance.md#单项记录)。
 
 首次最终绑定前先完成会改动 inventory 的指针登记。翻译复核与图件复核按各自说明绑定稳定版本，避免相互引用仍在变化的文件造成哈希循环。使用 `write_manifest(RUN_PATH, deliveries)` 生成交付索引；它复用同一运行的实际路径，并绑定已完成的翻译复核文件。
@@ -123,14 +142,14 @@ WORK_ROOT.joinpath("completion-report.json").write_text(
     json.dumps(report.as_dict(), ensure_ascii=False, indent=2) + "\n",
     encoding="utf-8",
 )
-print({"records_ready": report.records_ready, "finding_count": len(report.findings)})
-for finding in report.findings[:20]:
-    print(finding.code, finding.target, finding.message)
+print(json.dumps(report.summary(examples_per_code=2), ensure_ascii=False, indent=2))
 print(json.dumps(pending_check_batch(WORK_ROOT.joinpath("checks.json")),
                  ensure_ascii=False, indent=2))
 ```
 
 `WORKFLOW_RECORD_MISSING` 表示需要补对应记录。`WORKFLOW_CHECK_PENDING` 表示需要完成该单项目标。`WORKFLOW_MANIFEST_BINDING` 表示报告引用了另一份文件或旧版本。翻译记录中的 `TRN_PENDING`、`TRN_UNRESOLVED` 等逐项提示同样保留其具体目标位置，可据此回到对应段落或术语记录。先处理实际缺项，再运行收尾检查。
+
+完整报告可能很长；保存在文件中，控制台只看 `summary()` 与当前批次。摘要仅合并显示重复诊断，不删除待验目标，也不会把任何目标转为通过。处理顺序为：来源单元字段 → 对应交接映射 → 逐段译文记录 → 逐 ID 结果 → 最终索引绑定 → 完成检查。对一个阶段的每个剩余对象完成记录后再进入下一阶段。
 
 排版提示仍出现时，回到原规则判定。带单位的近似时长同样适用数学排版，例如“数十年”可写为 `$\text{数十}\,\text{年}$`；非精确不构成忽略提示的理由。真正的非问题项保存为 `presentation_review` 指向的 JSON。该文件的 `bindings.candidate` 用 `bind_file(CANDIDATE_PATH)` 绑定当前实际文件；`items` 每项写当前 `code`、`line`、`status: "not_an_issue"` 和具体 `reason`。候选变化后重新对照提示，不复用旧行号或旧理由。
 

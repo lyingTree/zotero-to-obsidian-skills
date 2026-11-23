@@ -6,6 +6,7 @@ records of the complete workflow.  It never supplies semantic review results.
 """
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import hashlib
@@ -121,6 +122,11 @@ def initialize_workflow(
         records["translation_review"] = str(work_root.joinpath("translation-review.json"))
     if glossary_path is not None:
         records["terminology"] = str(inventory_path.parent.joinpath("terminology.json"))
+        search_tools = _load(Path(__file__).resolve().parents[2].joinpath(
+            "literature-translate-zh", "scripts", "glossary_candidates.py"))
+        records["glossary_candidates"] = str(search_tools.prepare_glossary_candidates(
+            inventory_path, Path(glossary_path), work_root.joinpath("glossary-candidates.json"), progress=progress,
+        ))
     ledger = _read(checks_path)
     run = {
         "schema_version": 1, "run_id": run_id, "workflow_profile": PROFILE,
@@ -170,19 +176,50 @@ class CompletionReport:
         return {**asdict(self), "records_ready": self.records_ready,
                 "boundary": "Record completeness and syntax do not establish source fidelity."}
 
+    def summary(self, *, examples_per_code: int = 2) -> dict:
+        """Bound console output while retaining every finding in as_dict()."""
+        if type(examples_per_code) is not int or examples_per_code < 1:
+            raise ValueError("examples_per_code must be a positive integer.")
+        unique = {}
+        for finding in self.findings:
+            key = (finding.code, finding.target, finding.message)
+            unique.setdefault(key, finding)
+        counts = Counter(finding.code for finding in unique.values())
+        examples = {}
+        for finding in unique.values():
+            bucket = examples.setdefault(finding.code, [])
+            if len(bucket) < examples_per_code:
+                bucket.append({"target": finding.target, "message": finding.message})
+        return {
+            "records_ready": self.records_ready,
+            "source_fidelity": self.source_fidelity,
+            "finding_count": len(self.findings), "distinct_finding_count": len(unique),
+            "counts_by_code": dict(counts), "examples_by_code": examples,
+            "pending_file_goal_count": len(self.pending_acceptance),
+            "next_pending_file_goals": self.pending_acceptance[:examples_per_code],
+            "boundary": "This is a bounded display of the full report, not a smaller acceptance scope.",
+        }
 
-def pending_check_batch(checks_path: Path, *, limit: int = 20) -> list[dict]:
+
+def pending_check_batch(checks_path: Path, *, limit: int = 20, prefix: str | None = None) -> list[dict]:
     """Return exact remaining file goals, never a blanket pass operation."""
     if type(limit) is not int or limit < 1:
         raise ValueError("limit must be a positive integer.")
     rows = _read(Path(checks_path)).get("checks")
     if not isinstance(rows, list):
         raise ValueError("The ledger must contain checks.")
+    if any(not isinstance(row, dict) or not isinstance(row.get("id"), str) for row in rows):
+        raise ValueError("Every check needs its actual string rule ID.")
+    prefixes = {row["id"].split("-", 1)[0] for row in rows}
+    if prefix is not None and (not isinstance(prefix, str) or prefix not in prefixes):
+        raise ValueError("prefix must name an actual rule group in this ledger.")
     pending = []
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("Every check must be an object.")
         if row.get("requirement_type") != "offline_outcome":
+            continue
+        if prefix is not None and row.get("id", "").split("-", 1)[0] != prefix:
             continue
         if row.get("status") in {"passed", "not_applicable"}:
             continue

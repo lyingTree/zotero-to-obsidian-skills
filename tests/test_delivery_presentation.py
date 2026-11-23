@@ -231,6 +231,65 @@ class PresentationTests(unittest.TestCase):
         text = "\n\n首段。\n\n第二段。\n\n```text\n第一行\n\n\n第四行\n```\n\n\n"
         self.assertNotIn("PARAGRAPH_GAP_EXTRA", self.codes(text))
 
+    def test_angle_command_requires_its_backslash_in_inline_and_display_math(self):
+        text = "$12^circ$\n\n$$\nx=35^{circ}\n$$"
+        prompts = [item for item in lint_presentation(text) if item.code == "DEGREE_COMMAND_MISSING_BACKSLASH"]
+        self.assertEqual([item.excerpt for item in prompts], ["^circ", "^{circ"])
+        self.assertTrue(all(item.rule_id == "BODY-C183" for item in prompts))
+
+    def test_valid_angles_and_invisible_examples_do_not_prompt(self):
+        text = r"$12^\circ$ and $35^{\circ}$; `12^circ`; [label](https://example.test/^circ)."
+        self.assertNotIn("DEGREE_COMMAND_MISSING_BACKSLASH", self.codes(text))
+        self.assertEqual(self.codes("```text\n$12^circ$\n```"), set())
+
+    def test_second_worksheet_checks_angle_command(self):
+        table = {"version": 3, "sheets": [
+            {"columns": [], "rows": []},
+            {"columns": [{"id": "a", "name": "Angle"}], "rows": [{"id": "r", "cells": {"a": "$12^circ$"}}]},
+        ]}
+        text = "```rich-table\n---\n" + yaml.safe_dump(table, allow_unicode=True) + "---\n```"
+        self.assertEqual(self.codes(text), {"DEGREE_COMMAND_MISSING_BACKSLASH"})
+
+    def test_placeholder_header_date_requires_visible_source_review(self):
+        for value in ("xx/xx/xxxx", "DD Month YYYY", "YYYY-MM-DD"):
+            with self.subTest(value=value):
+                prompts = [item for item in lint_presentation("> Published online: " + value)
+                           if item.code == "HEADER_DATE_PLACEHOLDER"]
+                self.assertEqual(len(prompts), 1)
+                self.assertEqual(prompts[0].rule_id, "HDR-C42")
+
+    def test_real_dates_and_non_header_placeholders_are_not_rejected(self):
+        text = "> Published online: 19 June 2020\n\nxx/xx/xxxx\n`> 发表：xx xx xxxx`\n"
+        self.assertNotIn("HEADER_DATE_PLACEHOLDER", self.codes(text))
+
+    def test_century_duration_keeps_approximation_without_treating_calendar_century_as_quantity(self):
+        text = "记录跨越一个多世纪和数个世纪；20世纪与第十一个世纪是年代。"
+        quantities = [item.excerpt for item in lint_presentation(text) if item.code == "QUANTITY_OUTSIDE_MATH"]
+        self.assertEqual(quantities, ["一个多世纪", "数个世纪"])
+
+    def test_dimensionless_range_needs_math_but_dates_and_object_numbers_are_exempt(self):
+        text = "数值范围2到4，另一范围-3至-1；记录覆盖2001至2024年；第3至5节，图3至5；12:00至13:00。"
+        ranges = [item.excerpt for item in lint_presentation(text) if item.code == "NUMERIC_RANGE_OUTSIDE_MATH"]
+        self.assertEqual(ranges, ["2到4", "-3至-1"])
+
+    def test_math_code_and_destinations_do_not_create_new_quantity_prompts(self):
+        text = r"$\text{一个多}\,\text{世纪}$与$2\text{-}4$；`一个多世纪，2至4`；[标签](https://example.test/2至4)。"
+        self.assertNotIn("QUANTITY_OUTSIDE_MATH", self.codes(text))
+        self.assertNotIn("NUMERIC_RANGE_OUTSIDE_MATH", self.codes(text))
+
+    def test_range_values_alone_cannot_establish_calendar_context(self):
+        text = "无量纲参数1600至1800，另一参数1400至1450；资料覆盖1600至1800年。"
+        ranges = [item.excerpt for item in lint_presentation(text) if item.code == "NUMERIC_RANGE_OUTSIDE_MATH"]
+        self.assertEqual(ranges, ["1600至1800", "1400至1450"])
+
+    def test_later_worksheet_checks_dimensionless_range(self):
+        table = {"version": 3, "sheets": [
+            {"columns": [], "rows": []},
+            {"columns": [{"id": "c", "name": "Range"}], "rows": [{"id": "r", "cells": {"c": "2至4"}}]},
+        ]}
+        text = "```rich-table\n---\n" + yaml.safe_dump(table, allow_unicode=True) + "---\n```"
+        self.assertEqual(self.codes(text), {"NUMERIC_RANGE_OUTSIDE_MATH"})
+
 
 if __name__ == "__main__":
     unittest.main()

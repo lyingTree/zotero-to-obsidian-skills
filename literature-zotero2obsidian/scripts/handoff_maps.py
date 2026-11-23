@@ -818,8 +818,7 @@ def _locations_match(value: Any, expected: list[dict]) -> bool:
     return matched == set(range(len(expected)))
 
 
-def _unit_fields(context: _Context, unit_id: str) -> tuple[str, ...]:
-    unit = context.units[unit_id]
+def _required_unit_fields(unit: Mapping) -> tuple[str, ...]:
     kind = unit.get("kind")
     if kind == "metadata":
         return ("field",) + (("value",) if "value" in unit else ())
@@ -832,6 +831,76 @@ def _unit_fields(context: _Context, unit_id: str) -> tuple[str, ...]:
     if kind in _OBJECT_KINDS:
         return ("original_number",)
     return ()
+
+
+def make_source_unit(
+    unit_id: str, source_id: str, kind: str, evidence: Sequence[Mapping], **fields,
+) -> dict:
+    """Build one explicitly read source unit; fail early on required fields.
+
+    Values come from the source, never a candidate anchor. An unnumbered source
+    object uses original_number=None with original_number_reason. This function
+    does not read a PDF or assign observation, applicability or review statuses.
+    """
+    contract = _module("validate_delivery")
+    if not _nonempty(unit_id) or not _nonempty(source_id) or not isinstance(kind, str) or kind not in contract.KINDS:
+        raise ValueError("Supply actual nonempty unit/source IDs and a supported kind.")
+    if isinstance(evidence, (str, bytes)) or not isinstance(evidence, Sequence) or not evidence:
+        raise ValueError("A source unit needs explicit source locations.")
+    if any(not isinstance(row, Mapping) or not row for row in evidence):
+        raise ValueError("Each source location must be a nonempty object.")
+    reserved = {"id", "source", "kind", "evidence"} & fields.keys()
+    if reserved:
+        raise ValueError("Do not override source-unit identity fields: " + ", ".join(sorted(reserved)))
+    unit = {"id": unit_id, "source": source_id, "kind": kind,
+            "evidence": [dict(row) for row in evidence], **fields}
+    missing = set(_required_unit_fields(unit)) - unit.keys()
+    if missing:
+        raise ValueError(unit_id + ": record these source fields before translation: " + ", ".join(sorted(missing)))
+    if kind in _OBJECT_KINDS:
+        original = unit["original_number"]
+        if original is not None and not _nonempty(original):
+            raise ValueError(unit_id + ": original_number must retain the source's literal string or be null.")
+        if original is None and not _nonempty(unit.get("original_number_reason")):
+            raise ValueError(unit_id + ": explain the observed absence of a source number.")
+    if kind == "figure" and type(unit.get("contains_table")) is not bool:
+        raise ValueError(unit_id + ": contains_table must explicitly be true or false after source inspection.")
+    if kind == "table":
+        shape = unit.get("shape")
+        if not isinstance(shape, dict) or any(type(shape.get(key)) is not int or shape[key] < 1 for key in ("rows", "columns")):
+            raise ValueError(unit_id + ": shape needs positive integer rows and columns.")
+        merges = unit.get("merges")
+        if not isinstance(merges, list):
+            raise ValueError(unit_id + ": merges must explicitly list source merged ranges; use [] when none exist.")
+        keys = ("row_start", "row_end", "column_start", "column_end")
+        for merge in merges:
+            if not isinstance(merge, dict) or any(type(merge.get(key)) is not int for key in keys):
+                raise ValueError(unit_id + ": each merged range needs integer row and column bounds.")
+            if not (0 <= merge["row_start"] <= merge["row_end"] <= shape["rows"] and
+                    1 <= merge["column_start"] <= merge["column_end"] <= shape["columns"]):
+                raise ValueError(unit_id + ": a merged range falls outside the recorded source shape.")
+    if kind == "metadata" and (not _nonempty(unit["field"]) or
+                               unit["field"] not in {*contract.FIELDS.values(), "doi", "email", "header_note", "external_url"}):
+        raise ValueError(unit_id + ": identify one supported metadata field.")
+    if kind == "reference":
+        if not _nonempty(unit["bibliography_id"]) or not _nonempty(unit["original_text"]):
+            raise ValueError(unit_id + ": bibliography_id and original_text must be nonempty source strings.")
+        number = unit["number"]
+        if not _nonempty(number) and type(number) is not int:
+            raise ValueError(unit_id + ": number must retain a source reference number or label.")
+    if kind in _CALL_KINDS and not _nonempty(unit["display_text"]):
+        raise ValueError(unit_id + ": record the actual source call's display text.")
+    if kind == "citation":
+        references = unit["references"]
+        if not isinstance(references, list) or not references or any(not _nonempty(item) for item in references):
+            raise ValueError(unit_id + ": list the actual source reference-unit IDs.")
+    if kind == "cross_reference" and not _nonempty(unit["target_unit"]):
+        raise ValueError(unit_id + ": identify the actual called source object.")
+    return _copy(unit)
+
+
+def _unit_fields(context: _Context, unit_id: str) -> tuple[str, ...]:
+    return _required_unit_fields(context.units[unit_id])
 
 
 def _check_unit_row(context: _Context, row: dict, name: str, collection: str, path: Path) -> str | None:

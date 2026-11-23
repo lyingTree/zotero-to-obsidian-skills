@@ -32,6 +32,7 @@ HEADING = re.compile(r"^ {0,3}#{1,6} +\S")
 PANEL_LABEL = re.compile(r"(?P<prefix>图)?\s*(?P<object>S?\d+)(?P<panel>[a-z])", re.IGNORECASE)
 PANEL_JOIN = re.compile(r"(?:\s|[,，、和及与\-\u2010-\u2015]|以及)*")
 MATH_NUMBER_RANGE = re.compile(r"(?<![0-9A-Za-z_.])\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?(?![0-9.])")
+BARE_DEGREE_COMMAND = re.compile(r"(?<!\\)\^\s*(?:\{\s*)?circ\b")
 QUANTITY = re.compile(
     r"(?<![0-9A-Za-z_.])(?P<number>\d+(?:\.\d+)?(?:\s*[-\u2010-\u2015]\s*\d+(?:\.\d+)?)?)"
     r"\s*(?P<unit>小时|分钟|秒|千米|公里|厘米|毫米|米|年|km|cm|mm|m|h|s)(?![A-Za-z])"
@@ -40,11 +41,28 @@ CHINESE_QUANTITY = re.compile(
     r"(?P<number>[数几]?[零〇一二三四五六七八九十百千万亿两半]+(?:[-\u2010-\u2015至到][数几]?[零〇一二三四五六七八九十百千万亿两半]+)?)"
     r"\s*(?P<unit>小时|分钟|秒|千米|公里|厘米|毫米|米|年)"
 )
+CENTURY_DURATION = re.compile(
+    r"(?<![第0-9零〇一二三四五六七八九十百千万亿两半数几])"
+    r"(?P<number>(?:[数几]?(?:[零〇一二三四五六七八九十百千万亿两半]+|\d+)个(?:多|余)?|[数几]个?))"
+    r"\s*(?P<unit>世纪)"
+)
+PROSE_NUMBER_RANGE = re.compile(
+    r"(?<![0-9A-Za-z_.:])(?P<first>[+-]?\d+(?:\.\d+)?)\s*(?:至|到)\s*"
+    r"(?P<last>[+-]?\d+(?:\.\d+)?)(?![0-9.:])"
+)
 CHINESE_YEAR_DIGITS = str.maketrans("零〇一二三四五六七八九", "00123456789")
 ADJACENT_UNIT = re.compile(r"\s*(?P<unit>小时|分钟|秒|千米|公里|厘米|毫米|米|年|km|cm|mm|m|h|s)(?![A-Za-z])")
 HEADER_LABEL = re.compile(
     r"(?<![A-Za-z])(?:Received|Accepted|Published(?:\s+online)?|Publication\s+date|DOI)\s*[:：]"
     r"|(?:收稿|接收|接受|录用|在线发表|发表|出版)(?:日期)?\s*[:：]", re.IGNORECASE
+)
+DATE_LABEL = re.compile(
+    r"(?<![A-Za-z])(?:Received|Accepted|Published(?:\s+online)?|Publication\s+date)\s*[:：]"
+    r"|(?:收稿|接收|接受|录用|在线发表|发表|出版)(?:日期)?\s*[:：]", re.IGNORECASE
+)
+DATE_PLACEHOLDER = re.compile(
+    r"(?<![A-Za-z])(?:x{1,4}(?:[\s./-]+x{1,4}){1,2}|"
+    r"(?:dd|yyyy)[\s./-]+(?:mm|month)[\s./-]+(?:yyyy|dd))(?![A-Za-z])", re.IGNORECASE
 )
 
 
@@ -93,6 +111,11 @@ def _scan_math(text: str, line: int, *, display: bool) -> list[Prompt]:
                r"对照来源判断这是范围还是减法；范围使用 \text{-}，真实减法保留运算符。")
         for match in MATH_NUMBER_RANGE.finditer(text)
     ]
+    findings.extend(
+        Prompt("BODY-C183", line, "DEGREE_COMMAND_MISSING_BACKSLASH", match[0],
+               r"核对来源角度；^circ 会被解析为字母幂，角度单位应使用 ^\circ 或 ^{\circ}。此提示不自动改写来源。")
+        for match in BARE_DEGREE_COMMAND.finditer(text)
+    )
     if not display:
         return findings
     tail = text.rstrip()
@@ -200,16 +223,29 @@ def _scan(text: str, line: int) -> list[Prompt]:
     if re.match(r"^ {0,3}>\s", visible) and len(HEADER_LABEL.findall(visible)) > 1:
         findings.append(Prompt("HDR-C30", line, "HEADER_ITEMS_SAME_LINE", visible.strip(),
                                "题头元信息的一行包含多个带标签的项目；每个日期类别与 DOI 分别占一条引用行。"))
+    if re.match(r"^ {0,3}>\s", visible) and DATE_LABEL.search(visible):
+        for match in DATE_PLACEHOLDER.finditer(visible):
+            findings.append(Prompt("HDR-C42", line, "HEADER_DATE_PLACEHOLDER", match[0],
+                                   "日期仍是占位文本；放大实际源页的日期区域核对可见值。若可见来源确实只有占位，保存该区域与具体观察后记录非问题依据。"))
     for match in NON_ASCII_DASH.finditer(visible):
         findings.append(Prompt("BODY-C173", line, "VISIBLE_DASH", match[0], "核对该可见连接线是否应使用 ASCII -；不得修改链接目标。"))
     prose = INLINE_MATH.sub("ⓜ", visible)
     for match in PERCENT.finditer(prose):
         findings.append(Prompt("BODY-C184", line, "PERCENT_OUTSIDE_MATH", match[0], "百分量整体置于数学环境，百分号写作 \\%。"))
-    for match in (*QUANTITY.finditer(prose), *CHINESE_QUANTITY.finditer(prose)):
+    for match in (*QUANTITY.finditer(prose), *CHINESE_QUANTITY.finditer(prose), *CENTURY_DURATION.finditer(prose)):
         number, unit = match["number"], match["unit"]
         if _calendar_year(number, unit):
             continue  # Calendar years and ranges are dates, not durations.
         findings.append(Prompt("BODY-C169", line, "QUANTITY_OUTSIDE_MATH", match[0], "按完整原句核对这是量值而非日期/编号；适用时数值与单位放入同一数学环境，保留原有近似限定。"))
+    for match in PROSE_NUMBER_RANGE.finditer(prose):
+        before = prose[:match.start()].rstrip()
+        if before.endswith(("第", "图", "表", "式", "节", "章", "页")):
+            continue
+        after = prose[match.end():].lstrip()
+        if after.startswith("年") and _calendar_year(match["first"] + "-" + match["last"], "年"):
+            continue
+        findings.append(Prompt("BODY-C180", line, "NUMERIC_RANGE_OUTSIDE_MATH", match[0],
+                               r"核对这是否为量值范围；量值范围整体放入数学环境，并以 \text{-} 保留范围关系。日期、UTC时刻和文献/对象编号按各自规则保留。"))
     heading_prefix = NUMBERED_HEADING_PREFIX.match(prose)
     for match in SPACE.finditer(prose):
         if heading_prefix and match.end() <= heading_prefix.end():

@@ -44,6 +44,95 @@ def binding(path):
     return {"path": str(path.resolve()), "sha256": sha256(path.read_bytes()).hexdigest()}
 
 
+class SourceUnitConstructionTests(unittest.TestCase):
+    def setUp(self):
+        self.evidence = [{"page": 1, "blocks": ["main-p1-b0"], "quote": "Synthetic source call."}]
+
+    def test_missing_call_display_fails_before_map_generation(self):
+        with self.assertRaisesRegex(ValueError, "display_text"):
+            maps.make_source_unit("call-one", "main", "citation", self.evidence, references=["ref-one"])
+
+    def test_explicit_call_retains_its_source_text_and_reference_identity(self):
+        unit = maps.make_source_unit("call-one", "main", "citation", self.evidence,
+                                     references=["ref-one", "ref-two"], display_text="3,7")
+        self.assertEqual(unit["display_text"], "3,7")
+        self.assertNotIn("status", unit)
+        unit["evidence"][0]["blocks"].append("other")
+        self.assertEqual(self.evidence[0]["blocks"], ["main-p1-b0"])
+
+    def test_main_objects_need_explicit_original_number_too(self):
+        with self.assertRaisesRegex(ValueError, "original_number"):
+            maps.make_source_unit("figure-one", "main", "figure", self.evidence, contains_table=False)
+        unit = maps.make_source_unit("figure-one", "main", "figure", self.evidence,
+                                     original_number="3", contains_table=False)
+        self.assertEqual(unit["original_number"], "3")
+
+    def test_unnumbered_formula_has_an_explicit_observed_absence_reason(self):
+        with self.assertRaisesRegex(ValueError, "absence"):
+            maps.make_source_unit("formula-one", "main", "formula", self.evidence, original_number=None)
+        unit = maps.make_source_unit("formula-one", "main", "formula", self.evidence,
+                                     original_number=None, original_number_reason="The displayed source formula has no printed label.")
+        self.assertIsNone(unit["original_number"])
+
+    def test_cross_reference_cannot_omit_its_actual_target(self):
+        with self.assertRaises(ValueError):
+            maps.make_source_unit("cross-one", "main", "cross_reference", self.evidence, display_text="Fig. 3")
+        with self.assertRaises(ValueError):
+            maps.make_source_unit("cross-one", "main", "cross_reference", self.evidence, display_text="Fig. 3", target_unit="")
+
+    def test_reference_fields_are_source_facts_not_inferred_from_an_anchor(self):
+        with self.assertRaisesRegex(ValueError, "bibliography_id"):
+            maps.make_source_unit("reference-one", "main", "reference", self.evidence, number="3", original_text="Synthetic reference.")
+
+    def test_empty_source_evidence_and_identity_override_are_rejected(self):
+        with self.assertRaises(ValueError):
+            maps.make_source_unit("paragraph-one", "main", "paragraph", [])
+        with self.assertRaises(ValueError):
+            maps.make_source_unit("paragraph-one", "main", "paragraph", self.evidence, source="another")
+
+    def test_constructor_uses_the_delivery_inventory_kind_contract(self):
+        for kind in ("equation", "video", "unknown"):
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "supported kind"):
+                maps.make_source_unit("object-one", "main", kind, self.evidence, original_number="1")
+
+    def test_figure_requires_an_explicit_boolean_table_classification(self):
+        for value in (None, "false", 0, []):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "contains_table"):
+                maps.make_source_unit("figure-one", "main", "figure", self.evidence,
+                                      original_number="1", contains_table=value)
+
+    def test_source_number_is_a_literal_string_or_explained_absence(self):
+        for value in ("", "  ", 1, True, [], {}):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "original_number"):
+                maps.make_source_unit("formula-one", "main", "formula", self.evidence, original_number=value)
+
+    def test_table_requires_source_shape_and_explicit_merge_list(self):
+        for fields in ({}, {"shape": {"rows": True, "columns": 2}, "merges": []},
+                       {"shape": {"rows": 2, "columns": 2}},
+                       {"shape": {"rows": 2, "columns": 2}, "merges": None}):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                maps.make_source_unit("table-one", "main", "table", self.evidence, original_number="1", **fields)
+        fields = {"shape": {"rows": 2, "columns": 2}, "merges": []}
+        unit = maps.make_source_unit("table-one", "main", "table", self.evidence, original_number="1", **fields)
+        self.assertEqual(unit["shape"], fields["shape"])
+        self.assertEqual(unit["merges"], [])
+        self.assertNotIn("status", unit)
+
+    def test_source_merge_bounds_must_fit_recorded_table_shape(self):
+        for merge in ({}, {"row_start": 1, "row_end": 3, "column_start": 1, "column_end": 1},
+                      {"row_start": True, "row_end": 2, "column_start": 1, "column_end": 1}):
+            with self.subTest(merge=merge), self.assertRaises(ValueError):
+                maps.make_source_unit("table-one", "main", "table", self.evidence, original_number="1",
+                                      shape={"rows": 2, "columns": 2}, merges=[merge])
+
+    def test_present_but_empty_reference_identity_fields_are_rejected(self):
+        for key in ("number", "bibliography_id", "original_text"):
+            fields = {"number": "1", "bibliography_id": "main-bibliography", "original_text": "Synthetic entry."}
+            fields[key] = ""
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                maps.make_source_unit("ref-one", "main", "reference", self.evidence, **fields)
+
+
 class Fixture:
     def __init__(self, base: Path, *, rich: bool = False, candidate_eol: str | None = None):
         self.base = base
