@@ -28,6 +28,13 @@
 - `obsidian-cli` — 通过 `obsidian` CLI 操作库；来源 [obsidianmd/obsidian-skills](https://github.com/obsidianmd/obsidian-skills)（`plugins/obsidian/skills/obsidian-cli`）
 - `zotero-skills` — Zotero 条目与库管理；来源 [WenyuChiou/zotero-skills](https://github.com/WenyuChiou/zotero-skills)（`skills/zotero-skills` + 根 `scripts/`）
 
+## 模板与术语表
+
+`template/` 提供文献笔记的默认资源，复制到你的文献根 `template/` 目录使用：
+
+- `期刊论文.md`、`学位论文.md`、`会议论文.md`、`预印本.md` — Templater 模板，按 Zotero 条目类型创建文献笔记（依赖 Templater、Rich Table 插件，书目从 Zotero 本地 API 读取）
+- `术语表.md` — 文献翻译用的中英术语表与译名核对说明
+
 ## 安装
 
 1. 把本仓库的 12 个 `literature-*` 技能目录放到宿主 Skills 目录下，保持同级（技能间使用 `../literature-*` 相对引用）。
