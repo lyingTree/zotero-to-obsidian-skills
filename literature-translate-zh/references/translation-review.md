@@ -4,6 +4,7 @@
 
 - [范围与证据边界](#范围与证据边界)
 - [准备记录](#准备记录)
+- [逐段短入口与增量保存](#逐段短入口与增量保存)
 - [展开清单中的 block 定位](#展开清单中的-block-定位)
 - [逐段操作顺序](#逐段操作顺序)
 - [术语类别与词族检索](#术语类别与词族检索)
@@ -26,6 +27,8 @@
 `translation-review.json` 是自核台账。`validate_translation_review()` 检查实际文件哈希、来源和候选身份、清单单元是否全部被选中或明确排除、每块的必填目标、状态、逐处记录、术语扫描与检索、记录之间的引用及可解析定位。它不判断清单本身是否漏掉原 PDF 内容，不判断段内命题是否被穷举，不决定不适用理由是否成立，也不判断科学译义。源 PDF 的可见原文仍须实际阅读；文字层损坏时不会用文本检索结果否定可见页。空列表、术语命中、文件存在和执行者自述均不产生语义通过。实际过程与离线结果分别填写；没有可回读的过程证据时，不由正确结果反推核对动作已发生。
 
 ## 准备记录
+
+实际翻译时，每完成一段就可以阅读来源、核对译句并保存这一段的明确决定；不必等全文完成才开始复核。下面的准备步骤用于绑定某一个实际候选版本。先写入本段的短调用，候选稳定后再编译完整台账，见[逐段短入口与增量保存](#逐段短入口与增量保存)。
 
 按以下顺序准备，避免文件绑定刚生成就过期：
 
@@ -108,6 +111,85 @@ review_path = prepare_translation_review(
 `checks` 的键为 `alignment`、`ambiguity`、`negation`、`strength`、`number_changes`、`terminology`、`units`、`symbols`、`formulas`、`citation_labels`、`completeness`、`directions`、`citation_claims`、`table_text`、`conditions`、`antecedents`、`modifier_scope`。每个键初始为 `{"status":"pending","reason":null,"evidence":[]}`。生成器不代填任一通过状态。
 
 未选择的单元不能只从 `selected_units` 删掉。保留其 `unselected_inventory_units` 条目，并在 `excluded_units` 说明本次实际语种、非应译对象或局部修订授权条件，附真实定位证据。若仍属于本次应译范围，把它加入生成器的 `unit_ids`，为它建立待核记录。检查器不会按 `kind`、关键词或候选有没有中文自动排除单元。
+
+## 逐段短入口与增量保存
+
+`scripts/translation_review_writer.py` 提供 `ReviewWriter`。先用上节的真实 `prepare_translation_review()` 建立台账，再加载它。来源身份和全部来源位置从准备台账读取；每段只绑定一次完整候选位置。之后短调用里的状态、理由和独立比较仍由实际复核者逐项填写，文件路径、哈希、重复 evidence 和术语总表指针由入口展开。17 个检查、10 类扫描和 14 组 occurrence 不变；没有调用的目标继续是 `pending`。
+
+下面只是接口形状；变量须来自本段真实阅读与选择，不是可直接套用的结论。可运行的全虚构单段闭环见 [compact_review_example.py](compact_review_example.py)。它从实际准备函数开始，保存与恢复短决定，再调用原样的最终校验器。
+
+```python
+from translation_review_writer import ReviewWriter
+
+writer = ReviewWriter(review_path)
+unit = writer.unit(unit_id, candidate_locations=actual_complete_candidate_locations)
+source = unit.source(exact_source_excerpt)
+candidate = unit.candidate(exact_candidate_excerpt)
+
+unit.occurrence("claims", claim_id, source, candidate, claim_status, claim_reason)
+unit.check("completeness", completeness_status, completeness_reason)
+# claims 的两侧文字直接取明确选中的片段，无需再重复 source_claim/candidate_claim。
+# 方向、否定范围、条件、语气强度、公式结构等仍传入各自必要的独立字段。
+
+term = unit.term(term_id, original_term, primary_category, source, aliases=actual_aliases)
+hits = term.search("full_phrase", actual_query, query_interpretation)
+term.search("family", family_query, family_interpretation)
+# 确有别名时执行 aliases 查询；实际没有别名时才明确填写：
+term.search_status("aliases", "not_applicable", actual_no_alias_reason)
+term.decide(term_decision, chosen_translation, contextual_reason,
+            matches=explicitly_chosen_hit_ids, resolution_basis=unlisted_basis_if_needed)
+unit.scan(primary_category, category_status, [term_id], category_reason)
+
+# 每段保存到一个新的草稿文件；它不冒充完成台账。
+writer.save_draft(work.joinpath("translation-decisions-paragraph-01.json"))
+```
+
+`source` 应覆盖待比较的实际术语上下文；`original_term` 必须出现在所选片段里。同一个已注册候选可以被多个类别明确引用，不必为每一类复制候选；其主类别也必须实际包含该候选。`search()` 执行真实 `GlossaryIndex` 查询，保存原样行号、词条 ID、命中原文和调用方的解释；它记录 `searched`，不决定同义或采用。`decide()` 的 `matches` 只接受本候选真实查询返回的 ID，保存时会重跑查询核对。完整短语和词族不能用未查询的“不适用”代替。未收录术语的 `unlisted` 决定另外要求明确 `resolution_basis`；`not_a_term`、未决与不采用理由同样由复核者填写。
+
+同一候选版本下继续：
+
+1. 用 `ReviewWriter.from_draft(saved_draft_path)` 恢复已保存的短决定。入口重新核对准备台账及其实际来源、候选、清单与词表绑定。
+2. 用 `writer.unit(next_unit_id, candidate_locations=...)` 进入下一段，完成该段自己的检查、术语扫描及逐次 occurrence。尚未做完的段和目标继续保留；不能把上一段的结论复制给下一段。
+3. 完成当前批次后写另一个新草稿。也可以随时 `writer.save(new_partial_review_path, terminology_path=new_partial_terminology_path)`，保存可检查的部分台账并查看实际 `pending_ids`；保存成功不表示已经就绪。
+4. 所有实际应译单元完成后，明确填写 `writer.scope(status, reason)`、必要的 `writer.exclude(unit_id, condition, reason)`、`writer.source_issues_review(status, reason)`。发现源文疑点时，用 `unit.issue(issue_id, source, description, candidate_readings, disposition, status, reason)` 保留各个读法与处理，不用总括结论代替疑点记录。
+5. 明确调用 `writer.terminology_review("reviewed", covered_units=actual_reviewed_unit_ids, no_unlisted_reason=actual_empty_set_reason_if_applicable)` 和 `writer.review("reviewed")`，再保存新的正式台账与术语文件：
+
+```python
+report = writer.save(final_review_path, terminology_path=final_terminology_path)
+print(report.to_dict())
+```
+
+`save()` 返回原有 `validate_translation_review()` 的报告，不返回文件路径，也不替任何目标填写通过。已存在的输出文件会被拒绝，原准备台账不会被改写。完整流程中，先在实际 `run`／inventory 计划里登记本次新的复核与术语路径，再固定清单和准备骨架；不要用覆盖初始化台账的方式绕过保护。生成的术语总表沿用交付检查器的契约，采用项的 `glossary_locator` 是实际词表绝对路径加 `#L行号`，逐候选的查询与命中仍保存结构化定位。
+
+**候选后续有改动时保留旧版本。** 可把已经完成的本段短调用保存在自己的 Python 复核脚本里，边译边记录；每次需要绑定结果时针对实际候选版本准备新台账。最终版本稳定后，在新台账里重新选择实际片段、核对受改动影响的判断，再执行已明确核对的短调用。`from_draft()` 只恢复原绑定仍有效的草稿；它不换哈希、不跨版本迁移旧结论。旧候选追加了一段、行号变化、来源清单或词表变化，都会要求重新准备并明确处理，不能靠重新保存旧对象获得新版本结论。这样既可以从第一段开始实际复核，也不会把早期草稿的通过状态自动带到最终稿。
+
+### 位置、重复片段与可见转录
+
+`unit.source(quote, page=..., block_id=..., occurrence=...)` 从本单元的真实来源位置选择片段。重复文字必须用页、block、边界框或从 1 开始的明确 occurrence 选择；不知道属于哪个位置时保留待查。`unit.candidate(raw_quote, lines=[start, end], occurrence=...)` 选择实际 Markdown 源码。候选片段必须在本段已经绑定的位置内，同一行重复也必须明确选择；实际字符范围会写入定位。入口不从关键词推断哪段是本单元。
+
+图内文字、表格或损坏文字层可使用本单元内的实际源页与边界框，不要求 PDF 文字层命中：
+
+```python
+source = unit.source(visible_transcription, page=actual_page, bbox=actual_box,
+                     observation_basis=actual_observation_basis)
+```
+
+这会分别记录可见转录及调用方提供的观察依据，并检查真实页号、边界框和所属单元。它不会自动声明已经查看页图。若清单只有无边界框的片段、无法核定该图内位置属于本单元，先补足真实来源位置并重新准备，不能随意指向同页其他区域。
+
+Rich Table 的译文可能位于 YAML 转义字符串中。选择实际源码片段，再明确给出用于比较的解释文字及依据；不要把解码后的文字当成原文件子串：
+
+```python
+candidate = unit.candidate(actual_yaml_source_fragment, lines=actual_source_lines,
+                           comparison_text=explicit_decoded_cell_text,
+                           interpretation_basis=actual_decoding_or_rendering_basis)
+unit.occurrence("table_cells", cell_id, source, candidate, cell_status, cell_reason,
+                source_cell={"table_id": source_table_id, "row": source_row, "column": source_column},
+                candidate_cell={"table_id": candidate_table_id, "row": candidate_row, "column": candidate_column})
+```
+
+单元格文本从明确选择的比较文字填入，表身份、行列和判断仍单独提供。记录同时保留 `raw_text`、`comparison_text`、解释依据与原文件定位，是否解码正确仍需实际核对。
+
+位置不存在、跨单元片段、缺少独立比较字段、未知类别、旧哈希或假词表命中会产生带 `code`、`object_id` 的 `ReviewWriterError`。按该具体目标修正。空 occurrence 组不会让对应检查自动通过，源码检查零错误也不会写入语义结论。`records_ready=True` 仍只表示原校验器认可记录结构与绑定；`source_fidelity`、`execution_truth` 保持 `not_assessed`，仍须完成本次实际逐段自核及最终独立验收。
 
 ## 展开清单中的 block 定位
 

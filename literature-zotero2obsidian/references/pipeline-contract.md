@@ -81,6 +81,33 @@ JSON 交接文件用序列化器生成并立即回读；LaTeX 反斜杠不得手
 - PDF 图像在 source-map、si-map 或局部修复记录中逐图保存[裁剪证据](../../literature-fulltext-extract/references/figure-crop.md)。写入回执以最终资源路径和哈希关联对应的视觉验收记录。
 - 无法匹配分别记录 absent（库内无候选）、ambiguous（有歧义）、unavailable（未能检索）或 source_error（原文疑点）；不能一概写成“未找到”。
 
+### 一次登记文字层与页图冲突
+
+来源单元的 `text_visual_conflicts` 是冲突决定的权威记录。盘点时可使用 [handoff_maps.py](../scripts/handoff_maps.py) 的 `record_text_visual_conflict(...)`，在建立图件库存快照及各映射之前写入一次。函数从该单元已经登记的来源页取得 PDF、原始页文本、完整页图的实际路径与哈希；两种读法、页内位置、采用值和理由必须由调用方明确给出。它不做 OCR，不推断可见读法，也不依据日期格式或常识改写来源。
+
+下面是虚构实验室名称的结构示例，变量须来自本次实际文件；不能把示例读法当成本次观察：
+
+```python
+from handoff_maps import record_text_visual_conflict
+
+record_text_visual_conflict(
+    inventory_path, "synthetic-affiliation", conflict_id="lab-name-reading",
+    page_number=actual_page_number,
+    text_locator={"kind": "characters", "unit": "unicode_code_points",
+                  "start": original_start, "end": original_end, "end_exclusive": True},
+    text_layer_text="Reed Laboratory", visible_text="Reid Laboratory",
+    bbox=observed_pdf_bbox,
+    decision={"status": "resolved", "selected_text": "Reid Laboratory",
+              "reason": actual_observation_reason, "observed": True, "reviewer": actual_reviewer},
+)
+```
+
+字符区间以原始 UTF-8 页文本解码后的 Unicode 码点为单位，零起始、右端不含；也可提供 `{"kind": "lines", "start": 9, "end": 9}`，行号从 1 开始、两端都包含，原读法必须实际出现在所定位行中。`bbox` 使用未旋转 PDF 页面点坐标，函数登记完整坐标系，并检查边界位于实际源页内。每条记录保留 `text_layer.file/locator/text`、`visible_page.file/page/bbox/coordinate_system/text`、`decision.status/selected_text/reason` 及来源 PDF 绑定。
+
+尚未查看时，显式传 `visible_text=None`，决定写成 `pending` 并说明原因。无法裁决时保留 `ambiguous` 和未决理由。写入映射的步骤允许这些记录原样流转；最终 `validate_handoff_maps(...)` 对未决决定返回 `MAP_CONFLICT_UNRESOLVED`。`resolved` 只表示调用方已给出明确读法、采用值和理由；检查器核对记录、原始文字片段及文件绑定，不认证人工观察或读法正确性。
+
+`write_handoff_maps(...)` 从来源单元自动复制完整冲突记录到 `source-map.json` 或对应 `si-map.json` 的单元视图，不要求在报告、地图或翻译核验中重新输入裁决。既有 `apply_visible_text_edits(...)` 返回的 `text_visual_conflicts` 也可直接保存到该单元，无需再次调用登记函数。已登记冲突被移除、改写或只留下块指针时会产生诊断；没有发现冲突的来源单元不需要虚构记录。重复冲突 ID 会被拒绝，需保留同一权威记录而非追加矛盾副本。
+
 ### 补充材料与书目命名空间
 
 - `source_id` 标识实际来源，由已核实的库、条目及附件身份建立；同一附件内容变化另记哈希与版本，不把遍历次序当身份。每份独立书目有 `bibliography_id`：主文默认为 `main`，补充书目记录对应 `source_id` 与实际书目列表身份。不能凭“最近的一组数字”跨作用域匹配引文。

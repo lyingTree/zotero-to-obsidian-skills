@@ -31,7 +31,7 @@ def file_record(path: Path) -> dict[str, str]:
     return {"path": str(path), "sha256": sha256(path.read_bytes()).hexdigest()}
 
 
-class NamingPlanTests(unittest.TestCase):
+class _NamingPlanFixture:
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -54,6 +54,8 @@ class NamingPlanTests(unittest.TestCase):
         arguments.update(changes)
         return helpers.build_naming_plan(**arguments)
 
+
+class NamingPlanTests(_NamingPlanFixture, unittest.TestCase):
     def test_plan_is_deterministic_and_serializable_without_semantic_acceptance(self):
         plan = self.plan()
         self.assertEqual(plan, self.plan())
@@ -204,6 +206,180 @@ class NamingPlanTests(unittest.TestCase):
         self.assertEqual(enough["library_conflicts"]["status"], "not_checked")
         with self.assertRaisesRegex(ValueError, "target_directory"):
             self.plan(full_path_max_utf16_units=10000)
+
+
+class NamingPlanValidationTests(_NamingPlanFixture, unittest.TestCase):
+    def validate(self, plan, **kwargs):
+        before = deepcopy(plan)
+        source_before = self.source.read_bytes() if self.source.exists() else None
+        report = helpers.validate_naming_plan(plan, **kwargs)
+        self.assertEqual(plan, before)
+        if source_before is not None:
+            self.assertEqual(self.source.read_bytes(), source_before)
+        return report
+
+    def assert_valid(self, plan, **kwargs):
+        report = self.validate(plan, **kwargs)
+        self.assertEqual(report["findings"], [])
+        self.assertTrue(report["structurally_consistent"])
+        self.assertTrue(report["recomputed"])
+        self.assertEqual(report["semantic_review"]["status"], "not_assessed")
+        self.assertEqual(report["library_conflicts"]["status"], "not_assessed")
+        self.assertFalse(report["authorization_granted"])
+        return report
+
+    def test_complete_plan_is_recomputed_and_never_writes_the_fixed_delivery(self):
+        candidate = self.base.joinpath("candidate.md")
+        candidate.write_text("Synthetic existing delivery.", encoding="utf-8")
+        before = candidate.read_bytes()
+        plan = self.plan(delivery_path=candidate)
+        report = self.assert_valid(json.loads(json.dumps(plan)), delivery_path=candidate)
+        self.assertEqual(report["validated_source_fields"], ["year", "author_token", "original_title"])
+        self.assertEqual(candidate.read_bytes(), before)
+        self.assertFalse(self.base.joinpath(plan["filename"]).exists())
+
+    def test_filename_only_record_cannot_stand_in_for_a_plan(self):
+        report = self.validate({"status": "planned", "filename": "2031-Vale-Model measurements.md"})
+        self.assertFalse(report["structurally_consistent"])
+        missing = {row["field"] for row in report["findings"] if row["code"] == "NAMING_PLAN_FIELD_MISSING"}
+        self.assertTrue({"/original_title", "/title_mapping", "/transformations", "/source_evidence", "/length", "/character_checks"} <= missing)
+        self.assertFalse(report["recomputed"])
+
+    def test_missing_mapping_member_is_reported_at_that_field(self):
+        plan = self.plan()
+        del plan["title_mapping"]["cleaned"]
+        report = self.validate(plan)
+        self.assertEqual([(row["code"], row["field"]) for row in report["findings"]],
+                         [("NAMING_PLAN_FIELD_MISSING", "/title_mapping/cleaned")])
+
+    def test_consistently_forged_used_title_and_filename_are_rejected(self):
+        plan = self.plan(original_title="Synthetic extended title")
+        plan["title_mapping"]["used"] = "Synthetic"
+        plan["title_mapping"]["truncated"] = True
+        plan["filename"] = "2031-Vale-Synthetic.md"
+        fields = {row["field"] for row in self.validate(plan)["findings"]}
+        self.assertTrue({"/title_mapping/used", "/title_mapping/truncated", "/filename"} <= fields)
+
+    def test_illegal_character_change_must_be_recorded_with_exact_transformation(self):
+        plan = self.plan(original_title="A:B", author_token="de/Vale")
+        self.assert_valid(plan)
+        plan["transformations"][0]["start"] = 99
+        report = self.validate(plan)
+        self.assertEqual([(row["code"], row["field"]) for row in report["findings"]],
+                         [("NAMING_PLAN_TRANSFORMATION_MISMATCH", "/transformations")])
+
+    def test_forged_length_and_character_results_are_not_trusted(self):
+        plan = self.plan(original_title="Model [variant]")
+        plan["length"]["filename_utf16_units"] = 1
+        plan["character_checks"]["link_ambiguity_characters"] = []
+        report = self.validate(plan)
+        fields = {row["field"] for row in report["findings"]}
+        self.assertEqual(fields, {"/length/filename_utf16_units", "/character_checks/link_ambiguity_characters"})
+
+    def test_boolean_and_integer_records_are_not_interchangeable(self):
+        plan = self.plan()
+        plan["title_mapping"]["truncated"] = 0
+        report = self.validate(plan)
+        self.assertEqual(report["findings"][0]["field"], "/title_mapping/truncated")
+
+    def test_each_field_binding_is_checked_even_when_another_is_invalid(self):
+        plan = self.plan()
+        plan["source_evidence"]["year"]["file"]["sha256"] = "0" * 64
+        del plan["source_evidence"]["author_token"]["locator"]
+        report = self.validate(plan)
+        self.assertEqual({row["field"] for row in report["findings"]},
+                         {"/source_evidence/year", "/source_evidence/author_token"})
+        self.assertEqual(report["validated_source_fields"], ["original_title"])
+        self.assertFalse(report["recomputed"])
+
+    def test_changed_source_file_invalidates_all_bound_fields(self):
+        plan = self.plan()
+        self.source.write_text("Changed invented metadata.", encoding="utf-8")
+        report = self.validate(plan)
+        self.assertEqual({row["field"] for row in report["findings"]},
+                         {"/source_evidence/year", "/source_evidence/author_token", "/source_evidence/original_title"})
+        self.assertTrue(all("SHA-256 mismatch" in row["message"] for row in report["findings"]))
+
+    def test_unknown_fields_retain_explicit_reasons(self):
+        plan = self.plan(year=None, no_year_reason="Invented source has no year.",
+                         author_token="未知作者", unknown_author_reason="Invented source has no author.")
+        self.assert_valid(plan)
+        plan["no_year_reason"] = ""
+        report = self.validate(plan)
+        self.assertEqual(report["findings"][0]["field"], "/no_year_reason")
+
+    def test_unicode_truncation_byte_budget_and_evidenced_suffix_remain_valid(self):
+        evidence = {"file": file_record(self.source), "locator": {"json_pointer": "/item_key"}}
+        plan = self.plan(original_title="🧭样" * 100, disambiguation_suffix="group9-KEY123",
+                         suffix_evidence=evidence, filename_max_utf8_bytes=160)
+        self.assertTrue(plan["title_mapping"]["truncated"])
+        self.assert_valid(plan)
+        plan["suffix_evidence"]["file"]["sha256"] = "0" * 64
+        report = self.validate(plan)
+        self.assertEqual(report["findings"][0]["field"], "/suffix_evidence")
+
+    def test_blocked_record_is_consistent_but_never_ready_by_implication(self):
+        plans = [self.plan(author_token="Q" * 260),
+                 self.plan(target_directory=self.base.joinpath("target"), full_path_max_utf16_units=10)]
+        for plan in plans:
+            with self.subTest(filename=plan["filename"]):
+                report = self.assert_valid(plan)
+                self.assertEqual(report["plan_status"], "blocked")
+                plan["status"] = "planned"
+                self.assertIn("NAMING_PLAN_STATUS_MISMATCH", {row["code"] for row in self.validate(plan)["findings"]})
+
+    def test_legacy_version_one_plans_without_target_directory_remain_valid(self):
+        for arguments in ({}, {"target_directory": self.base.joinpath("target")},
+                          {"target_directory": self.base.joinpath("target"), "author_token": "Q" * 260,
+                           "full_path_max_utf16_units": 1000}):
+            with self.subTest(arguments=arguments):
+                plan = self.plan(**arguments)
+                del plan["target_directory"]
+                self.assert_valid(plan)
+
+    def test_unknown_path_limits_stay_unknown_even_without_a_vault(self):
+        for target in (None, self.base.joinpath("not-created")):
+            with self.subTest(target=target):
+                plan = self.plan(target_directory=target)
+                self.assert_valid(plan)
+                self.assertEqual(plan["path_check"]["status"], "not_assessed")
+                plan["path_check"]["within_declared_limit"] = True
+                report = self.validate(plan)
+                self.assertEqual(report["findings"][0]["field"], "/path_check/within_declared_limit")
+
+    def test_workflow_delivery_binding_is_independent_of_proposed_name(self):
+        delivery = self.base.joinpath("fixed.md")
+        plan = self.plan(delivery_path=delivery)
+        self.assert_valid(plan, delivery_path=delivery)
+        report = self.validate(plan, delivery_path=self.base.joinpath("another.md"))
+        self.assertEqual(report["findings"][0]["code"], "NAMING_PLAN_DELIVERY_MISMATCH")
+        self.assertFalse(delivery.exists())
+
+    def test_target_filename_cannot_be_silently_replaced(self):
+        plan = self.plan(target_directory=self.base.joinpath("target"))
+        plan["target_path"] = str(self.base.joinpath("target", "other.md"))
+        report = self.validate(plan)
+        self.assertEqual(report["findings"][0]["field"], "/target_path")
+
+    def test_malformed_inputs_return_diagnostics_instead_of_crashing(self):
+        for value in (None, "filename.md", [], 7):
+            with self.subTest(value=value):
+                report = helpers.validate_naming_plan(value)
+                self.assertEqual(report["findings"][0]["code"], "NAMING_PLAN_SHAPE")
+        for field, value in (("length", []), ("path_check", None), ("original_title", 7),
+                             ("delivery_path", []), ("author_mapping", []), ("schema_version", True)):
+            with self.subTest(field=field):
+                plan = self.plan()
+                plan[field] = value
+                self.assertFalse(self.validate(plan)["structurally_consistent"])
+
+    def test_consistency_does_not_authenticate_metadata_semantics_or_library_claims(self):
+        plan = self.plan(year=2044, original_title="A different invented title")
+        plan["library_conflicts"] = {"status": "caller_claims_clear"}
+        plan["semantic_review"] = {"status": "caller_claims_passed"}
+        report = self.assert_valid(plan)
+        self.assertEqual(report["semantic_review"]["status"], "not_assessed")
+        self.assertEqual(report["library_conflicts"]["status"], "not_assessed")
 
 
 class LocalConflictTests(unittest.TestCase):

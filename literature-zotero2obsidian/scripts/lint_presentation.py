@@ -24,6 +24,11 @@ INLINE_MATH = re.compile(r"(?<!\\)\$(?!\$)(?:\\.|[^$\n])*(?<!\\)\$")
 EMAIL = re.compile(r"(?<![\w@])[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 DOI = re.compile(r"\b10\.\d{4,9}/[^\s<>]+", re.IGNORECASE)
 URL = re.compile(r"(?:https?://|www\.)[^\s<>]+", re.IGNORECASE)
+STANDALONE_IMAGE = re.compile(
+    r" {0,3}(?:!\[\[(?P<wiki>[^\]\r\n]+)\]\]|!\[(?:\\.|[^\]\\\r\n])*\]"
+    r"\((?P<markdown><[^>\r\n]*>|[^()\r\n]*)\))(?:\\)?[ \t]*"
+)
+IMAGE_SUFFIXES = frozenset({".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"})
 PERCENT = re.compile(r"\d+(?:\.\d+)?\s*[%％]")
 NON_ASCII_DASH = re.compile(r"[\u2010-\u2015]")
 SPACE = re.compile(r"[\u3400-\u9fff] +(?=[0-9A-Za-zⓜ])|[0-9A-Za-zⓜ] +(?=[\u3400-\u9fff])")
@@ -293,7 +298,9 @@ def _scan_table_titles(value: object, line: int) -> list[Prompt]:
         if not isinstance(sheet, dict) or not isinstance(sheet.get("title"), str):
             continue
         title = _visible(sheet["title"])
-        if re.search(r"图\s*[A-Za-z]*\d+[A-Za-z]*\s*内表(?!格)", title):
+        figure_label = re.match(r"图\s*[A-Za-z]*\d+(?:\.\d+)*[A-Za-z]*\s*(.*)",
+                                title.lstrip("*_ \t"))
+        if figure_label is not None and not figure_label[1].startswith("内表格"):
             findings.append(Prompt("BODY-C263", line, "EMBEDDED_TABLE_TITLE", title,
                                    "图内数据表的可编辑副本用“图N内表格”标明来源；N 取原图编号。"))
     return findings
@@ -452,6 +459,15 @@ def lint_presentation(text: str) -> list[Prompt]:
             continue
         kind = "heading" if HEADING.match(line) else "text"
         events.append((kind, position + 1, line))
+        image_match = STANDALONE_IMAGE.fullmatch(line)
+        # Wiki embeds can target PDFs, videos or Markdown blocks. Only an
+        # actual image resource belongs to the standalone-figure rule.
+        image_target = image_match["wiki"].split("|", 1)[0].split("#", 1)[0] if image_match and image_match["wiki"] else ""
+        is_image = image_match and (image_match["markdown"] is not None
+                                   or Path(image_target).suffix.lower() in IMAGE_SUFFIXES)
+        if is_image and not raw.endswith("  "):
+            findings.append(Prompt("BODY-C92", position + 1, "IMAGE_HARD_BREAK", line.strip(),
+                                   "图片独占行的末尾使用两个空格硬换行；所属题注紧接下一行。"))
         if re.fullmatch(r" {0,3}##\s+Zotero原条目(?:\s+#+)?\s*", _visible(line)) and last_visible != ("text", "---"):
             findings.append(Prompt("LINK-C120", position + 1, "ZOTERO_SEPARATOR_MISSING", line,
                                    "文献内容与末尾 Zotero 原条目标题之间应有独立的 --- 分隔线。"))

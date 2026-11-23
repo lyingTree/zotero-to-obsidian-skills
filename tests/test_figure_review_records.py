@@ -94,6 +94,7 @@ class FigureReviewTests(unittest.TestCase):
         ]
         self.manifest = self.base.joinpath("delivery-manifest.json")
         self.review_path = self.base.joinpath("review", "figure-reviews.json")
+        self.require_edges = False
         self.save_inventory()
 
     def save_inventory(self):
@@ -110,7 +111,7 @@ class FigureReviewTests(unittest.TestCase):
 
     def bind(self):
         checker.write_delivery_manifest(self.inventory_path, self.note, self.deliveries, self.manifest,
-                                         resource_root=self.base)
+                                         resource_root=self.base, figure_edge_reviews_required=self.require_edges)
 
     def report(self):
         self.save_ledger()
@@ -131,6 +132,14 @@ class FigureReviewTests(unittest.TestCase):
                         {"kind": "final_asset", "index": 0, "observation": "Synthetic final-image record."},
                     ],
                 })
+        self.save_ledger()
+        for row in self.ledger["figures"]:
+            for asset_index in range(len(row["final_assets"])):
+                prepare.record_figure_edges(
+                    self.review_path, row["unit"], asset_index, source_location_indices=[asset_index],
+                    observations={side: {"status": "pass", "observation": f"Synthetic {side} comparison for asset {asset_index}."}
+                                  for side in prepare.FIGURE_EDGES})
+        self.ledger = json.loads(self.review_path.read_text(encoding="utf-8"))
 
     def ready(self):
         self.generate()
@@ -144,12 +153,100 @@ class FigureReviewTests(unittest.TestCase):
 
     def test_generated_rows_cover_only_actual_figures_and_all_atomic_ids(self):
         self.generate()
+        self.assertEqual(self.ledger["schema_version"], 2)
         self.assertEqual([row["unit"] for row in self.ledger["figures"]], ["figure-1", "figure-2"])
         expected = [f"FIG-A{number:02d}" for number in range(1, 29)]
         for row in self.ledger["figures"]:
             self.assertEqual([check["id"] for check in row["checks"]], expected)
             self.assertTrue(all(check["status"] == "pending" for check in row["checks"]))
             self.assertTrue(all(check["reason"] == "" and check["evidence"] == [] for check in row["checks"]))
+            self.assertEqual({(item["asset_index"], item["edge"]) for item in row["edge_reviews"]},
+                             {(index, side) for index in range(len(row["final_assets"])) for side in prepare.FIGURE_EDGES})
+            self.assertTrue(all(item["status"] == "pending" and not item["source_locations"] for item in row["edge_reviews"]))
+
+    def test_strict_manifest_requires_a_ledger_for_actual_figures(self):
+        self.require_edges = True
+        self.bind()
+        self.assertIn("FIG_REVIEW_REQUIRED", {item.code for item in checker.validate_delivery(self.manifest).findings})
+
+    def test_legacy_schema_one_without_edges_is_only_locally_compatible(self):
+        self.ready()
+        self.ledger["schema_version"] = 1
+        for row in self.ledger["figures"]:
+            row.pop("edge_reviews")
+        self.assertEqual(self.codes(), set())
+        self.require_edges = True
+        self.assertIn("FIG_REVIEW_EDGE_MISSING", self.codes())
+
+    def test_each_cross_page_asset_has_its_own_source_evidence(self):
+        self.ready()
+        self.require_edges = True
+        first = self.ledger["figures"][0]
+        for entry in first["edge_reviews"]:
+            self.assertEqual([location["page"] for location in entry["source_locations"]], [entry["asset_index"] + 1])
+        self.assertEqual(self.codes(), set())
+
+    def test_pixel_identical_assets_do_not_resolve_pending_edges(self):
+        self.generate()
+        for row in self.ledger["figures"]:
+            for check in row["checks"]:
+                check.update(status="pass", reason="Synthetic explicit result.", evidence=[
+                    {"kind": "source_page", "index": 0, "observation": "Synthetic source."},
+                    {"kind": "final_asset", "index": 0, "observation": "Synthetic final."}])
+        self.assertIn("FIG_REVIEW_EDGE_PENDING", self.codes())
+
+    def test_edge_mutations_block_completion_with_specific_findings(self):
+        self.ready()
+        valid = deepcopy(self.ledger)
+        cases = [
+            (lambda row: row["edge_reviews"].pop(), "FIG_REVIEW_EDGE_MISSING"),
+            (lambda row: row["edge_reviews"].append(deepcopy(row["edge_reviews"][0])), "FIG_REVIEW_EDGE_DUPLICATE"),
+            (lambda row: row["edge_reviews"][0].update(status="fail"), "FIG_REVIEW_EDGE_FAILED"),
+            (lambda row: row["edge_reviews"][0].update(status="pending"), "FIG_REVIEW_EDGE_PENDING"),
+            (lambda row: row["edge_reviews"][0].update(status="not_applicable"), "FIG_REVIEW_EDGE_STATUS"),
+            (lambda row: row["edge_reviews"][0].update(observation=" "), "FIG_REVIEW_EDGE_OBSERVATION"),
+            (lambda row: row["edge_reviews"][0].update(asset_index=True), "FIG_REVIEW_EDGE_IDENTITY"),
+            (lambda row: row["edge_reviews"][0].update(edge=[]), "FIG_REVIEW_EDGE_IDENTITY"),
+            (lambda row: row["edge_reviews"][0].update(source_locations=[]), "FIG_REVIEW_EDGE_SOURCE"),
+            (lambda row: row["edge_reviews"][0]["source_locations"][0].update(page=2), "FIG_REVIEW_EDGE_SOURCE"),
+            (lambda row: row["edge_reviews"][0].update(final_asset=deepcopy(row["final_assets"][1])), "FIG_REVIEW_EDGE_BINDING"),
+            (lambda row: row["edge_reviews"][0]["source_locations"][0].update(page_render=deepcopy(row["source_locations"][1]["page_render"])), "FIG_REVIEW_EDGE_BINDING"),
+        ]
+        for mutate, code in cases:
+            with self.subTest(code=code):
+                self.ledger = deepcopy(valid)
+                mutate(self.ledger["figures"][0])
+                self.assertIn(code, self.codes())
+
+    def test_changed_final_asset_cannot_launder_an_old_edge_observation(self):
+        self.ready()
+        path = self.assets["figure-1"][0]
+        path.write_bytes(path.read_bytes() + b"new synthetic file bytes")
+        self.ledger["figures"][0]["final_assets"][0] = prepare.file_record(path)
+        self.assertIn("FIG_REVIEW_EDGE_BINDING", self.codes())
+
+    def test_edge_recorder_preserves_unsupplied_pending_sides(self):
+        self.generate()
+        prepare.record_figure_edges(self.review_path, "figure-1", 0, source_location_indices=[0],
+                                    observations={"left": {"status": "pass", "observation": "Synthetic left-edge observation."}})
+        row = json.loads(self.review_path.read_text(encoding="utf-8"))["figures"][0]
+        self.assertEqual(sum(item["status"] == "pass" for item in row["edge_reviews"]), 1)
+        self.assertEqual(sum(item["status"] == "pending" for item in row["edge_reviews"]), 7)
+
+    def test_edge_recorder_rejects_missing_observations_and_stale_assets_before_write(self):
+        self.generate()
+        before = self.review_path.read_bytes()
+        for observations in ({"left": {"status": "pass"}}, {"left": {"status": "pass", "observation": ""}}):
+            with self.subTest(observations=observations), self.assertRaises(ValueError):
+                prepare.record_figure_edges(self.review_path, "figure-1", 0,
+                                            source_location_indices=[0], observations=observations)
+            self.assertEqual(self.review_path.read_bytes(), before)
+        path = self.assets["figure-1"][0]
+        path.write_bytes(path.read_bytes() + b"changed")
+        with self.assertRaises(ValueError):
+            prepare.record_figure_edges(self.review_path, "figure-1", 0, source_location_indices=[0],
+                                        observations={"left": {"status": "pass", "observation": "Synthetic new observation."}})
+        self.assertEqual(self.review_path.read_bytes(), before)
 
     def test_generated_pending_rows_block_completion(self):
         self.generate()
@@ -483,7 +580,7 @@ class FigureReviewTests(unittest.TestCase):
     def test_duplicate_json_keys_are_rejected(self):
         self.ready()
         self.save_ledger()
-        text = self.review_path.read_text(encoding="utf-8").replace('"schema_version": 1', '"schema_version": 1, "schema_version": 1', 1)
+        text = self.review_path.read_text(encoding="utf-8").replace('"schema_version": 2', '"schema_version": 2, "schema_version": 2', 1)
         self.review_path.write_text(text, encoding="utf-8")
         self.bind()
         report = checker.validate_delivery(self.manifest)

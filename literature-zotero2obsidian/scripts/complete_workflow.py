@@ -201,6 +201,29 @@ class CompletionReport:
         }
 
 
+class IncompleteRecordsError(RuntimeError):
+    """The current local work still has unresolved file requirements."""
+
+    def __init__(self, report: CompletionReport):
+        self.report = report
+        super().__init__(
+            "Local records are unfinished; continue the listed work before reporting completion. "
+            + json.dumps(report.summary(examples_per_code=1), ensure_ascii=False)
+        )
+
+
+def require_completed_records(run_path: Path, *, progress: PROGRESS | None = None) -> CompletionReport:
+    """Stop a final-report script when the existing workflow gate is not ready.
+
+    This function changes neither records nor acceptance criteria. A successful
+    return still does not certify the truth of source comparisons.
+    """
+    report = inspect_workflow(run_path, progress=progress)
+    if not report.records_ready:
+        raise IncompleteRecordsError(report)
+    return report
+
+
 def pending_check_batch(checks_path: Path, *, limit: int = 20, prefix: str | None = None) -> list[dict]:
     """Return exact remaining file goals, never a blanket pass operation."""
     if type(limit) is not int or limit < 1:
@@ -227,6 +250,62 @@ def pending_check_batch(checks_path: Path, *, limit: int = 20, prefix: str | Non
         if len(pending) == limit:
             break
     return pending
+
+
+def pending_check_rows(checks_path: Path, *, limit: int = 40,
+                       prefix: str | None = None) -> list[list[str]]:
+    """Display one ID and one unchanged objective per row, without losing goals.
+
+    The full rule location, current state and scope remain in checks.json and
+    pending_check_batch(). This compact view is only an authoring convenience.
+    """
+    return [[row["id"], row["objective"]] for row in
+            pending_check_batch(checks_path, limit=limit, prefix=prefix)]
+
+
+def record_decision_rows(checks_path: Path, rows: Sequence[Sequence[str]], *,
+                         contexts: Mapping[str, dict], evidence: Mapping[str, dict]) -> None:
+    """Expand explicit short decisions into the unchanged atomic-check ledger.
+
+    A row is (ID, status, context_name, reason). A not_applicable row additionally
+    supplies its actual condition as a fifth value. A context contains only
+    explicit scope objects and evidence IDs; it supplies no default conclusion.
+    Every ID still has its own status and reason. No goals are selected by
+    keywords, and the ordinary ledger validator remains authoritative.
+    """
+    if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence) or not rows:
+        raise ValueError("Provide a nonempty sequence of explicit decision rows.")
+    if not isinstance(contexts, Mapping) or not contexts:
+        raise ValueError("Provide explicitly named review contexts.")
+    check_tools = _module("check_records")
+    for name, context in contexts.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(context, dict):
+            raise ValueError("Each context needs a nonempty name and an object.")
+        if set(context) != {"scope", "evidence"}:
+            raise ValueError(f"{name}: a context contains scope and evidence only, never a status.")
+        if not check_tools._scope_valid(context["scope"]):
+            raise ValueError(f"{name}: record the actual objects and their locations.")
+        links = context["evidence"]
+        if not isinstance(links, list) or not links or any(not isinstance(link, str) or not link.strip() for link in links):
+            raise ValueError(f"{name}: provide actual evidence IDs.")
+    results = []
+    for row in rows:
+        if isinstance(row, (str, bytes)) or not isinstance(row, Sequence) or len(row) not in {4, 5}:
+            raise ValueError("Each decision row needs ID, status, context and reason; only NA adds a condition.")
+        if any(not isinstance(value, str) or not value.strip() for value in row):
+            raise ValueError("Every decision-row value must be a nonempty string.")
+        identity, status, context_name, reason = row[:4]
+        if context_name not in contexts:
+            raise ValueError(f"{identity}: unknown context {context_name!r}.")
+        if (status == "not_applicable") != (len(row) == 5):
+            raise ValueError(f"{identity}: supply a condition exactly when the status is not_applicable.")
+        context = contexts[context_name]
+        result = {"id": identity, "status": status, "reason": reason,
+                  "scope": context["scope"], "evidence": context["evidence"]}
+        if status == "not_applicable":
+            result["applicability_condition"] = row[4]
+        results.append(result)
+    record_check_batch(checks_path, results, evidence=evidence)
 
 
 def record_check_batch(checks_path: Path, results: Sequence[dict], *, evidence: Mapping[str, dict]) -> None:
@@ -332,6 +411,7 @@ def write_manifest(run_path: Path, deliveries: list[dict]) -> Path:
         deliveries, Path(records["delivery_manifest"]),
         resource_root=Path(config["resource_root"]),
         translation_review_path=Path(translation_path) if translation_path else None,
+        figure_edge_reviews_required=True,
     )
 
 
@@ -495,6 +575,11 @@ def inspect_workflow(run_path: Path, *, progress: PROGRESS | None = None) -> Com
     except (KeyError, TypeError, ValueError, OSError) as error:
         fail("WORKFLOW_CANDIDATE_MISSING", "candidate", str(error))
         candidate = None
+    naming_report = _module("format_helpers").validate_naming_plan(naming, delivery_path=candidate)
+    for finding in naming_report["findings"]:
+        fail(finding["code"], "run.naming" + finding["field"], finding["message"])
+    if naming_report["plan_status"] == "blocked":
+        fail("WORKFLOW_NAMING_BLOCKED", "run.naming/status", "Resolve the actual naming-plan obstruction before reporting local completion.")
     if "checks" in loaded_records:
         ledger, path = loaded_records["checks"]
         try:
@@ -529,6 +614,9 @@ def inspect_workflow(run_path: Path, *, progress: PROGRESS | None = None) -> Com
                 fail("WORKFLOW_CHECK_BINDING", "source_inventory.checks_path", "Bind the workflow's actual per-ID ledger in the source inventory.")
     if "delivery_manifest" in loaded_records:
         manifest, manifest_path = loaded_records["delivery_manifest"]
+        if manifest.get("figure_edge_reviews_required") is not True:
+            fail("WORKFLOW_FIGURE_EDGES_REQUIRED", "delivery_manifest.figure_edge_reviews_required",
+                 "The complete workflow requires the final per-asset edge observations; preserve the explicit manifest requirement.")
         expected_bindings = {"inventory": "source_inventory", "checks": "checks"}
         if "translation_review" in required:
             expected_bindings["translation_review"] = "translation_review"

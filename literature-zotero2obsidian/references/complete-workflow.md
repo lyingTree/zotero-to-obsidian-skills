@@ -64,7 +64,7 @@ RUN_PATH = initialize_workflow(
 | `translation-review.json` | 逐段自核后 | 每个译文源块有独立核对记录 |
 | `checks.json` | 各阶段持续填写 | 每个验收 ID 有自己的判断 |
 
-记录的字段沿用[交接约定](pipeline-contract.md)。同一个事实可以存一次，再由多个明确 ID 引用其精确位置；不能把整个技能视作一个已通过目标。译文复核使用[翻译核对说明](../../literature-translate-zh/references/translation-review.md)。首次填写前阅读[完整单段示例](../../literature-translate-zh/references/complete_review_example.py)，理解各目标如何分别闭合；该示例的内容判断只适用于它自带的虚构材料。
+记录的字段沿用[交接约定](pipeline-contract.md)。同一个事实可以存一次，再由多个明确 ID 引用其精确位置；不能把整个技能视作一个已通过目标。译文复核使用[翻译短入口](../../literature-translate-zh/references/translation-review.md#逐段短入口与增量保存)。首次填写前阅读[短调用的完整单段示例](../../literature-translate-zh/references/compact_review_example.py)，理解各目标如何分别闭合；该示例的内容判断只适用于它自带的虚构材料。需要查看展开后全部字段时再读[原始完整示例](../../literature-translate-zh/references/complete_review_example.py)。
 
 完整入口读取以下集合字段；集合可以用列表保存记录，也可以用对象 ID 到记录的映射保存。没有对应对象时保留空集合，并在该验收 ID 记录实际不适用依据：`source-map.json` 的 `blocks`、`objects`、`references`、`citations`；`si-map.json` 的 `sources`、`blocks`、`objects`；`link-map.json` 的 `anchors`、`internal_links`、`library_matches`、`unresolved`。集合存在只说明结构齐全，不证明内容已经核对。
 
@@ -72,9 +72,43 @@ RUN_PATH = initialize_workflow(
 
 在翻译前按[来源单元字段](delivery-checks.md)使用 `make_source_unit()` 登记对象和调用，能提前发现漏填的来源编号或调用文字。所有候选链接都要有来源显示文字；正文调用可复用对应单元的 `display_text`，邮箱、DOI 和图片嵌入等仍按各自实际来源登记。源页没有文字显示标签时，明确记录空字符串及原因，不从候选生成标签冒充源显示文字。
 
+登记正文中的裸网址时，先查看 `source_url_inventory.scan_source_url_occurrences(inventory)` 的逐次线索，再对源页补齐实际单元。同一个网址重复出现时分别登记。该入口只找提取文字中的位置，不决定网址在可见源页中的实际写法。
+
 某条链接的所属单元或源块仍不唯一时，在该单元的 `delivery.link_bindings` 为这一次链接补充 `candidate_locator`、`source_display_text` 和 `origin_block`。`candidate_locator` 取诊断中给出的实际位置；源字段取该来源页面。逐条补完报告中的缺项后再生成三份映射，不能把生成失败仅写进最终报告后结束。
 
 三份映射的 `bindings` 分别绑定当前 `source_inventory`、`candidate` 及按来源 ID 登记的 `sources`。生成以后检查每个对象的源位置、目标位置和对应关系，再把实际比较结果写入相应对象记录及 `checks.json`。当前稿与旧稿的行号相同不代表证据仍然有效。
+
+### 内容观察与文件映射分别记录
+
+映射生成器保留的 `review_status: pending` 没有表达内容已经核对。来源和候选定位可以直接复用；实际比较结果由执行者按下列单一对象保存，随后供有关验收 ID 引用：
+
+| 记录对象 | 本条记录的目标 | 最小实际定位 |
+|---|---|---|
+| 一个来源页 | 说明实际查看的页内容 | 来源 ID、物理页码、该页 PNG 文件绑定、实际观察文字 |
+| 一个表格 | 说明该表源码核对结果 | 表单元 ID、候选表块行段、工作表 ID（若有） |
+| 一个表格单元格 | 说明本格与来源的比较 | 表单元 ID、源网格坐标、候选行列 ID |
+| 一条书目 | 说明该条身份字段比较结果 | 该来源的书目条目 ID、源页位置、候选锚 |
+| 一次引文调用 | 说明本次调用的对应关系 | 调用 ID、来源句位置、候选调用位置、实际书目目标 |
+| 一个未决问题 | 定位仍未核实的对象 | 实际单元 ID、源位置或候选位置、具体未核原因 |
+
+这些记录可以存放在同一个工作 JSON 的独立对象中；每个对象各写自己的结果和理由。一次引文的判断不能自动覆盖同一书目的其他调用。没有文献库访问时，库匹配问题仍能定位到本篇具体书目和候选范围。图像查看记录直接引用实际页图，不能把读取文字层写成已经查看页面。
+
+先完成所需的实际观察，再用 `check_records.bind_evidence()` 绑定已保存记录的精确 JSON pointer；同一事实可以供多个明确验收 ID 引用。不要引用一份仍在改写的 JSON 的旧哈希。没有对应对象的目标各自填写 `not_applicable` 与条件依据；没有真实提交任务时，提交和落库回读目标也逐 ID 记录该条件。
+
+### 同一输入的映射复跑
+
+三份映射稳定后，用相同 inventory、候选和 `deliveries` 实际再生成一次，保留原映射。以下入口把第二次生成写到新目录，并比较来源单元目标、锚和逐次链接的身份字段：
+
+```python
+from mapping_rerun import record_mapping_rerun
+
+RERUN_REPORT = record_mapping_rerun(
+    RUN_PATH, deliveries, WORK_ROOT.joinpath("mapping-rerun-01"),
+    progress=progress_bar,
+)
+```
+
+查看报告的 `mapping_equal` 和每个 `differences` 位置，再为 `AC-A75` 写实际结果。报告绑定前后映射和本次输入，复跑前后的原候选与源文件必须相同。它只比较稳定映射字段，不复制原映射里的人工核对结果，也不替执行者填写验收状态。修订候选后产生的新映射不是同输入复跑。
 
 `write_maps()` 与 `write_manifest()` 共用同一份 `deliveries`。其中 `target` 沿用[交付定位约定](delivery-checks.md)：行段片段按 UTF-8、LF 和原有行尾换行计算哈希，跨行 `quote` 同样用 LF 表示。映射中的 `candidate_locator` 则记录原始候选的 Unicode 字符位置与对应原始片段哈希；工具负责转换位置，不将这两种定位混用。整个候选仍绑定实际文件字节的哈希，解析换行不改写文件。
 
@@ -127,6 +161,33 @@ else:
 
 `record_check_batch(CHECKS_PATH, results, evidence=EVIDENCE)` 接收明确的逐 ID 结果。`results` 中每条独立给出 `id`、`status`、`scope`、`evidence`、`reason`；不适用项另给实际 `applicability_condition`。共享证据通过 `check_records.bind_evidence()` 绑定已存在文件。函数不接受整技能通过、默认通过、按关键词推断不适用或改变目标类型。填写格式见[单项记录](acceptance.md#单项记录)。
 
+### 用短行填写每个判断
+
+日常填写可用同一模块的两个短入口：
+
+```python
+from complete_workflow import pending_check_rows, record_decision_rows
+
+# 输出只有 ID 和该 ID 的原规则文字；完整位置仍保留在 checks.json。
+print(pending_check_rows(CHECKS_PATH, prefix="HDR"))
+
+contexts = {
+    "titles": {"scope": ACTUAL_TITLE_OBJECTS, "evidence": TITLE_EVIDENCE_IDS},
+    "authors": {"scope": ACTUAL_AUTHOR_OBJECTS, "evidence": AUTHOR_EVIDENCE_IDS},
+}
+decisions = [
+    ("HDR-A01", TITLE_STATUS, "titles", TITLE_COMPARISON_REASON),
+    ("HDR-A04", AUTHOR_STATUS, "authors", AUTHOR_COMPARISON_REASON),
+]
+record_decision_rows(CHECKS_PATH, decisions, contexts=contexts, evidence=EVIDENCE)
+```
+
+每行四列依次为 ID、状态、上下文名、该项目标的实际比较理由。`not_applicable` 行加第五列，单独写实际适用条件。示例变量须来自本次实际核对；不能把规则原句改成“已通过”作为比较理由。
+
+上下文只复用对象范围和证据 ID，不带状态。比如两项都涉及同一组作者时，可以引用同一上下文，但仍各写一行判断。函数仅展开记录字段，调用原有 `record_check_batch()`；未列出的 ID 保持原状态。不能在上下文内放一个默认 `passed`，也不能把多个 ID 写成一行。
+
+对一个来源块的核对内容可以先写在工作目录中的调用脚本，再在最终候选稳定后绑定实际位置；不要先把全部译文写完再开始回忆各段的核对结果。候选发生变化时，重新检查受影响内容。没有改变的源事实可复用其实际证据。
+
 首次最终绑定前先完成会改动 inventory 的指针登记。翻译复核与图件复核按各自说明绑定稳定版本，避免相互引用仍在变化的文件造成哈希循环。使用 `write_manifest(RUN_PATH, deliveries)` 生成交付索引；它复用同一运行的实际路径，并绑定已完成的翻译复核文件。
 
 ## 收尾：按缺项继续，不在零语法错误处结束
@@ -147,10 +208,22 @@ print(json.dumps(pending_check_batch(WORK_ROOT.joinpath("checks.json")),
                  ensure_ascii=False, indent=2))
 ```
 
+写最终完成报告的脚本先调用下面这一行。若本地记录尚未完成，函数抛出 `IncompleteRecordsError`，并附 `report` 与有限长度的缺项摘要；回到这些实际目标继续工作，不吞掉异常后填写完成结论。
+
+```python
+from complete_workflow import require_completed_records
+
+completed_records = require_completed_records(RUN_PATH, progress=progress_bar)
+```
+
+这一入口使用与 `inspect_workflow()` 相同的验收范围。它不会补写任何状态，也不替代实际对源比较。
+
 `WORKFLOW_RECORD_MISSING` 表示需要补对应记录。`WORKFLOW_CHECK_PENDING` 表示需要完成该单项目标。`WORKFLOW_MANIFEST_BINDING` 表示报告引用了另一份文件或旧版本。翻译记录中的 `TRN_PENDING`、`TRN_UNRESOLVED` 等逐项提示同样保留其具体目标位置，可据此回到对应段落或术语记录。先处理实际缺项，再运行收尾检查。
 
 完整报告可能很长；保存在文件中，控制台只看 `summary()` 与当前批次。摘要仅合并显示重复诊断，不删除待验目标，也不会把任何目标转为通过。处理顺序为：来源单元字段 → 对应交接映射 → 逐段译文记录 → 逐 ID 结果 → 最终索引绑定 → 完成检查。对一个阶段的每个剩余对象完成记录后再进入下一阶段。
 
 排版提示仍出现时，回到原规则判定。带单位的近似时长同样适用数学排版，例如“数十年”可写为 `$\text{数十}\,\text{年}$`；非精确不构成忽略提示的理由。真正的非问题项保存为 `presentation_review` 指向的 JSON。该文件的 `bindings.candidate` 用 `bind_file(CANDIDATE_PATH)` 绑定当前实际文件；`items` 每项写当前 `code`、`line`、`status: "not_an_issue"` 和具体 `reason`。候选变化后重新对照提示，不复用旧行号或旧理由。
+
+第一次自动检查就保存该次报告与被检查的候选版本。每次修复后，为旧报告的每个发现保留一条处置：原发现的 code 和位置、原文件绑定、实际处理理由、修改后文件绑定与复核定位。修复项用 `fixed` 描述实际修正；确属非问题项用 `not_an_issue` 解释依据。将这些历史处置与当前候选的非问题项分开保存。最终零提示只能说明当前扫描没有发现，不能替代已出现问题的处置记录。
 
 `records_ready` 只表示当前检查所需记录与源码条件已满足。`source_fidelity` 始终为 `not_assessed`，程序不认证译义、原文身份、图件完整性或记录者声明的真实性。执行者完成自己的实际对源核对后，才据各项证据报告文件结果。独立评审是复核，不承担补做执行者尚能完成的文件目标。

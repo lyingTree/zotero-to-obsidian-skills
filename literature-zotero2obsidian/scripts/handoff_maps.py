@@ -156,6 +156,8 @@ class _Context:
         self.resolver = self.delivery_tools._Audit(self.candidate_path, None)
         self.target_selectors: dict[str, dict] = {}
         self.targets: dict[str, tuple[int, int, str]] = {}
+        self.require_conflict_decisions = False
+        self.conflict_page_rects: dict[tuple[str, int], Any] = {}
 
     def fail(self, code: str, identity: str, message: str, level: str = "error") -> None:
         self.report.findings.append(HandoffFinding(code, str(identity), message, level))
@@ -330,6 +332,7 @@ class _Context:
                         continue
                     self.unit_blocks[identity].add(block_id)
                     self.block_units[block_id].add(identity)
+            _check_text_visual_conflicts(self, identity)
             self.notify(index, len(self.units), "registered source units")
         self.check_unit_references()
         for row in self.rows(inventory.get("excluded_blocks", []), "inventory.excluded_blocks", "block"):
@@ -465,6 +468,169 @@ def _bbox(value: Any) -> bool:
                 value[0] < value[2] and value[1] < value[3])
     except OverflowError:
         return False
+
+
+def _conflict_text_matches(text: str, locator: Any, reading: Any) -> bool:
+    if not isinstance(locator, dict) or not isinstance(reading, str) or not reading:
+        return False
+    start, end = locator.get("start"), locator.get("end")
+    if type(start) is not int or type(end) is not int:
+        return False
+    if locator.get("kind") == "characters":
+        return (locator.get("unit") == "unicode_code_points" and locator.get("end_exclusive") is True and
+                0 <= start < end <= len(text) and text[start:end] == reading)
+    if locator.get("kind") != "lines":
+        return False
+    lines = text.splitlines(keepends=True)
+    return 1 <= start <= end <= len(lines) and reading in "".join(lines[start - 1:end])
+
+
+def _check_text_visual_conflicts(context: _Context, unit_id: str) -> None:
+    """Check recorded decisions and bindings; never derive a visible reading."""
+    unit = context.units[unit_id]
+    if "text_visual_conflicts" not in unit:
+        return
+    if not isinstance(unit["text_visual_conflicts"], list):
+        context.fail("MAP_CONFLICT_RECORD", unit_id, "text_visual_conflicts must retain its explicit array of records.")
+        return
+    records = context.index(context.rows(unit["text_visual_conflicts"], unit_id + ".text_visual_conflicts"),
+                            unit_id + ".text_visual_conflicts")
+    source_id = unit.get("source")
+    source = context.sources.get(source_id, {})
+    source_pages, evidence = source.get("pages"), unit.get("evidence")
+    if not isinstance(source_pages, list) or not isinstance(evidence, list):
+        context.fail("MAP_CONFLICT_PAGE", unit_id, "Conflict records require the unit's explicit source-page inventory and evidence.")
+        return
+    pages = {row.get("page"): row for row in source_pages
+             if isinstance(row, dict) and type(row.get("page")) is int}
+    unit_pages = {row.get("page") for row in evidence
+                  if isinstance(row, dict) and type(row.get("page")) is int}
+    base = context.inventory_path.parent
+    tools = context.delivery_tools.source_tools
+
+    def bound_file(record, expected_record, label):
+        if not isinstance(record, dict) or set(record) != {"path", "sha256"}:
+            context.fail("MAP_CONFLICT_FILE", label, "Conflict evidence needs a minimal actual path/sha256 file reference.")
+            return None
+        expected = context.binding(expected_record, base, label + ":inventory")
+        return context.binding(record, base, label, expected)
+
+    for identity, record in records.items():
+        label = unit_id + ":" + identity
+        if "source_file" in record:
+            bound_file(record["source_file"], source, label + ":source")
+        text_layer, visible, decision = record.get("text_layer"), record.get("visible_page"), record.get("decision")
+        if not isinstance(text_layer, dict) or not isinstance(visible, dict) or not isinstance(decision, dict):
+            context.fail("MAP_CONFLICT_RECORD", label, "Retain text_layer, visible_page and the explicit decision together.")
+            continue
+        page = visible.get("page")
+        if type(page) is not int or page not in pages or page not in unit_pages:
+            context.fail("MAP_CONFLICT_PAGE", label, "Locate the conflict on an actual page belonging to this source unit.")
+            continue
+        page_row = pages[page]
+        text_binding = bound_file(text_layer.get("file"), page_row.get("text"), label + ":text-layer")
+        bound_file(visible.get("file"), page_row.get("render"), label + ":visible-page")
+        if text_binding is not None:
+            try:
+                original = Path(text_binding["path"]).read_bytes().decode("utf-8")
+            except (OSError, UnicodeError) as error:
+                context.fail("MAP_CONFLICT_TEXT", label, str(error))
+            else:
+                if not _conflict_text_matches(original, text_layer.get("locator"), text_layer.get("text")):
+                    context.fail("MAP_CONFLICT_TEXT", label, "The stated text-layer reading must occur at its exact recorded file range.")
+        source_binding = context.source_bindings.get(source_id)
+        if source_binding is not None and (source_id, page) not in context.conflict_page_rects:
+            try:
+                with tools.fitz.open(source_binding["path"]) as document:
+                    context.conflict_page_rects.update({(source_id, number + 1): tools.pdf_page_rect(item)
+                                                       for number, item in enumerate(document)})
+            except (OSError, ValueError, RuntimeError) as error:
+                context.fail("MAP_CONFLICT_SOURCE", label, str(error))
+        rectangle = context.conflict_page_rects.get((source_id, page))
+        if rectangle is None or not tools.valid_pdf_bbox(visible.get("bbox"), rectangle):
+            context.fail("MAP_CONFLICT_LOCATION", label, "Record a finite, nonempty visible-page bbox inside this actual PDF page.")
+        if "coordinate_system" in visible and visible["coordinate_system"] != tools.PDF_BBOX_COORDINATES:
+            context.fail("MAP_CONFLICT_LOCATION", label, "The visible-page bbox uses the explicitly declared unrotated PDF-point coordinate system.")
+        status = decision.get("status")
+        if not isinstance(status, str) or status not in {"pending", "resolved", "ambiguous"}:
+            context.fail("MAP_CONFLICT_DECISION", label, "Use an explicit pending, ambiguous, or resolved conflict decision.")
+        if not _nonempty(decision.get("reason")):
+            context.fail("MAP_CONFLICT_REASON", label, "Record the reason for the selected or still-unresolved reading.")
+        if status != "resolved":
+            if visible.get("text") is not None and not isinstance(visible["text"], str):
+                context.fail("MAP_CONFLICT_READING", label, "A visible reading is an explicit string, or null while unobserved.")
+            if context.require_conflict_decisions:
+                context.fail("MAP_CONFLICT_UNRESOLVED", label, "This recorded text-layer/page-image conflict still needs an explicit human decision.")
+            continue
+        visible_text, selected = visible.get("text"), decision.get("selected_text")
+        if not isinstance(visible_text, str) or not isinstance(selected, str) or selected not in (text_layer.get("text"), visible_text):
+            context.fail("MAP_CONFLICT_READING", label, "A resolved decision must retain both explicit readings and the selected source value.")
+        if "observed" in decision and decision["observed"] is not True:
+            context.fail("MAP_CONFLICT_DECISION", label, "A resolved record cannot also declare that its visible page was not observed.")
+
+
+def record_text_visual_conflict(
+    inventory_path: Path, unit_id: str, *, conflict_id: str, page_number: int,
+    text_locator: Mapping, text_layer_text: str, visible_text: str | None,
+    bbox: Sequence[float], decision: Mapping,
+) -> dict:
+    """Save one caller-supplied conflict once in its inventory source unit.
+
+    The actual source PDF, page text and full page render are bound from that
+    unit's registered source. Both readings and the decision come from the
+    caller, without OCR, date heuristics or automatic resolution. Pending
+    decisions can be saved and projected into maps; final map validation blocks
+    unresolved decisions. Record conflicts before immutable figure/map snapshots.
+    """
+    inventory_path = Path(inventory_path).resolve(strict=True)
+    payload = inventory_path.read_bytes()
+    inventory = json.loads(payload.decode("utf-8-sig"), object_pairs_hook=_pairs)
+    if not isinstance(inventory, dict) or type(inventory.get("schema_version")) is not int or inventory["schema_version"] != 1:
+        raise ValueError("Expected source inventory schema_version 1")
+    if not _nonempty(unit_id) or not _nonempty(conflict_id):
+        raise ValueError("Supply actual nonempty source-unit and conflict IDs")
+    context = _Context(inventory_path, inventory_path, None)
+    context.sources = context.index(context.rows(inventory.get("sources"), "inventory.sources"), "inventory.sources")
+    context.units = context.index(context.rows(inventory.get("units"), "inventory.units"), "inventory.units")
+    unit = context.units.get(unit_id)
+    if unit is None or not _nonempty(unit.get("source")) or unit["source"] not in context.sources:
+        raise ValueError("Choose an actual unit with a registered source")
+    source_id = unit["source"]
+    source = context.sources[source_id]
+    source_file = context.binding(source, inventory_path.parent, unit_id + ":source")
+    if source_file is not None:
+        context.source_bindings[source_id] = source_file
+    pages = context.rows(source.get("pages"), source_id + ".pages", "page")
+    page = next((row for row in pages if type(page_number) is int and row.get("page") == page_number), None)
+    if page is None:
+        raise ValueError("Choose an actual page from this unit's registered source")
+    existing = unit.get("text_visual_conflicts", [])
+    if not isinstance(existing, list) or any(not isinstance(row, dict) for row in existing):
+        raise ValueError("Retain text_visual_conflicts as an array of explicit records")
+    if any(row.get("id") == conflict_id for row in existing):
+        raise ValueError("This conflict ID already exists; retain its single authoritative record")
+    if not isinstance(decision, Mapping) or not isinstance(text_locator, Mapping):
+        raise ValueError("Supply an explicit text locator and human decision record")
+    if isinstance(bbox, (str, bytes)) or not isinstance(bbox, Sequence):
+        raise ValueError("Supply the actual visible-page bbox")
+    record = {
+        "id": conflict_id, "source_file": source_file,
+        "text_layer": {"file": context.binding(page.get("text"), inventory_path.parent, conflict_id + ":text"),
+                       "locator": dict(text_locator), "text": text_layer_text},
+        "visible_page": {"file": context.binding(page.get("render"), inventory_path.parent, conflict_id + ":render"),
+                         "page": page_number, "bbox": list(bbox),
+                         "coordinate_system": dict(context.delivery_tools.source_tools.PDF_BBOX_COORDINATES),
+                         "text": visible_text},
+        "decision": dict(decision),
+    }
+    unit["text_visual_conflicts"] = [*existing, record]
+    _check_text_visual_conflicts(context, unit_id)
+    if not context.report.records_ready:
+        raise ValueError("; ".join(f"{item.code}: {item.message}" for item in context.report.findings))
+    if inventory_path.read_bytes() != payload:
+        raise ValueError("The inventory changed during recording; reload it before adding this decision")
+    inventory_path.write_text(json.dumps(inventory, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    return _copy(record)
 
 
 def _label_key(value: str) -> str:
@@ -820,17 +986,18 @@ def _locations_match(value: Any, expected: list[dict]) -> bool:
 
 def _required_unit_fields(unit: Mapping) -> tuple[str, ...]:
     kind = unit.get("kind")
+    decisions = ("text_visual_conflicts",) if "text_visual_conflicts" in unit else ()
     if kind == "metadata":
-        return ("field",) + (("value",) if "value" in unit else ())
+        return decisions + ("field",) + (("value",) if "value" in unit else ())
     if kind == "reference":
-        return ("bibliography_id", "original_text", "number")
+        return decisions + ("bibliography_id", "original_text", "number")
     if kind == "citation":
-        return ("references", "display_text")
+        return decisions + ("references", "display_text")
     if kind == "cross_reference":
-        return ("target_unit", "display_text")
+        return decisions + ("target_unit", "display_text")
     if kind in _OBJECT_KINDS:
-        return ("original_number",)
-    return ()
+        return decisions + ("original_number",)
+    return decisions
 
 
 def make_source_unit(
@@ -976,7 +1143,7 @@ def _check_source_map(context: _Context, data: dict, name: str, path: Path) -> t
             context.binding(row, path.parent, name + ".sources:" + identity, context.source_bindings.get(identity))
     rows = context.rows(data.get("blocks"), name + ".blocks", "block_id")
     records = context.index(rows, name + ".blocks", "block_id")
-    covered_blocks, covered_units = set(), set()
+    covered_blocks, covered_units, mapped_conflicts = set(), set(), set()
     block_targets = {}
     order_keys = set()
     for index, (block_id, row) in enumerate(records.items(), 1):
@@ -1064,6 +1231,9 @@ def _check_source_map(context: _Context, data: dict, name: str, path: Path) -> t
             if unit_id in found:
                 context.fail("MAP_DUPLICATE_UNIT", unit_id, f"Two {collection} records map the same source unit.")
             found.add(unit_id)
+            conflicts = context.units[unit_id].get("text_visual_conflicts")
+            if conflicts and row.get("text_visual_conflicts") == conflicts:
+                mapped_conflicts.add(unit_id)
         for unit_id in expected - found:
             context.fail("MAP_UNIT_MISSING", unit_id, f"The registered unit is absent from {name}.{collection}.")
         for unit_id in found - expected:
@@ -1072,6 +1242,9 @@ def _check_source_map(context: _Context, data: dict, name: str, path: Path) -> t
     wanted_units = {key for key, unit in context.units.items() if unit.get("source") in expected_sources}
     for unit_id in wanted_units - covered_units:
         context.fail("MAP_UNIT_MISSING", unit_id, f"No actual block or unit record covers this registered item in {name}.")
+    for unit_id in wanted_units - mapped_conflicts:
+        if context.units[unit_id].get("text_visual_conflicts"):
+            context.fail("MAP_CONFLICT_MISSING", unit_id, f"Retain this unit's complete text_visual_conflicts in an actual unit view of {name}; a block pointer alone cannot carry the decision.")
     return block_targets, covered_units
 
 
@@ -1260,6 +1433,7 @@ def validate_handoff_maps(
     A ready result certifies neither source fidelity nor any observing event.
     """
     context = _Context(inventory_path, candidate_path, progress)
+    context.require_conflict_decisions = True
     context.load_inputs(expected_source_bindings)
     paths = _paths(context, map_paths)
     documents = {}

@@ -11,6 +11,16 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 完整生成任务先读[完整候选的开始与收尾](references/complete-workflow.md)，用 `initialize_workflow()` 建立实际来源材料与全量待核清单；结束前用 `inspect_workflow()` 列出剩余目标。再沿[分阶段执行路线](references/execution-plan.md)逐阶段处理，具体内容规则仍以对应子技能为准。
 
+## 完整任务的完成入口
+
+1. 每个来源块完成翻译后，用[翻译短入口](../literature-translate-zh/references/translation-review.md#逐段短入口与增量保存)保存该块的逐项核对决定。
+2. 每个阶段使用 `pending_check_rows()` 查看尚待完成的验收 ID。
+3. 已核对的 ID 用 `record_decision_rows()` 保存各自结果。
+4. 写最终完成报告前运行 `require_completed_records()`。
+5. 该函数报告本地缺项时，继续完成对应目标。
+
+这三个短入口见[完整流程说明](references/complete-workflow.md)。记录数量较多不构成外部阻断。用户没有要求中止时，不因已经生成 Markdown 或已经花费一段时间而自行结束仍能完成的本地核对。
+
 ## 范围与约束
 
 - [PIPE-C01] 明确本次处理的条目。

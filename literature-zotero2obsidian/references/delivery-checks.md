@@ -136,6 +136,12 @@ source_call = make_source_unit(
 
 每处来源裸网址独立登记为 `metadata` / `external_url`，`value` 为经源页核定的完整 URL，`display_text` 为来源的原显示文字。每次调用有独立的目标片段。例如来源显示 `https://example.org/data/`，则两个字段均保留该 URL；源页原本显示命名链接时，`display_text` 保留该名称。`URL_DISPLAY_TEXT` 检查显示文字，`URL_LINK` 检查实际目标。来源中的排版断行须按源页复原，不凭网站名称替换显示文字。DOI 解析网址使用 `doi` 专用字段，按 DOI 规范化规则处理。
 
+在登记来源对象时，可调用 `source_url_inventory.scan_source_url_occurrences(inventory)` 取得文字层中的逐次网址线索。返回值保留来源 ID、页、块、块内字符位置和原始提取片段；同一网址在不同位置出现时仍分别列出。线索没有证明已经查看源页，也不会自动创建来源单元。
+
+`validate_delivery` 用 `SOURCE_URL_UNMAPPED` 指出尚无独立网址单元的具体出现位置。普通段落映射不能代替这个单元。一个单元不能覆盖两次网址出现。源页中的页眉、页脚等确属范围外的内容，仍按已有排除规则提供具体依据。
+
+文字层发生断行或字形损坏时，先查看该源页。核定完整网址后，在该次 `metadata` 单元填写 `source_url_occurrence`，值取提示中的实际出现 ID；同时保留该单元的真实来源定位。这个字段只明确哪次源出现对应哪个已登记单元，不替代网址身份和显示文字的实际比较。错误来源、错误页面或重复绑定会产生 `SOURCE_URL_BINDING`。
+
 图中存在真正表格时，图件仍完整保留。表格另建 `table` 单元。地图标签、刻度、色标或普通图例不因此变成表格。
 
 新图单元的 bbox 同时登记 `coordinate_system: {"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"}`。这些坐标采用未旋转的 PDF 页面空间，不采用渲染 PNG 的像素空间。bbox 顺序为 `[x0, y0, x1, y1]`。原图对象定位可另用该页的实际 `image_xref`；字段位置在图单元的来源 `evidence[]` 中。

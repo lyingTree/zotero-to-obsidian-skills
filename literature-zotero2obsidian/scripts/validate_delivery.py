@@ -244,10 +244,13 @@ def write_delivery_manifest(
     *,
     resource_root: Path | None = None,
     translation_review_path: Path | None = None,
+    figure_edge_reviews_required: bool = False,
 ) -> Path:
     """Bind completed files to a mapping. This does not invent missing targets."""
     if not inventory_path.is_file() or not candidate_path.is_file():
         raise FileNotFoundError("Create the inventory and final candidate before binding their hashes")
+    if not isinstance(figure_edge_reviews_required, bool):
+        raise ValueError("figure_edge_reviews_required must be an explicit boolean")
     root = (resource_root or candidate_path.parent).resolve()
     if not root.is_dir():
         raise NotADirectoryError(root)
@@ -265,6 +268,8 @@ def write_delivery_manifest(
         "resource_root": str(root),
         "deliveries": copied,
     }
+    if figure_edge_reviews_required:
+        manifest["figure_edge_reviews_required"] = True
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     if inventory.get("terminology_path"):
         terminology_path = Path(inventory["terminology_path"])
@@ -592,6 +597,16 @@ class _Audit:
             excluded_pages.add(key)
         for key in sorted(set(self.pages) - self.used_pages - excluded_pages):
             self.fail("SOURCE_PAGE_UNMAPPED", f"{key[0]}:page-{key[1]}", "Record content from this page or a justified page exclusion.")
+        if not isinstance(inventory.get("sources"), list):
+            return  # Already diagnosed by the source-schema checks.
+        url_coverage = _load_sibling("source_url_inventory").source_url_coverage(
+            inventory, excluded_blocks=excluded, excluded_pages=excluded_pages)
+        for item in url_coverage["unmapped"]:
+            self.fail("SOURCE_URL_UNMAPPED", item["id"],
+                      f"Register this source URL occurrence as its own metadata/external_url (or DOI) unit: {item['raw_text']!r}. "
+                      "Inspect wrapped text on the source page; source_url_occurrence can bind its exact occurrence ID.")
+        for item in url_coverage["invalid_bindings"]:
+            self.fail("SOURCE_URL_BINDING", item["unit"], item["reason"])
 
     def check_author_affiliations(self, identity: str, unit: dict):
         numbers, affiliations = unit.get("affiliation_numbers"), unit.get("affiliation_units")
@@ -834,9 +849,80 @@ class _Audit:
             if status == "pass" and visual_target and kinds != {"source_page", "final_asset"}:
                 self.fail("FIG_REVIEW_COMPARISON", label, "A recorded visual pass needs both source-page and final-image evidence.")
 
+    def check_figure_review_edges(self, identity: str, row: dict, base: Path):
+        """Check explicit per-asset edge records, without certifying observation."""
+        assets = self.rows(row.get("final_assets"), identity, "final_assets")
+        locations = self.rows(row.get("source_locations"), identity, "source_locations")
+        entries = self.rows(row.get("edge_reviews"), identity, "edge_reviews")
+        expected = {(index, side) for index in range(len(assets)) for side in source_tools.FIGURE_EDGES}
+        seen, covered_locations = set(), set()
+
+        def bound_file(record, expected_record, label):
+            actual = self.figure_file_reference(record, base, label)
+            if not isinstance(expected_record, dict) or not isinstance(expected_record.get("path"), str):
+                self.fail("FIG_REVIEW_EDGE_BINDING", label, "The parent figure lacks this file binding.")
+                return
+            expected_path = Path(expected_record["path"])
+            if not expected_path.is_absolute():
+                expected_path = base.joinpath(expected_path)
+            stale_hash = isinstance(record, dict) and record.get("sha256") != expected_record.get("sha256")
+            if stale_hash or (actual is not None and actual != expected_path.resolve()):
+                self.fail("FIG_REVIEW_EDGE_BINDING", label, "This edge observation is bound to a different or superseded source/final file.")
+
+        for position, entry in enumerate(entries):
+            label = f"{identity}:edge-{position}"
+            index, side = entry.get("asset_index"), entry.get("edge")
+            if type(index) is not int or not isinstance(side, str) or (index, side) not in expected:
+                self.fail("FIG_REVIEW_EDGE_IDENTITY", label, "Identify an actual final asset and exactly one of left/right/top/bottom.")
+                continue
+            key = (index, side)
+            label = f"{identity}:asset-{index}:{side}"
+            if key in seen:
+                self.fail("FIG_REVIEW_EDGE_DUPLICATE", label, "Record each side of each final asset once.")
+            seen.add(key)
+            status = entry.get("status")
+            if not isinstance(status, str) or status not in {"pending", "pass", "fail", "blocked", "not_tested", "ambiguous"}:
+                self.fail("FIG_REVIEW_EDGE_STATUS", label, "Use an explicit edge status; every final image has four geometrical edges.")
+            elif status == "fail":
+                self.fail("FIG_REVIEW_EDGE_FAILED", label, "Repair and re-observe this failed edge before completion.")
+            elif status != "pass":
+                self.fail("FIG_REVIEW_EDGE_PENDING", label, "This final-image edge has no completed comparison result.")
+            observation = entry.get("observation")
+            if not isinstance(observation, str) or not observation.strip():
+                self.fail("FIG_REVIEW_EDGE_OBSERVATION", label, "Record the actual source-page/final-image comparison for this edge.")
+            bound_file(entry.get("source_file"), row.get("source_file"), label + ":source")
+            bound_file(entry.get("final_asset"), assets[index], label + ":final")
+            evidence = self.rows(entry.get("source_locations"), label, "source_locations")
+            if not evidence:
+                self.fail("FIG_REVIEW_EDGE_SOURCE", label, "Choose the actual complete source page(s) used to compare this asset's edge.")
+            selected = set()
+            for location in evidence:
+                location_index = location.get("index")
+                if type(location_index) is not int or not 0 <= location_index < len(locations):
+                    self.fail("FIG_REVIEW_EDGE_SOURCE", label, "Choose a location index of this figure's own source_locations.")
+                    continue
+                if location_index in selected:
+                    self.fail("FIG_REVIEW_EDGE_SOURCE", label, "Do not duplicate a source location within one edge observation.")
+                selected.add(location_index)
+                original = locations[location_index]
+                supplied_locator = {key: value for key, value in location.items() if key not in {"index", "page_render"}}
+                original_locator = {key: value for key, value in original.items() if key != "page_render"}
+                if json.dumps(supplied_locator, sort_keys=True) != json.dumps(original_locator, sort_keys=True):
+                    self.fail("FIG_REVIEW_EDGE_SOURCE", label, "Retain the exact page and source locator used for this edge comparison.")
+                bound_file(location.get("page_render"), original.get("page_render"), label + f":page-{location_index}")
+            covered_locations.update(selected)
+        for index, side in sorted(expected - seen):
+            self.fail("FIG_REVIEW_EDGE_MISSING", f"{identity}:asset-{index}:{side}", "Retain an explicit observation slot for each side of every final image.")
+        if covered_locations != set(range(len(locations))):
+            self.fail("FIG_REVIEW_EDGE_SOURCE_COVERAGE", identity, "Across this figure's assets, edge evidence must account for every registered source location; each asset chooses its own applicable pages.")
+
     def check_figure_reviews(self, inventory: dict, manifest: dict, base: Path):
         expected = inventory.get("figure_reviews_path")
+        expected_figures = {identity: unit for identity, unit in self.units.items() if unit.get("kind") == "figure"}
+        require_edges = manifest.get("figure_edge_reviews_required") is True
         if "figure_reviews_path" not in inventory and "figure_reviews" not in manifest:
+            if require_edges and expected_figures:
+                self.fail("FIG_REVIEW_REQUIRED", "figure_reviews", "This complete workflow requires a final figure ledger with per-asset edge observations.")
             return  # Older manifests remain supported; no visual acceptance is inferred.
         if not isinstance(expected, str) or not expected.strip():
             self.fail("FIG_REVIEW_PATH", "figure_reviews", "Record the figure-review ledger path in this inventory.")
@@ -850,8 +936,9 @@ class _Audit:
         if path != expected_path.resolve():
             self.fail("FIG_REVIEW_PATH", "figure_reviews", "Bind the ledger named by this source inventory.")
         ledger = self.read_json(path, "figure_reviews")
-        if type(ledger.get("schema_version")) is not int or ledger.get("schema_version") != 1:
-            self.fail("FIG_REVIEW_VERSION", "figure_reviews", "Expected figure-review schema_version 1.")
+        version = ledger.get("schema_version")
+        if type(version) is not int or version not in {1, 2}:
+            self.fail("FIG_REVIEW_VERSION", "figure_reviews", "Expected figure-review schema_version 1 (legacy) or 2 (explicit final-image edges).")
         current_inventory = self.inventory_base.joinpath(self.inventory_name).resolve()
         inventory_name = ledger.get("inventory_path")
         if not isinstance(inventory_name, str) or not inventory_name.strip():
@@ -878,7 +965,6 @@ class _Audit:
                 self.fail("FIG_REVIEW_INVENTORY_CHANGED", "figure_reviews", "Inventory content changed after figure review; only the three top-level tool-pointer fields may differ.")
         rows = self.rows(ledger.get("figures"), "figure_reviews", "figures")
         figures = self.index(rows, "unit", "figure_reviews")
-        expected_figures = {identity: unit for identity, unit in self.units.items() if unit.get("kind") == "figure"}
         for missing in sorted(set(expected_figures) - set(figures)):
             self.fail("FIG_REVIEW_UNIT_MISSING", missing, "Record this inventory figure's atomic visual reviews.")
         for unknown in sorted(set(figures) - set(expected_figures)):
@@ -918,6 +1004,8 @@ class _Audit:
             if recorded_assets != bound_assets:
                 self.fail("FIG_REVIEW_ASSET_MAPPING", identity, "The reviewed final-image paths and hashes must match the delivery assets in order.")
             self.check_figure_review_checks(identity, row)
+            if require_edges or version == 2 or "edge_reviews" in row:
+                self.check_figure_review_edges(identity, row, path.parent)
 
     def check_terminology(self, inventory: dict, manifest: dict, base: Path):
         expected = inventory.get("terminology_path")

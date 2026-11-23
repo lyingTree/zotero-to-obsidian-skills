@@ -474,6 +474,152 @@ class HandoffMapTests(unittest.TestCase):
         self.assertFalse(any(path.exists() for path in self.f.paths.values()))
 
 
+class TextVisualConflictTests(unittest.TestCase):
+    """Caller-supplied synthetic readings test records, never OCR correctness."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.f = Fixture(self.base)
+
+    def arguments(self, unit_id="main-title", *, pending=False):
+        unit = next(row for row in self.f.inventory["units"] if row["id"] == unit_id)
+        source = next(row for row in self.f.inventory["sources"] if row["id"] == unit["source"])
+        original = unit["evidence"][0]["quote"]
+        text = Path(source["pages"][0]["text"]["path"]).read_bytes().decode("utf-8")
+        start = text.index(original)
+        visible = original.replace("Synthetic", "Fictional")
+        return {
+            "conflict_id": unit_id + "-reading", "page_number": 1,
+            "text_locator": {"kind": "characters", "unit": "unicode_code_points", "start": start,
+                             "end": start + len(original), "end_exclusive": True},
+            "text_layer_text": original, "visible_text": None if pending else visible,
+            "bbox": unit["evidence"][0]["bbox"],
+            "decision": {"status": "pending", "reason": "Synthetic observation has not been supplied."} if pending else {
+                "status": "resolved", "selected_text": visible,
+                "reason": "Synthetic caller-declared reading used to exercise provenance checks.",
+                "observed": True, "reviewer": "synthetic reviewer"},
+        }
+
+    def record(self, unit_id="main-title", **changes):
+        arguments = self.arguments(unit_id)
+        arguments.update(changes)
+        result = maps.record_text_visual_conflict(self.f.inventory_path, unit_id, **arguments)
+        self.f.inventory = read(self.f.inventory_path)
+        return result
+
+    def test_one_record_reaches_main_and_si_views_without_retyping(self):
+        expected = {identity: self.record(identity) for identity in ("main-title", "si-title")}
+        result = self.f.write()
+        self.assertTrue(result.records_ready, result.as_dict())
+        for name, unit_id in (("source_map", "main-title"), ("si_map", "si-title")):
+            document = read(self.f.paths[name])
+            for collection in ("units", "metadata"):
+                row = next(item for item in document[collection] if item["unit"] == unit_id)
+                self.assertEqual(row["text_visual_conflicts"], [expected[unit_id]])
+                self.assertEqual(row["registered_unit"]["text_visual_conflicts"], [expected[unit_id]])
+            self.assertEqual(document["source_fidelity"], "not_assessed")
+        self.assertTrue(self.f.validate().records_ready)
+
+    def test_pending_decision_is_saved_projected_and_blocks_final_validation(self):
+        arguments = self.arguments(pending=True)
+        maps.record_text_visual_conflict(self.f.inventory_path, "main-title", **arguments)
+        written = self.f.write()
+        self.assertTrue(written.records_ready, written.as_dict())
+        row = read(self.f.paths["source_map"])["metadata"][0]
+        self.assertEqual(row["text_visual_conflicts"][0]["decision"]["status"], "pending")
+        self.assertIsNone(row["text_visual_conflicts"][0]["visible_page"]["text"])
+        self.assertIn("MAP_CONFLICT_UNRESOLVED", {item.code for item in self.f.validate().findings})
+
+    def test_summary_without_conflict_fields_does_not_replace_the_decision(self):
+        self.record()
+        self.assertTrue(self.f.write().records_ready)
+        document = read(self.f.paths["source_map"])
+        document["metadata"][0].pop("text_visual_conflicts")
+        document["metadata"][0]["summary"] = "The conflict was reviewed."
+        save(self.f.paths["source_map"], document)
+        self.assertIn("MAP_UNIT_FIELD", {item.code for item in self.f.validate().findings})
+
+    def test_minimal_legacy_map_cannot_discard_a_registered_conflict(self):
+        self.record()
+        self.assertTrue(self.f.write().records_ready)
+        document = read(self.f.paths["source_map"])
+        document.pop("units")
+        document.pop("metadata")
+        save(self.f.paths["source_map"], document)
+        self.assertIn("MAP_CONFLICT_MISSING", {item.code for item in self.f.validate().findings})
+
+    def test_duplicate_record_is_rejected_without_changing_inventory(self):
+        self.record()
+        before = self.f.inventory_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            self.record()
+        self.assertEqual(self.f.inventory_path.read_bytes(), before)
+
+    def test_invalid_human_decision_or_source_locator_is_not_saved(self):
+        valid = self.arguments()
+        cases = [
+            {"text_layer_text": "A string absent from the actual text file."},
+            {"visible_text": None},
+            {"decision": {"status": "resolved", "selected_text": valid["visible_text"], "reason": ""}},
+            {"decision": {"status": "resolved", "selected_text": "unrecorded third reading", "reason": "Synthetic reason."}},
+            {"decision": {"status": "resolved", "selected_text": valid["visible_text"], "reason": "Synthetic reason.", "observed": False}},
+            {"page_number": True}, {"page_number": 2}, {"bbox": [0, 0, 9999, 9999]},
+        ]
+        before = self.f.inventory_path.read_bytes()
+        for changes in cases:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                maps.record_text_visual_conflict(self.f.inventory_path, "main-title", **{**valid, **changes})
+            self.assertEqual(self.f.inventory_path.read_bytes(), before)
+
+    def test_line_locator_can_retain_an_explicit_reading_from_the_actual_line(self):
+        record = self.record(text_locator={"kind": "lines", "start": 1, "end": 1})
+        self.assertEqual(record["text_layer"]["locator"]["kind"], "lines")
+        self.assertTrue(self.f.write().records_ready)
+        self.assertTrue(self.f.validate().records_ready)
+
+    def test_changed_page_text_and_render_bindings_are_rechecked(self):
+        record = self.record()
+        self.assertTrue(self.f.write().records_ready)
+        for name in ("text_layer", "visible_page"):
+            with self.subTest(name=name):
+                path = Path(record[name]["file"]["path"])
+                original = path.read_bytes()
+                path.write_bytes(original + b"synthetic change")
+                self.assertIn("MAP_BINDING_HASH", {item.code for item in self.f.validate().findings})
+                path.write_bytes(original)
+
+    def test_conflict_page_file_cannot_point_to_another_actual_source(self):
+        self.record()
+        record = self.f.inventory["units"][0]["text_visual_conflicts"][0]
+        other = next(row for row in self.f.inventory["sources"] if row["id"] == "si")
+        record["visible_page"]["file"] = binding(Path(other["pages"][0]["render"]["path"]))
+        save(self.f.inventory_path, self.f.inventory)
+        result = self.f.write()
+        self.assertIn("MAP_BINDING_TARGET", {item.code for item in result.findings})
+        self.assertFalse(any(path.exists() for path in self.f.paths.values()))
+
+    def test_apply_visible_text_edits_records_flow_without_a_second_manual_entry(self):
+        arguments = self.arguments()
+        unit = self.f.inventory["units"][0]
+        page = self.f.inventory["sources"][0]["pages"][0]
+        result = maps._module("format_helpers").apply_visible_text_edits(
+            text_file=page["text"], edits=[{
+                "id": arguments["conflict_id"], "start": arguments["text_locator"]["start"],
+                "end": arguments["text_locator"]["end"], "expected_text": arguments["text_layer_text"],
+                "visible_page": {"file": binding(Path(page["render"]["path"])), "page": 1,
+                                 "bbox": arguments["bbox"], "coordinate_system": sources.PDF_BBOX_COORDINATES,
+                                 "text": arguments["visible_text"]}, "decision": arguments["decision"],
+            }])
+        unit["text_visual_conflicts"] = result["text_visual_conflicts"]
+        save(self.f.inventory_path, self.f.inventory)
+        self.assertTrue(self.f.write().records_ready)
+        self.assertTrue(self.f.validate().records_ready)
+        actual = read(self.f.paths["source_map"])["metadata"][0]["text_visual_conflicts"]
+        self.assertEqual(actual, result["text_visual_conflicts"])
+
+
 class RichHandoffTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

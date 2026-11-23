@@ -11,6 +11,8 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 - 读取[交接约定](../literature-zotero2obsidian/references/pipeline-contract.md)；涉及项目路径、模板、工具或阻断级别时读取[项目配置](../literature-zotero2obsidian/references/project-profile.md)。
 - 开始翻译前完整读取[逐段翻译复核操作](references/translation-review.md)。
 
+逐段记录使用该说明中的 [ReviewWriter 短入口](references/translation-review.md#逐段短入口与增量保存)。它把明确的单项判断展开为完整台账，避免反复手写相同文件哈希与位置。先读[短调用的完整虚构示例](references/compact_review_example.py)，实际任务仍逐段依据自己的来源填写。
+
 ## 执行步骤
 
 1. 核实语种，按源块 ID 列出本次应译范围。

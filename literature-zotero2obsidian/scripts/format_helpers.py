@@ -223,6 +223,7 @@ def build_naming_plan(
         "old_path": str(Path(old_path).resolve()) if old_path is not None else None,
         "filename": filename,
         "delivery_path": str(Path(delivery_path).resolve()) if delivery_path is not None else None,
+        "target_directory": str(Path(target_directory).resolve()) if target_directory is not None else None,
         "target_path": str(target_path) if target_path is not None else None,
         "disambiguation_suffix": disambiguation_suffix, "suffix_evidence": checked_suffix_evidence,
         "transformations": transformations,
@@ -257,6 +258,209 @@ def build_naming_plan(
         "overwrite_authorized": False,
         "issues": issues,
     }
+
+
+def validate_naming_plan(
+    plan: Any, *, delivery_path: Path | None = None,
+) -> dict[str, Any]:
+    """Read and recompute a serialized naming plan; never repair or write it.
+
+    The same ``build_naming_plan`` algorithm checks the original/cleaned/used
+    title, author mapping, exact transformations, filename, declared length and
+    character checks. Each source field is independently bound to current file
+    bytes and a nonempty locator. Locator truth, metadata meaning, directory
+    conflict identity, actual filesystem/tool limits and authorization remain
+    outside this function. Unknown limits are valid ``not_assessed`` records.
+
+    ``delivery_path`` optionally supplies the workflow's independently selected
+    output path. It need not exist and does not replace the proposed filename.
+    ``structurally_consistent`` concerns this record only: a correctly recorded
+    blocked plan can be consistent and still have ``plan_status == 'blocked'``.
+    Findings have one JSON-pointer ``field`` each, plus ``code`` and ``message``.
+    Existing version-1 plans without the additive ``target_directory`` field
+    remain supported by using their recorded target path when available.
+    """
+    findings: list[dict[str, str]] = []
+    validated_fields: list[str] = []
+
+    def problem(code: str, field: str, message: str) -> None:
+        findings.append({"code": code, "field": field, "message": message})
+
+    def report(*, recomputed: bool = False) -> dict[str, Any]:
+        return {
+            "structurally_consistent": not findings,
+            "plan_status": plan.get("status") if isinstance(plan, Mapping) else None,
+            "recomputed": recomputed,
+            "validated_source_fields": validated_fields,
+            "findings": findings,
+            "semantic_review": {"status": "not_assessed"},
+            "library_conflicts": {"status": "not_assessed"},
+            "authorization_granted": False,
+            "boundary": "Record consistency and current source-file bindings only; does not certify locator meaning, metadata identity, real path limits, library conflicts, or permission to write.",
+        }
+
+    if not isinstance(plan, Mapping):
+        problem("NAMING_PLAN_SHAPE", "", "Naming plan must be a mapping, not a filename or status alone.")
+        return report()
+
+    required = (
+        "schema_version", "status", "year", "year_token", "no_year_reason",
+        "author_token", "unknown_author_reason", "original_title", "source_evidence",
+        "old_path", "filename", "delivery_path", "target_path",
+        "disambiguation_suffix", "suffix_evidence", "transformations",
+        "title_mapping", "author_mapping", "length", "character_checks", "path_check", "issues",
+    )
+    missing = {field for field in required if field not in plan}
+    for field in required:
+        if field not in missing:
+            continue
+        problem("NAMING_PLAN_FIELD_MISSING", f"/{field}", f"Missing naming-plan field: {field}.")
+
+    # Validate all supplied field bindings, so one stale field cannot hide the
+    # identities of other missing or stale fields. The cache hashes shared files
+    # once during this pass; build_naming_plan independently checks them again.
+    source_records = plan.get("source_evidence")
+    cache: dict[Path, str] = {}
+    checked_evidence = {}
+    if not isinstance(source_records, Mapping):
+        if "source_evidence" not in missing:
+            problem("NAMING_PLAN_FIELD_INVALID", "/source_evidence", "source_evidence must map year, author_token and original_title to file bindings and locators.")
+    else:
+        for field in ("year", "author_token", "original_title"):
+            try:
+                checked_evidence[field] = _source_evidence(source_records.get(field), cache)
+                validated_fields.append(field)
+            except (ValueError, TypeError, OSError, RuntimeError) as error:
+                problem("NAMING_PLAN_SOURCE_BINDING", f"/source_evidence/{field}", str(error))
+
+    suffix = plan.get("disambiguation_suffix")
+    checked_suffix = None
+    if suffix is not None:
+        try:
+            checked_suffix = _source_evidence(plan.get("suffix_evidence"), cache)
+            validated_fields.append("disambiguation_suffix")
+        except (ValueError, TypeError, OSError, RuntimeError) as error:
+            problem("NAMING_PLAN_SOURCE_BINDING", "/suffix_evidence", str(error))
+
+    paths = {}
+    invalid_paths = set()
+    for field in ("old_path", "delivery_path", "target_path", "target_directory"):
+        raw = plan.get(field)
+        if raw is None:
+            paths[field] = None
+            continue
+        try:
+            paths[field] = Path(_text(raw, field)).resolve()
+        except (ValueError, TypeError, OSError, RuntimeError) as error:
+            invalid_paths.add(field)
+            problem("NAMING_PLAN_FIELD_INVALID", f"/{field}", str(error))
+    if delivery_path is not None:
+        try:
+            expected_delivery = Path(delivery_path).resolve()
+        except (ValueError, TypeError, OSError, RuntimeError) as error:
+            problem("NAMING_PLAN_DELIVERY_CONTEXT", "/delivery_path", f"Invalid supplied delivery_path: {error}")
+        else:
+            if "delivery_path" not in missing and "delivery_path" not in invalid_paths and paths.get("delivery_path") != expected_delivery:
+                problem("NAMING_PLAN_DELIVERY_MISMATCH", "/delivery_path", "Recorded delivery_path does not match the workflow's supplied output path.")
+
+    containers = {}
+    for field in ("length", "path_check"):
+        value = plan.get(field)
+        if not isinstance(value, Mapping):
+            if field not in missing:
+                problem("NAMING_PLAN_FIELD_INVALID", f"/{field}", f"{field} must be a mapping.")
+            continue
+        containers[field] = value
+    for container, fields in (("length", ("max_utf16_units", "filename_max_utf8_bytes")),
+                              ("path_check", ("declared_max_utf16_units",))):
+        if container not in containers:
+            continue
+        for field in fields:
+            if field in containers[container]:
+                continue
+            problem("NAMING_PLAN_FIELD_MISSING", f"/{container}/{field}", f"Missing declared naming input: {container}.{field}.")
+
+    input_fields = {"year", "no_year_reason", "author_token", "unknown_author_reason", "original_title",
+                    "source_evidence", "old_path", "delivery_path", "target_path", "disambiguation_suffix", "suffix_evidence"}
+    if missing & input_fields or invalid_paths or len(checked_evidence) != 3 or (suffix is not None and checked_suffix is None):
+        return report()
+    if len(containers) != 2 or any(item["field"] in {"/length/max_utf16_units", "/length/filename_max_utf8_bytes", "/path_check/declared_max_utf16_units"} for item in findings):
+        return report()
+
+    target_directory = paths.get("target_directory")
+    target_path = paths.get("target_path")
+    if target_directory is None and target_path is not None:
+        target_directory = target_path.parent
+    path_limit = containers["path_check"]["declared_max_utf16_units"]
+    legacy_blocked_path = target_directory is None and target_path is None and plan.get("filename") is None and path_limit is not None
+    if path_limit is not None and target_directory is None and not legacy_blocked_path:
+        problem("NAMING_PLAN_PATH_INPUT_MISSING", "/target_path", "A declared full-path limit needs a recorded target directory or target path.")
+        return report()
+    try:
+        if legacy_blocked_path:
+            _positive_integer(path_limit, "full_path_max_utf16_units")
+        rebuilt = build_naming_plan(
+            year=plan["year"], author_token=plan["author_token"], original_title=plan["original_title"],
+            source_evidence=checked_evidence, delivery_path=paths["delivery_path"], old_path=paths["old_path"],
+            target_directory=target_directory, no_year_reason=plan["no_year_reason"],
+            unknown_author_reason=plan["unknown_author_reason"], disambiguation_suffix=suffix,
+            suffix_evidence=checked_suffix if suffix is not None else plan["suffix_evidence"],
+            max_utf16_units=containers["length"]["max_utf16_units"],
+            filename_max_utf8_bytes=containers["length"]["filename_max_utf8_bytes"],
+            full_path_max_utf16_units=None if legacy_blocked_path else path_limit,
+        )
+    except (ValueError, TypeError, OSError, RuntimeError) as error:
+        labels = {
+            "year": "/year", "no_year_reason": "/no_year_reason", "author_token": "/author_token",
+            "unknown_author_reason": "/unknown_author_reason", "original_title": "/original_title",
+            "disambiguation_suffix": "/disambiguation_suffix", "suffix_evidence": "/suffix_evidence",
+            "max_utf16_units": "/length/max_utf16_units", "filename_max_utf8_bytes": "/length/filename_max_utf8_bytes",
+            "full_path_max_utf16_units": "/path_check/declared_max_utf16_units",
+        }
+        field = next((pointer for label, pointer in labels.items() if str(error).startswith(label)), "/source_evidence")
+        problem("NAMING_PLAN_INPUT_INVALID", field, str(error))
+        return report()
+
+    if legacy_blocked_path and rebuilt["filename"] is None:
+        # Older blocked plans did not preserve their directory, but no target
+        # path exists to check when no complete filename can be formed.
+        rebuilt["path_check"]["declared_max_utf16_units"] = path_limit
+
+    def compare(expected: Any, actual: Any, pointer: str, code: str) -> None:
+        if isinstance(expected, Mapping):
+            if not isinstance(actual, Mapping):
+                problem("NAMING_PLAN_FIELD_INVALID", pointer, "Expected a mapping of computed naming fields.")
+                return
+            for key, value in expected.items():
+                child = f"{pointer}/{key}"
+                if key not in actual:
+                    problem("NAMING_PLAN_FIELD_MISSING", child, "Missing computed naming field.")
+                    continue
+                compare(value, actual[key], child, code)
+            return
+        try:
+            equal = json.dumps(expected, ensure_ascii=True, sort_keys=True, allow_nan=False) == json.dumps(actual, ensure_ascii=True, sort_keys=True, allow_nan=False)
+        except (ValueError, TypeError, RecursionError):
+            equal = False
+        if not equal:
+            problem(code, pointer, "Recorded value differs from build_naming_plan recomputation using the original fields and declared limits.")
+
+    groups = {
+        "schema_version": "NAMING_PLAN_SCHEMA", "year_token": "NAMING_PLAN_MAPPING_MISMATCH",
+        "title_mapping": "NAMING_PLAN_MAPPING_MISMATCH", "author_mapping": "NAMING_PLAN_MAPPING_MISMATCH",
+        "transformations": "NAMING_PLAN_TRANSFORMATION_MISMATCH", "filename": "NAMING_PLAN_FILENAME_MISMATCH",
+        "length": "NAMING_PLAN_LENGTH_MISMATCH", "character_checks": "NAMING_PLAN_CHARACTER_CHECK_MISMATCH",
+        "path_check": "NAMING_PLAN_PATH_MISMATCH", "target_path": "NAMING_PLAN_PATH_MISMATCH",
+        "delivery_path": "NAMING_PLAN_DELIVERY_MISMATCH", "old_path": "NAMING_PLAN_PATH_MISMATCH",
+        "status": "NAMING_PLAN_STATUS_MISMATCH", "issues": "NAMING_PLAN_ISSUES_MISMATCH",
+    }
+    for field, code in groups.items():
+        if field in missing:
+            continue
+        compare(rebuilt[field], plan[field], f"/{field}", code)
+    if "target_directory" in plan:
+        compare(rebuilt["target_directory"], plan["target_directory"], "/target_directory", "NAMING_PLAN_PATH_MISMATCH")
+    return report(recomputed=True)
 
 
 def check_local_name_conflicts(

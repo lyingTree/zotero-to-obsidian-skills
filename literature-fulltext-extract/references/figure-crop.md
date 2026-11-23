@@ -176,7 +176,7 @@ record = render_page_region(
 3. **下边缘**：沿整条下边缘核对下方刻度、轴标题、脚标及图内表格的末行，确认底部没有被裁掉。
 4. **左边缘**：沿整条左边缘核对左侧刻度、单位、轴标题及线条起点，确认左侧要素完整保留。
 
-发现线条、字符或面板在边缘被截断时，依据源页扩展该边，重新输出并重新检查受影响的边。边距不足时继续扩展；加入了相邻正文或题注时，在保留图件全部要素的前提下修正边界。`render_page_region` 的 `edge_reviews` 为四条边各留一个 `pending` 记录；逐边填写实际观察、源页/最终文件的证据定位和结果。核对依据必须能看到裁框外的源内容，只有裁框内的像素比较无法发现被排除的部分。
+发现线条、字符或面板在边缘被截断时，依据源页扩展该边，重新输出并重新检查受影响的边。边距不足时继续扩展；加入了相邻正文或题注时，在保留图件全部要素的前提下修正边界。`render_page_region` 的 `edge_reviews` 为四条边各留一个 `pending` 记录，作为提取时的创建记录保留。实际比较后的观察统一写入最终 `figure-reviews.json`，不需要修改这份历史提取记录。核对依据必须能看到裁框外的源内容，只有裁框内的像素比较无法发现被排除的部分。
 
 四边检查后继续执行现有 FIG-A 项，核对面板、文字、轴线、刻度、单位、图例、色标及图内表格。将最终输出文件的哈希绑定到逐图台账；任何后续修改按修复后的图片重新核对。
 
@@ -199,7 +199,34 @@ record = render_page_region(
 - [FIG-C61] 图台账登记当前库存文件的身份。
 - [FIG-C62] 当前库存的非工具指针内容与快照一致。
 
-完整调用见[交付检查中的逐图视觉核对记录](../../literature-zotero2obsidian/references/delivery-checks.md#逐图视觉核对记录)。`prepare_figure_reviews(...)` 从本次 `source-inventory.json` 的 `kind: figure` 单元与最终资产映射生成台账；每幅图保留 FIG-A01 至 FIG-A28 的独立条目。生成器不会替模型填写通过结果，也不会自动删除它猜测不适用的项目。
+完整调用见[交付检查中的逐图视觉核对记录](../../literature-zotero2obsidian/references/delivery-checks.md#逐图视觉核对记录)。`prepare_figure_reviews(...)` 从本次 `source-inventory.json` 的 `kind: figure` 单元与最终资产映射生成 `schema_version: 2` 台账；每幅图保留 FIG-A01 至 FIG-A28 的独立条目，并为每个最终资产建立 `left`、`right`、`top`、`bottom` 四条 `pending` 记录。生成器不会替模型填写通过结果，也不会自动删除它猜测不适用的项目。
+
+### 将实际四边观察写入最终台账
+
+在完整源页与最终图片上逐边比较后，调用 `record_figure_edges(...)`。同一次调用对应一个图单元的一个最终资产；`asset_index` 是 `final_assets` 的零起始索引，`source_location_indices` 是该图 `source_locations` 中实际用于比较的来源定位索引。多个最终资产分别选择自己的来源页；拼接成一张跨页图时可选择多个来源定位。全部资产合起来须覆盖图的全部来源定位，不要求每个资产引用所有页。
+
+下面仅为虚构单元的调用结构；观察字典必须由实际比较填写，不提供默认通过值：
+
+```python
+from pathlib import Path
+from prepare_source_inventory import record_figure_edges
+
+EDGE_OBSERVATIONS: dict[str, dict[str, str]] | None = None
+if EDGE_OBSERVATIONS is None:
+    raise ValueError("实际查看四边后，逐边填写 status 与具体 observation")
+
+record_figure_edges(
+    Path("work/figure-reviews.json"), "synthetic-figure", 0,
+    source_location_indices=[0],
+    observations=EDGE_OBSERVATIONS,
+)
+```
+
+`observations` 的键为 `left`、`right`、`top`、`bottom`；每个值恰含显式 `status` 与该边实际比较的 `observation`。例如观察应指明该边的轴标题、刻度、面板号或线条终点如何与完整源页对应。一次只记录部分边也可以，未提供的边保持原状。函数把所选来源 PDF、完整页图、页码和图框或 xref，以及该最终图片的实际路径和哈希写入对应边；调用方无需再次抄写文件绑定。
+
+每个最终资产的每条边必须恰有一条记录。`pending`、`blocked`、`not_tested`、`ambiguous`、缺边、空观察、错误来源定位或过期文件绑定会阻断收尾；`fail` 也会阻断。每张图片都有四条几何边，不能把某条边写成不适用。像素一致、已加入安全边距和函数成功返回均不会生成 `pass`。
+
+完整工作流的交付清单固定保存 `figure_edge_reviews_required: true`，独立检查该标志和四边记录；有实际图对象但缺台账也会报错。旧 `schema_version: 1` 台账仅在没有这一严格标志的局部接口中保持兼容。没有图对象时不要求虚构台账。替换最终图片后，旧边记录的哈希仍会暴露过期绑定；重新查看并记录该资产的各边后，再绑定最终台账哈希。
 
 图框坐标采用 PyMuPDF 的未旋转页面空间。单位为 PDF 点，原点是页面左上角，x 轴向右，y 轴向下。图单元的每个 bbox 记录以下完整声明：
 

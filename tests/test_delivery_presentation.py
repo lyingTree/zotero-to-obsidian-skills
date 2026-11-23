@@ -212,6 +212,50 @@ class PresentationTests(unittest.TestCase):
         text = "```rich-table\n---\n" + yaml.safe_dump(table, allow_unicode=True) + "---\n```\n"
         self.assertEqual(self.codes(text), {"EMBEDDED_TABLE_TITLE", "QUANTITY_SPLIT_MATH"})
 
+    def test_figure_table_title_variants_cannot_omit_the_required_marker(self):
+        for title in ("**图7内的数据表：** 检测结果。", "图S4的数据表", "图12内表。", "图2说明表"):
+            with self.subTest(title=title):
+                table = {"version": 2, "title": title, "columns": [], "rows": []}
+                text = "```rich-table\n---\n" + yaml.safe_dump(table, allow_unicode=True) + "---\n```\n"
+                self.assertIn("EMBEDDED_TABLE_TITLE", self.codes(text))
+        for title in ("**图7内表格。** 检测结果。", "图S4内表格", "**表2。** 图7的检测结果。"):
+            with self.subTest(title=title):
+                table = {"version": 2, "title": title, "columns": [], "rows": []}
+                text = "```rich-table\n" + yaml.safe_dump(table, allow_unicode=True) + "```\n"
+                self.assertNotIn("EMBEDDED_TABLE_TITLE", self.codes(text))
+
+    def test_second_worksheet_title_is_not_hidden_by_correct_first_sheet(self):
+        table = {"version": 3, "sheets": [
+            {"title": "图6内表格", "columns": [], "rows": []},
+            {"title": "图9内的数据表", "columns": [], "rows": []},
+        ]}
+        text = "```rich-table\n---\n" + yaml.safe_dump(table, allow_unicode=True) + "---\n```\n"
+        prompts = [item for item in lint_presentation(text) if item.code == "EMBEDDED_TABLE_TITLE"]
+        self.assertEqual([item.excerpt for item in prompts], ["图9内的数据表"])
+
+    def test_standalone_figure_images_keep_the_required_two_space_break(self):
+        for image in ("![[assets/figure.png]]", "![图7](assets/figure.png)", "![图S2](<assets/figure (two).png>)"):
+            with self.subTest(image=image):
+                for ending in ("", " ", "\\"):
+                    self.assertIn("IMAGE_HARD_BREAK", self.codes(image + ending + "\n**图7：** 题注。"))
+                self.assertNotIn("IMAGE_HARD_BREAK", self.codes(image + "  \n**图7：** 题注。"))
+
+    def test_image_hard_break_check_ignores_nonvisible_and_inline_examples(self):
+        for text in ("`![[assets/a.png]]`", "<!-- ![[assets/a.png]] -->", "    ![[assets/a.png]]",
+                     "```text\n![[assets/a.png]]\n```", "$$\n![[assets/a.png]]\n$$",
+                     "文字中的 ![示例](assets/a.png) 是行内说明。"):
+            with self.subTest(text=text):
+                self.assertNotIn("IMAGE_HARD_BREAK", self.codes(text))
+
+    def test_image_hard_break_check_ignores_nonimage_wiki_transclusions(self):
+        for text in ("![[supplement.pdf]]", "![[movie.mp4]]", "![[Methods#^calibration]]",
+                     "![[notes/Methods.md|400]]", "![[supplement.pdf#page=2]]"):
+            with self.subTest(text=text):
+                self.assertNotIn("IMAGE_HARD_BREAK", self.codes(text))
+        for text in ("![[assets/image.PNG|400]]", "![[assets/image.svg]]", "![plot](https://example.org/image)"):
+            with self.subTest(text=text):
+                self.assertIn("IMAGE_HARD_BREAK", self.codes(text))
+
     def test_each_header_metadata_item_occupies_its_own_line(self):
         merged = "> Received: 3 May 2020；Accepted: 7 June 2020；Published online: 19 June 2020"
         self.assertIn("HEADER_ITEMS_SAME_LINE", self.codes(merged))

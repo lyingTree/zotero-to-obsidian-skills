@@ -278,6 +278,82 @@ def _figure_file_reference(record, base: Path, label: str) -> dict:
     return actual
 
 
+FIGURE_EDGES = ("left", "right", "top", "bottom")
+
+
+def record_figure_edges(
+    review_path: Path, unit_id: str, asset_index: int, *,
+    source_location_indices: Sequence[int], observations: Mapping[str, Mapping[str, str]],
+) -> Path:
+    """Record caller-supplied edge observations for one bound final image.
+
+    Each supplied side needs its own explicit status and observation. Source
+    location indices refer to this figure's complete source-page records; the
+    caller chooses the pages belonging to this asset. This function checks
+    file bindings, never pixels, margins, visual truth, or whether viewing took
+    place. Unmentioned edges stay unchanged, including their pending status.
+    """
+    review_path = Path(review_path).resolve(strict=True)
+    payload = review_path.read_bytes()
+    ledger = json.loads(payload.decode("utf-8-sig"), object_pairs_hook=_figure_json_pairs)
+    if not isinstance(ledger, dict) or type(ledger.get("schema_version")) is not int or ledger["schema_version"] != 2:
+        raise ValueError("Explicit edge recording requires figure-review schema_version 2")
+    figures = _figure_index(ledger.get("figures"), "unit", "figures")
+    if not isinstance(unit_id, str) or unit_id not in figures:
+        raise ValueError("Choose an actual figure unit from this ledger")
+    row = figures[unit_id]
+    assets, locations = row.get("final_assets"), row.get("source_locations")
+    if not isinstance(assets, list) or type(asset_index) is not int or not 0 <= asset_index < len(assets):
+        raise ValueError("asset_index must identify this figure's final image")
+    if not isinstance(locations, list) or any(not isinstance(location, dict) for location in locations):
+        raise ValueError("This figure needs complete source-page location records")
+    indices = source_location_indices
+    if isinstance(indices, (str, bytes)) or not isinstance(indices, Sequence) or not indices:
+        raise ValueError("Explicitly choose the source-page locations used for this asset")
+    if any(type(index) is not int or not 0 <= index < len(locations) for index in indices) or len(set(indices)) != len(indices):
+        raise ValueError("Source-page indices must be distinct indices of this figure's source_locations")
+    if not isinstance(observations, Mapping) or not observations or any(side not in FIGURE_EDGES for side in observations):
+        raise ValueError("Supply explicit observations keyed by left, right, top, or bottom")
+    source = _figure_file_reference(row.get("source_file"), review_path.parent, unit_id + ":source")
+    asset = _figure_file_reference(assets[asset_index], review_path.parent, unit_id + ":final-asset")
+    selected = []
+    for index in indices:
+        location = dict(locations[index])
+        location["page_render"] = _figure_file_reference(location.get("page_render"), review_path.parent,
+                                                         f"{unit_id}:source-location-{index}")
+        selected.append({"index": index, **location})
+    entries = row.get("edge_reviews")
+    if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+        raise ValueError("Retain every generated edge-review slot")
+    indexed = {}
+    for entry in entries:
+        index, side = entry.get("asset_index"), entry.get("edge")
+        if type(index) is not int or not isinstance(side, str) or side not in FIGURE_EDGES:
+            raise ValueError("Each edge slot needs its actual asset index and one of the four sides")
+        key = (index, side)
+        if key in indexed:
+            raise ValueError("Do not duplicate an asset's edge-review slot")
+        indexed[key] = entry
+    if set(indexed) != {(index, side) for index in range(len(assets)) for side in FIGURE_EDGES}:
+        raise ValueError("Retain exactly four edge-review slots for every final asset")
+    for side, supplied in observations.items():
+        if not isinstance(supplied, Mapping) or set(supplied) != {"status", "observation"}:
+            raise ValueError("Each edge needs explicit status and observation fields")
+        status, observation = supplied["status"], supplied["observation"]
+        if not isinstance(status, str) or status not in {"pending", "pass", "fail", "blocked", "not_tested", "ambiguous"}:
+            raise ValueError("An edge status must be explicit; geometrical edges are not inapplicable")
+        if not isinstance(observation, str) or not observation.strip():
+            raise ValueError("Record the actual comparison observation for each supplied edge")
+        indexed[(asset_index, side)].update({
+            "status": status, "observation": observation, "source_file": source,
+            "final_asset": asset, "source_locations": selected,
+        })
+    if review_path.read_bytes() != payload:
+        raise ValueError("The ledger changed during recording; reload it before adding observations")
+    review_path.write_text(json.dumps(ledger, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    return review_path
+
+
 def prepare_figure_reviews(
     inventory_path: Path,
     final_assets: Mapping[str, Sequence[Path]],
@@ -286,7 +362,7 @@ def prepare_figure_reviews(
     resource_root: Path | None = None,
     progress: Progress | None = progress_bar,
 ) -> Path:
-    """Create pending atomic review records for the inventory's actual figures.
+    """Create schema-2 pending review records for the inventory's actual figures.
 
     ``final_assets`` maps each figure unit ID to its final image paths, in order.
     Relative image paths use ``resource_root`` (default: the inventory directory).
@@ -295,7 +371,8 @@ def prepare_figure_reviews(
     This binds an immutable inventory snapshot and registers the new ledger path
     in the live inventory. Other tool pointers can then be registered in either
     order. Bind the delivery after filling the ledger. Existing evidence files
-    are never overwritten.
+    are never overwritten. Every final asset also gets four pending edge slots;
+    record_figure_edges records explicit observations after actual comparison.
     """
     inventory_path = Path(inventory_path).resolve(strict=True)
     work_directory = Path(work_directory)
@@ -386,6 +463,12 @@ def prepare_figure_reviews(
             rows.append({
                 "unit": identity, "source": source_id, "source_file": source_files[source_id],
                 "source_locations": locations, "final_assets": assets,
+                "edge_reviews": [
+                    {"asset_index": index, "edge": side, "status": "pending", "observation": "",
+                     "source_file": dict(source_files[source_id]), "final_asset": dict(asset),
+                     "source_locations": []}
+                    for index, asset in enumerate(assets) for side in FIGURE_EDGES
+                ],
                 "checks": [{"id": key, "goal": goal, "status": "pending", "reason": "", "evidence": []}
                            for key, goal in FIGURE_REVIEW_GOALS.items()],
             })
@@ -400,7 +483,7 @@ def prepare_figure_reviews(
     inventory["figure_reviews_path"] = str(review_path)
     inventory_path.write_text(json.dumps(inventory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     ledger = {
-        "schema_version": 1,
+        "schema_version": 2,
         "inventory": file_record(snapshot_path),
         "inventory_path": str(inventory_path),
         "evidence_boundary": "These are reviewer-supplied records. Their existence or self-reported passes do not prove independent visual inspection.",

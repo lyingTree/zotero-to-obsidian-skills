@@ -162,13 +162,18 @@ class SyntheticCompleteWorkflow:
             ],
             "internal_links": [], "library_matches": [], "unresolved": [],
         })
-        self.run["naming"] = {
-            "status": "resolved", "original_title": self.source_text["main"][0],
-            "author_token": "UnknownAuthor", "author_reason": "No author appears in either synthetic PDF.",
-            "year": None, "year_reason": "The synthetic source does not print a publication year.",
-            "filename": "UnknownAuthor-无年份-Synthetic photon study.md",
-            "transformations": [], "conflicts": [], "conflict_scope": "offline_plan_only",
-        }
+        self.run["naming"] = workflow._module("format_helpers").build_naming_plan(
+            year=None,
+            no_year_reason="The generated main PDF prints no publication year.",
+            author_token="未知作者",
+            unknown_author_reason="The generated main PDF prints no author.",
+            original_title=self.source_text["main"][0],
+            source_evidence={field: {
+                "file": self.check_tools.bind_file(self.sources["main"]),
+                "locator": {"page": 1, "bbox": [0, 0, 400, 220]},
+            } for field in ("year", "author_token", "original_title")},
+            delivery_path=self.candidate,
+        )
         save(self.run_path, self.run)
         workflow.bind_candidate(self.run_path)
         evidence = {
@@ -236,7 +241,7 @@ class CompleteWorkflowIntegrationTests(unittest.TestCase):
 
     def test_complete_main_and_si_records_are_ready_without_semantic_certification(self):
         f = self.fixture
-        report = f.inspect()
+        report = workflow.require_completed_records(f.run_path)
         self.assertEqual(report.findings, [])
         self.assertEqual(report.source_fidelity, "not_assessed")
         self.assertIn("do not establish source fidelity", report.as_dict()["boundary"])
@@ -312,6 +317,13 @@ class CompleteWorkflowIntegrationTests(unittest.TestCase):
         other.write_bytes(f.candidate.read_bytes())
         manifest = read(f.manifest_path)
         manifest["candidate"] = f.check_tools.bind_file(other)
+        save(f.manifest_path, manifest)
+        self.assert_rejected(f.inspect())
+
+    def test_final_manifest_cannot_drop_required_figure_edge_review_mode(self):
+        f = self.fixture
+        manifest = read(f.manifest_path)
+        self.assertIs(manifest.pop("figure_edge_reviews_required"), True)
         save(f.manifest_path, manifest)
         self.assert_rejected(f.inspect())
 

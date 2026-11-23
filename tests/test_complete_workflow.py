@@ -90,6 +90,61 @@ class CompleteWorkflowTests(unittest.TestCase):
         self.assertNotIn("si_map", run["records"])
         self.assertEqual(ledger["bindings"]["sources"][0]["sha256"], hashlib.sha256(self.source.read_bytes()).hexdigest())
 
+    def test_compact_rows_preserve_separate_decisions_and_unselected_goals(self):
+        evidence = self.evidence()
+        contexts = {"source-sentence": {
+            "scope": [{"object_id": "source:page1", "locator": {"page": 1}}],
+            "evidence": ["candidate-text"],
+        }}
+        before = read(self.checks_path)
+        workflow.record_decision_rows(self.checks_path, [
+            ("TEST-A01", "passed", "source-sentence", "The actual source sentence is present."),
+            ("TEST-A02", "not_applicable", "source-sentence", "This source page contains text only.",
+             "The complete synthetic source has no figure."),
+        ], contexts=contexts, evidence=evidence)
+        after = read(self.checks_path)
+        self.assertEqual([row["status"] for row in after["checks"]],
+                         ["passed", "not_applicable", "not_verified"])
+        for old, new in zip(before["checks"], after["checks"], strict=True):
+            self.assertEqual(new["objective"], old["objective"])
+            self.assertEqual(new["requirement_type"], old["requirement_type"])
+        self.assertEqual(after["checks"][1]["applicability_condition"],
+                         "The complete synthetic source has no figure.")
+        self.assertEqual(len(after["updates"][-1]["previous"]), 2)
+
+    def test_compact_authoring_rejects_implicit_decisions_without_changing_ledger(self):
+        evidence = self.evidence()
+        contexts = {"text": {"scope": [{"object_id": "line1", "locator": {"lines": [1, 1]}}],
+                             "evidence": ["candidate-text"]}}
+        valid = ("TEST-A01", "passed", "text", "This sentence is present.")
+        invalid_rows = [
+            [valid[:3]],
+            [("TEST-A01", "not_applicable", "text", "No object.")],
+            [(*valid, "Condition on a non-NA result")],
+            [("TEST-A01", "passed", "missing-context", "Compared.")],
+            [("TEST-A01", "passed", "text", " ")],
+            [valid, valid],
+            [("UNKNOWN-A01", "passed", "text", "Compared.")],
+        ]
+        before = self.checks_path.read_bytes()
+        for rows in invalid_rows:
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                workflow.record_decision_rows(self.checks_path, rows, contexts=contexts, evidence=evidence)
+            self.assertEqual(self.checks_path.read_bytes(), before)
+        for context in ({**contexts["text"], "status": "passed"},
+                        {"scope": [], "evidence": ["candidate-text"]}):
+            with self.subTest(context=context), self.assertRaises(ValueError):
+                workflow.record_decision_rows(self.checks_path, [valid], contexts={"text": context}, evidence=evidence)
+            self.assertEqual(self.checks_path.read_bytes(), before)
+
+    def test_compact_pending_view_preserves_exact_goals(self):
+        rows = workflow.pending_check_rows(self.checks_path, limit=1)
+        self.assertEqual(rows, [["TEST-A01", "A source sentence has a target."]])
+        all_rows = workflow.pending_check_rows(self.checks_path)
+        self.assertEqual([row[0] for row in all_rows], ["TEST-A01", "TEST-A02"])
+        self.assertEqual([row["status"] for row in read(self.checks_path)["checks"]],
+                         ["not_verified"] * 3)
+
     def test_reinitialization_does_not_replace_existing_records(self):
         before = self.checks_path.read_bytes()
         with self.assertRaises(FileExistsError):
@@ -145,10 +200,49 @@ class CompleteWorkflowTests(unittest.TestCase):
         self.assertTrue(any(x.code == "WORKFLOW_RECORD_MISSING" and x.target == "checks" for x in report.findings))
         self.assertEqual(report.source_fidelity, "not_assessed")
 
+    def test_final_report_gate_requires_the_existing_local_records(self):
+        self.candidate_file()
+        before = self.checks_path.read_bytes()
+        with self.assertRaises(workflow.IncompleteRecordsError) as caught:
+            workflow.require_completed_records(self.run_path)
+        self.assertFalse(caught.exception.report.records_ready)
+        self.assertEqual(caught.exception.report.source_fidelity, "not_assessed")
+        self.assertIn("continue the listed work", str(caught.exception))
+        self.assertEqual(self.checks_path.read_bytes(), before)
+
     def test_missing_plan_is_not_hidden_by_fixed_candidate_name(self):
         self.candidate_file()
         report = workflow.inspect_workflow(self.run_path)
         self.assertTrue(any(x.code == "WORKFLOW_NAMING_MISSING" for x in report.findings))
+
+    def test_filename_alone_does_not_hide_the_missing_source_title_mapping(self):
+        self.candidate_file()
+        run = read(self.run_path)
+        run["naming"] = {"status": "planned", "filename": "candidate.md"}
+        save(self.run_path, run)
+        report = workflow.inspect_workflow(self.run_path)
+        self.assertTrue(any(x.code == "NAMING_PLAN_FIELD_MISSING" and
+                            x.target == "run.naming/title_mapping" for x in report.findings))
+
+    def test_complete_offline_naming_record_accepts_unknown_library_limits(self):
+        self.candidate_file()
+        run = read(self.run_path)
+        source_evidence = {field: {"file": self.check_tools.bind_file(self.source), "locator": {"page": 1}}
+                           for field in ("year", "author_token", "original_title")}
+        run["naming"] = workflow._module("format_helpers").build_naming_plan(
+            year=None, no_year_reason="The synthetic source prints no publication year.",
+            author_token="未知作者", unknown_author_reason="The synthetic source names no author.",
+            original_title="Synthetic optical apparatus.", source_evidence=source_evidence,
+            delivery_path=self.candidate,
+        )
+        save(self.run_path, run)
+        report = workflow.inspect_workflow(self.run_path)
+        self.assertFalse(any(x.code.startswith(("NAMING_PLAN_", "WORKFLOW_NAMING_")) for x in report.findings))
+        run["naming"]["title_mapping"]["used"] = "An unrecorded replacement"
+        save(self.run_path, run)
+        report = workflow.inspect_workflow(self.run_path)
+        self.assertTrue(any(x.code == "NAMING_PLAN_MAPPING_MISMATCH" and
+                            x.target == "run.naming/title_mapping/used" for x in report.findings))
 
     def test_pending_batch_preserves_individual_file_goals(self):
         batch = workflow.pending_check_batch(self.checks_path, limit=1)
