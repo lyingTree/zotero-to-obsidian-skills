@@ -59,6 +59,8 @@ RUN_PATH = initialize_workflow(
 
 三份映射的 `bindings` 分别绑定当前 `source_inventory`、`candidate` 及按来源 ID 登记的 `sources`。生成以后检查每个对象的源位置、目标位置和对应关系，再把实际比较结果写入相应对象记录及 `checks.json`。当前稿与旧稿的行号相同不代表证据仍然有效。
 
+`write_maps()` 与 `write_manifest()` 共用同一份 `deliveries`。其中 `target` 沿用[交付定位约定](delivery-checks.md)：行段片段按 UTF-8、LF 和原有行尾换行计算哈希，跨行 `quote` 同样用 LF 表示。映射中的 `candidate_locator` 则记录原始候选的 Unicode 字符位置与对应原始片段哈希；工具负责转换位置，不将这两种定位混用。整个候选仍绑定实际文件字节的哈希，解析换行不改写文件。
+
 最终文件即使被用户指定为 `candidate.md`，也在 `run.json.naming` 单独保存[离线命名计划](../../literature-filename/SKILL.md)。指定交付路径不会自动产生文献的拟用名称，也不能据此宣称真实库冲突已经检查。
 
 ### 图件输出的调用顺序

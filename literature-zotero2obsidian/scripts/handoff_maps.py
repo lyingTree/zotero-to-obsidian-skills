@@ -7,6 +7,7 @@ translation, source completeness, real-library identity, or semantic acceptance.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -25,6 +26,7 @@ import yaml
 
 Progress = Callable[[int, int, str], None]
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
+_ANCHOR_LINE = re.compile(r"(?<!\S)\^([A-Za-z0-9-]+)[ \t]*(?=\r?$)", re.MULTILINE)
 _MAP_KEYS = {"source_map", "si_map", "link_map"}
 _OBJECT_KINDS = {"figure", "table", "formula", "equation", "video"}
 _CALL_KINDS = {"citation", "cross_reference"}
@@ -145,6 +147,7 @@ class _Context:
         self.block_units: dict[str, set[str]] = defaultdict(set)
         self.excluded: dict[str, str] = {}
         self.text = ""
+        self.lf_crlf_offsets: list[int] = []
         self.anchor_matches: dict[str, Any] = {}
         self.headings: dict[str, list[tuple[int, int]]] = defaultdict(list)
         self.links: list[_Occurrence] = []
@@ -356,10 +359,17 @@ class _Context:
             self.fail("MAP_CANDIDATE_READ", "candidate", str(error))
             return
         _scan_candidate(self)
-        self.resolver.text = self.text
+        # Delivery selectors share validate_delivery's LF text convention.
+        # Keep only the removed CRLF boundaries: mapping a selected boundary
+        # back to raw text costs O(log(number of CRLFs)), not a per-character map.
+        self.lf_crlf_offsets = [match.start() - index
+                                for index, match in enumerate(re.finditer("\r\n", self.text))]
+        self.resolver.text = self.text.replace("\r\n", "\n").replace("\r", "\n")
         self.resolver.units = self.units
-        self.resolver.visible = self.delivery_tools._visible(self.text)
-        self.resolver.anchor_matches = self.anchor_matches
+        self.resolver.visible = self.delivery_tools._visible(self.resolver.text)
+        selector_prose = self.delivery_tools._visible(self.resolver.text, keep_tables=False)
+        selector_prose = self.note_tools._mask_delimited(selector_prose, "$")
+        self.resolver.anchor_matches = {match[1]: match for match in self.delivery_tools._ANCHOR.finditer(selector_prose)}
 
     def check_unit_references(self) -> None:
         for identity, unit in self.units.items():
@@ -429,6 +439,11 @@ class _Context:
             return self.targets.get(unit)
         old_count = len(self.resolver.report.findings)
         span = self.resolver.resolve_target(selector, unit)
+        if span is not None:
+            start, end, _value = span
+            start += bisect_left(self.lf_crlf_offsets, start)
+            end += bisect_left(self.lf_crlf_offsets, end)
+            span = start, end, self.text[start:end]
         for finding in self.resolver.report.findings[old_count:]:
             self.fail("MAP_" + finding.code, unit, finding.message)
         if isinstance(selector, dict):
@@ -588,10 +603,30 @@ def _scalar_nodes(node, path=(), active=frozenset()):
                 yield from _scalar_nodes(child, path + (key.value,), active)
 
 
+def _candidate_visible(context: _Context, *, keep_tables: bool = True, keep_table_fences: bool = False) -> str:
+    """Mask syntax using an equal-length view, then restore original CRLFs.
+
+    The shared fence recognizer accepts horizontal whitespace before LF. A
+    temporary CR-to-space substitution satisfies that grammar without shifting
+    any character offset or line. Only this parsing view is changed; source
+    text, file bindings, selected snippets and their hashes use original bytes.
+    """
+    original = context.text
+    visible = context.delivery_tools._visible(
+        original.replace("\r\n", " \n"), keep_tables=keep_tables, keep_table_fences=keep_table_fences,
+    )
+    if "\r\n" not in original:
+        return visible
+    return "\n".join(
+        rendered[:-1] + "\r" if raw.endswith("\r") else rendered
+        for raw, rendered in zip(original.split("\n"), visible.split("\n"), strict=True)
+    )
+
+
 def _scan_candidate(context: _Context) -> None:
-    prose = context.delivery_tools._visible(context.text, keep_tables=False)
+    prose = _candidate_visible(context, keep_tables=False)
     visible = context.note_tools._mask_delimited(prose, "$")
-    for match in context.delivery_tools._ANCHOR.finditer(visible):
+    for match in _ANCHOR_LINE.finditer(visible):
         identity = match[1]
         if identity in context.anchor_matches:
             context.fail("MAP_CANDIDATE_ANCHOR_DUPLICATE", identity, "The candidate defines this anchor more than once.")
@@ -628,7 +663,7 @@ def _scan_candidate(context: _Context) -> None:
         locator = {"kind": "characters", "unit": "unicode_code_points", "start": start,
                    "end": end, "sha256": _text_hash(context.text[start:end])}
         context.links.append(_Occurrence(locator, href, label, image, syntax, start, end))
-    table_lines = context.delivery_tools._visible(context.text, keep_table_fences=True).splitlines(keepends=True)
+    table_lines = _candidate_visible(context, keep_table_fences=True).splitlines(keepends=True)
     index = 0
     while index < len(table_lines):
         opening = context.delivery_tools._FENCE.match(table_lines[index].rstrip("\r\n"))
@@ -1358,6 +1393,9 @@ def write_handoff_maps(
     Each delivery identifies ``unit`` and one current ``target`` (anchor, unique
     quote, or hashed lines), following the existing delivery contract. No text
     is translated, classified from model memory, or marked visually verified.
+    Selectors use the contract's LF parsing view, including UTF-8/LF line-range
+    hashes. Generated candidate_locator offsets and snippet hashes instead refer
+    to the original candidate text; complete-file bindings hash original bytes.
 
     Missing source numbers, call display text, ambiguous target ownership or
     ambiguous source blocks produce findings instead of fabricated mappings.

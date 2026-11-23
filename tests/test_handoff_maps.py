@@ -45,7 +45,7 @@ def binding(path):
 
 
 class Fixture:
-    def __init__(self, base: Path, *, rich: bool = False):
+    def __init__(self, base: Path, *, rich: bool = False, candidate_eol: str | None = None):
         self.base = base
         self.specs = {
             "main": [
@@ -70,7 +70,10 @@ class Fixture:
         ]
         if rich:
             candidate += self.rich_content()
-        self.candidate.write_text(candidate, encoding="utf-8")
+        if candidate_eol is None:
+            self.candidate.write_text(candidate, encoding="utf-8")
+        else:
+            self.candidate.write_bytes(candidate.replace("\n", candidate_eol).encode("utf-8"))
         self.source_paths = {}
         for source_id, specs in self.specs.items():
             path = base.joinpath("input", source_id + ".pdf")
@@ -483,6 +486,86 @@ class RichHandoffTests(unittest.TestCase):
         self.assertIn("MAP_SOURCE_FIELD_MISSING", {row.code for row in report.findings})
         self.assertIn("MAP_LINK_SOURCE_DISPLAY_MISSING", {row.code for row in report.findings})
         self.assertFalse(any(path.exists() for path in self.f.paths.values()))
+
+
+class CandidateNewlineTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+
+    def assert_raw_round_trip(self, fixture):
+        original = fixture.candidate.read_bytes()
+        text = original.decode("utf-8")
+        self.assertIn(b"\r\n", original)
+        report = fixture.write()
+        self.assertTrue(report.records_ready, report.as_dict())
+        self.assertTrue(fixture.validate().records_ready)
+        self.assertEqual(fixture.candidate.read_bytes(), original)
+        self.assertEqual(report.checked_files["candidate"]["sha256"], sha256(original).hexdigest())
+        for name in ("source_map", "si_map"):
+            for row in read(fixture.paths[name])["units"]:
+                location = row["candidate_locator"]
+                value = text[location["start"]:location["end"]]
+                self.assertEqual(location["sha256"], sha256(value.encode("utf-8")).hexdigest())
+                if "anchor" in row["target"]:
+                    self.assertTrue(value.endswith("^" + row["target"]["anchor"]))
+        for row in read(fixture.paths["link_map"])["anchors"]:
+            location = row["candidate_locator"]
+            value = text[location["start"]:location["end"]]
+            self.assertEqual(value, "^" + row["target_id"])
+            self.assertTrue(location["start"] == 0 or text[location["start"] - 1].isspace())
+            self.assertTrue(text[location["end"]:].startswith(("\r\n", "\n")))
+            self.assertEqual(location["sha256"], sha256(value.encode("utf-8")).hexdigest())
+
+    def test_raw_crlf_candidate_keeps_hashes_and_character_offsets(self):
+        self.assert_raw_round_trip(Fixture(self.base, candidate_eol="\r\n"))
+
+    def test_raw_crlf_rich_tables_close_before_following_links_and_code(self):
+        fixture = Fixture(self.base, rich=True, candidate_eol="\r\n")
+        self.assert_raw_round_trip(fixture)
+        links = read(fixture.paths["link_map"])
+        self.assertEqual(len(links["internal_links"]), 6)
+        self.assertEqual(len(links["external_links"]), 1)
+        self.assertEqual(len(links["library_matches"]), 1)
+        self.assertEqual(sum(row["candidate_locator"]["kind"] == "rich_table_text"
+                             for row in links["internal_links"]), 3)
+        self.assertNotIn("fake-anchor", {row["target_id"] for row in links["anchors"]})
+
+    def test_mixed_endings_line_selector_uses_lf_hash_and_raw_offsets(self):
+        fixture = Fixture(self.base, candidate_eol="\n")
+        lines = fixture.candidate.read_bytes().decode("utf-8").splitlines()
+        text = "".join(line + ("\r\n" if index % 2 else "\n") for index, line in enumerate(lines))
+        fixture.candidate.write_bytes(text.encode("utf-8"))
+        raw_lines = text.splitlines(keepends=True)
+        first = next(index for index, line in enumerate(raw_lines) if line.startswith("The main sample"))
+        selected = "".join(raw_lines[first:first + 2])
+        self.assertIn("\r\n", selected)
+        delivery = next(row for row in fixture.deliveries if row["unit"] == "main-body")
+        delivery["target"] = {"lines": [first + 1, first + 2],
+                              "sha256": sha256(selected.encode("utf-8")).hexdigest()}
+        invalid = fixture.write()
+        self.assertFalse(invalid.records_ready)
+        self.assertIn("MAP_TARGET_LINES_HASH", {row.code for row in invalid.findings})
+        self.assertFalse(any(path.exists() for path in fixture.paths.values()))
+        delivery["target"]["sha256"] = sha256(selected.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+        self.assert_raw_round_trip(fixture)
+        mapped = next(row for row in read(fixture.paths["source_map"])["units"] if row["unit"] == "main-body")
+        location = mapped["candidate_locator"]
+        self.assertEqual(text[location["start"]:location["end"]], selected)
+        self.assertNotEqual(location["sha256"], mapped["target"]["sha256"])
+
+    def test_lf_multiline_quote_resolves_to_original_crlf_characters(self):
+        fixture = Fixture(self.base, candidate_eol="\r\n")
+        quote = "The main sample has an orange marker.\n^main-body"
+        delivery = next(row for row in fixture.deliveries if row["unit"] == "main-body")
+        delivery["target"] = {"quote": quote}
+        self.assert_raw_round_trip(fixture)
+        text = fixture.candidate.read_bytes().decode("utf-8")
+        mapped = next(row for row in read(fixture.paths["source_map"])["units"] if row["unit"] == "main-body")
+        location = mapped["candidate_locator"]
+        self.assertEqual(mapped["target"]["quote"], quote)
+        self.assertEqual(text[location["start"]:location["end"]], quote.replace("\n", "\r\n"))
 
 
 if __name__ == "__main__":

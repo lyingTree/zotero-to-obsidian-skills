@@ -502,7 +502,7 @@ class TranslationRecordValidationTests(TranslationReviewFixture):
 
     def test_actual_changed_bytes_are_not_rebound_by_validator(self):
         self.completed()
-        self.candidate.write_text(self.candidate.read_text() + "changed\n", encoding="utf-8")
+        self.candidate.write_text(self.candidate.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
         self.assertIn("TRN_HASH_CHANGED", self.codes(self.validate()))
 
     def test_override_pins_identity_even_when_copies_have_same_bytes(self):
@@ -600,7 +600,7 @@ class TranslationRecordValidationTests(TranslationReviewFixture):
         ledger = self.completed()
         # Deliberately wrong color remains a human semantic-review issue; even a
         # fully re-bound and explicitly claimed record cannot certify the color.
-        self.candidate.write_text(self.candidate.read_text().replace("紫色", "红色"), encoding="utf-8")
+        self.candidate.write_text(self.candidate.read_text(encoding="utf-8").replace("紫色", "红色"), encoding="utf-8")
         ledger["bindings"]["candidate"]["sha256"] = digest(self.candidate)
         ledger["units"]["paragraph-b"]["occurrences"]["claims"][0]["candidate_claim"] = "操作员检查了红色快门。"
 
@@ -678,7 +678,7 @@ class TranslationRecordValidationTests(TranslationReviewFixture):
         ledger = self.completed()
         term = ledger["units"]["paragraph-a"]["term_candidates"][1]
         term["decision"] = "unresolved"
-        terminology = json.loads(self.terminology_path.read_text())
+        terminology = json.loads(self.terminology_path.read_text(encoding="utf-8"))
         terminology["unlisted"][0]["status"] = "unresolved"
         self.terminology_path.write_text(json.dumps(terminology), encoding="utf-8")
         ledger["terminology_record"]["sha256"] = digest(self.terminology_path)
