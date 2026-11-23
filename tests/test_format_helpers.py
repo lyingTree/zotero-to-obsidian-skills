@@ -602,5 +602,87 @@ class VisibleTextEditTests(unittest.TestCase):
                     self.apply([edit])
 
 
+class SupplementCaptionTests(unittest.TestCase):
+    def test_new_s_prefix_keeps_original_in_visible_caption(self):
+        plan = helpers.plan_supplement_figure_caption("7c", "棱镜的响应。")
+        self.assertEqual(plan["original_number"], "7c")
+        self.assertEqual(plan["display_number"], "S7c")
+        self.assertEqual(plan["display_number_origin"], "normalized_source")
+        self.assertEqual(plan["caption"], "**图S7c：** 棱镜的响应。（来源原号：7c）")
+
+    def test_existing_s_prefix_and_literal_punctuation_are_preserved(self):
+        for original in ("S8b", "sIV", "S 9(a)"):
+            with self.subTest(original=original):
+                plan = helpers.plan_supplement_figure_caption(original, "透镜的位置。")
+                self.assertEqual(plan["original_number"], original)
+                self.assertEqual(plan["display_number"], original)
+                self.assertEqual(plan["display_number_origin"], "source_literal")
+                self.assertEqual(plan["caption"], "**图" + original + "：** 透镜的位置。")
+
+    def test_subnumber_punctuation_is_not_replaced_or_flattened(self):
+        plan = helpers.plan_supplement_figure_caption("6.2(a)", "快门的组成。")
+        self.assertEqual(plan["display_number"], "S6.2(a)")
+        self.assertTrue(plan["caption"].endswith("（来源原号：6.2(a)）"))
+
+    def test_unnumbered_source_requires_explicit_navigation_and_absence_basis(self):
+        plan = helpers.plan_supplement_figure_caption(None, "接口示意。",
+            display_number="Saux-b", original_number_reason="The observed source caption has no printed number.")
+        self.assertIsNone(plan["original_number"])
+        self.assertEqual(plan["display_number_origin"], "generated_navigation")
+        self.assertEqual(plan["caption"], "**图Saux-b：** 接口示意。（来源无图号）")
+        self.assertTrue(plan["original_number_reason"])
+
+    def test_unnumbered_source_does_not_invent_a_number_or_missing_reason(self):
+        for arguments in ({}, {"display_number": "Saux-b"},
+                          {"original_number_reason": "No source number is printed."},
+                          {"display_number": "aux-b", "original_number_reason": "No source number is printed."}):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                helpers.plan_supplement_figure_caption(None, "接口示意。", **arguments)
+
+    def test_explicit_different_display_number_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "original number"):
+            helpers.plan_supplement_figure_caption("7c", "棱镜的响应。", display_number="S8")
+        with self.assertRaisesRegex(ValueError, "absence reason"):
+            helpers.plan_supplement_figure_caption("7c", "棱镜的响应。", original_number_reason="Invented absence")
+
+    def test_label_markdown_is_escaped_but_original_metadata_is_literal(self):
+        plan = helpers.plan_supplement_figure_caption("7*", "带标记的面板。")
+        self.assertEqual(plan["original_number"], "7*")
+        self.assertEqual(plan["display_number"], "S7*")
+        self.assertEqual(plan["caption"], "**图S7\\*：** 带标记的面板。（来源原号：7\\*）")
+
+    def test_multiline_or_outer_whitespace_numbers_are_rejected(self):
+        for original in (" 7", "7 ", "7\n8", "7\r8", ""):
+            with self.subTest(original=original), self.assertRaises(ValueError):
+                helpers.plan_supplement_figure_caption(original, "接口示意。")
+        with self.assertRaises(ValueError):
+            helpers.plan_supplement_figure_caption("7", " 接口示意。")
+
+    def test_literal_number_cannot_become_math_comment_strike_or_entity(self):
+        for original, escaped in (("9$x$", r"9\$x\$"), ("9~~x~~", r"9\~\~x\~\~"),
+                                  ("9%%x%%", r"9\%\%x\%\%"), ("9&amp;", r"9\&amp;")):
+            with self.subTest(original=original):
+                plan = helpers.plan_supplement_figure_caption(original, "虚构孔径的响应。")
+                self.assertEqual(plan["original_number"], original)
+                self.assertEqual(plan["display_number"], "S" + original)
+                self.assertEqual(plan["caption"], "**图S" + escaped + "：** 虚构孔径的响应。（来源原号：" + escaped + "）")
+                self.assertFalse(any("anchor" in key for key in plan))
+
+    def test_control_and_unicode_line_separators_are_not_literal_numbers(self):
+        for separator in ("\t", "\x00", "\x1f", "\x7f", "\u0085", "\u200b", "\u202e", "\u2028", "\u2029"):
+            with self.subTest(separator=repr(separator)):
+                with self.assertRaises(ValueError):
+                    helpers.plan_supplement_figure_caption("9" + separator + "a", "虚构孔径的响应。")
+                with self.assertRaises(ValueError):
+                    helpers.plan_supplement_figure_caption(None, "虚构孔径的响应。",
+                        display_number="S9" + separator + "a", original_number_reason="The invented source is unnumbered.")
+
+    def test_whitespace_only_absence_basis_is_not_evidence(self):
+        for reason in ("", " ", "\n\t"):
+            with self.subTest(reason=repr(reason)), self.assertRaises(ValueError):
+                helpers.plan_supplement_figure_caption(None, "虚构孔径的响应。",
+                    display_number="Saux-z", original_number_reason=reason)
+
+
 if __name__ == "__main__":
     unittest.main(argv=[__file__])

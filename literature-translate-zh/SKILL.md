@@ -11,7 +11,7 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 - 读取[交接约定](../literature-zotero2obsidian/references/pipeline-contract.md)；涉及项目路径、模板、工具或阻断级别时读取[项目配置](../literature-zotero2obsidian/references/project-profile.md)。
 - 开始翻译前完整读取[逐段翻译复核操作](references/translation-review.md)。
 
-逐段记录使用该说明中的 [ReviewWriter 短入口](references/translation-review.md#逐段短入口与增量保存)。它把明确的单项判断展开为完整台账，避免反复手写相同文件哈希与位置。先读[短调用的完整虚构示例](references/compact_review_example.py)，实际任务仍逐段依据自己的来源填写。
+逐段记录先用[待办入口](references/translation-review.md#逐段待办与范围计划)取得当前段落，再用 [ReviewWriter 短入口](references/translation-review.md#逐段短入口与增量保存)填写。它把明确的单项判断展开为完整台账，避免反复手写相同文件哈希与位置。先读[短调用的完整虚构示例](references/compact_review_example.py)，实际任务仍逐段依据自己的来源填写。
 
 ## 执行步骤
 
@@ -19,11 +19,14 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 2. 绑定实际术语表指纹。
 3. 按来源块逐段翻译。
 4. 在清单与候选固定后生成默认待核的 `translation-review.json`。
-5. 按[逐段操作顺序](references/translation-review.md#逐段操作顺序)逐项回查完整来源段。
-6. 将每个专业术语的检索与取舍记录写入对应来源块。
-7. 将术语采用决定汇入 `terminology.json`。
-8. 运行[记录检查函数](scripts/validate_translation_review.py)，按每条诊断补齐本次实际记录。
-9. 按[验收证据位置](references/translation-review.md#验收证据位置)填写各 ID 的实际结果。
+5. 用 `next_review_task()` 取得本轮实际待办。
+6. 按[逐段操作顺序](references/translation-review.md#逐段操作顺序)逐项回查当前完整来源段。
+7. 将每个专业术语的检索与取舍记录写入对应来源块。
+8. 用 `require_unit_records()` 检查当前块的全部记录。
+9. 当前块就绪后再取得下一块待办。
+10. 将术语采用决定汇入 `terminology.json`。
+11. 运行[记录检查函数](scripts/validate_translation_review.py)，按每条诊断补齐本次实际记录。
+12. 按[验收证据位置](references/translation-review.md#验收证据位置)填写各 ID 的实际结果。
 
 ## 约束
 

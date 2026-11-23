@@ -53,7 +53,7 @@ RUN_PATH = initialize_workflow(
 
 ## 中间阶段：按对象保存实际判断
 
-沿[分阶段路线](execution-plan.md)完成来源盘点、翻译、排版和链接。`run.json.records` 给出本次必需记录的计划路径；尚未生成的文件应在对应阶段补齐。
+沿[分阶段路线](execution-plan.md)完成来源盘点、翻译、排版和链接。`run.json.records` 给出本次必需记录的计划路径；尚未生成的文件应在对应阶段补齐。译文记录按[逐段待办](../../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)推进：先说明全部来源范围，每次闭合当前块，再处理下一块；不要把每段仅有一项判断的半成品留给最终全量收尾。
 
 | 记录 | 在哪个阶段完成 | 核对目标 |
 |---|---|---|
@@ -69,6 +69,8 @@ RUN_PATH = initialize_workflow(
 完整入口读取以下集合字段；集合可以用列表保存记录，也可以用对象 ID 到记录的映射保存。没有对应对象时保留空集合，并在该验收 ID 记录实际不适用依据：`source-map.json` 的 `blocks`、`objects`、`references`、`citations`；`si-map.json` 的 `sources`、`blocks`、`objects`；`link-map.json` 的 `anchors`、`internal_links`、`library_matches`、`unresolved`。集合存在只说明结构齐全，不证明内容已经核对。
 
 来源单元和交付位置登记后，可调用 `write_maps(RUN_PATH, deliveries)`，由实际 inventory 和明确的交付定位生成这三份映射。返回报告会列出不能可靠派生的字段；补齐实际来源依据后再生成，不能填猜测值绕过诊断。该函数保留 `extracted`／`pending` 状态，既不声称已经看过来源，也不替代逐单项目标的实际核对。首次生成不覆盖旧文件；需要重新生成时在 `run.json.records` 指定新版本路径，保留原文件。
+
+发现文字层与页图读法不同时，先用[冲突登记入口](pipeline-contract.md#一次登记文字层与页图冲突)把本次观察写入该来源单元，再建立最终库存快照和映射。`basis: visual` 只标明来源类型；单独写在执行报告或译文疑点中的解释不会自动进入 `source-map.json` 或 `si-map.json`。主文与每份补充材料分别检查自己的实际冲突记录。
 
 在翻译前按[来源单元字段](delivery-checks.md)使用 `make_source_unit()` 登记对象和调用，能提前发现漏填的来源编号或调用文字。所有候选链接都要有来源显示文字；正文调用可复用对应单元的 `display_text`，邮箱、DOI 和图片嵌入等仍按各自实际来源登记。源页没有文字显示标签时，明确记录空字符串及原因，不从候选生成标签冒充源显示文字。
 
@@ -220,7 +222,7 @@ completed_records = require_completed_records(RUN_PATH, progress=progress_bar)
 
 `WORKFLOW_RECORD_MISSING` 表示需要补对应记录。`WORKFLOW_CHECK_PENDING` 表示需要完成该单项目标。`WORKFLOW_MANIFEST_BINDING` 表示报告引用了另一份文件或旧版本。翻译记录中的 `TRN_PENDING`、`TRN_UNRESOLVED` 等逐项提示同样保留其具体目标位置，可据此回到对应段落或术语记录。先处理实际缺项，再运行收尾检查。
 
-完整报告可能很长；保存在文件中，控制台只看 `summary()` 与当前批次。摘要仅合并显示重复诊断，不删除待验目标，也不会把任何目标转为通过。处理顺序为：来源单元字段 → 对应交接映射 → 逐段译文记录 → 逐 ID 结果 → 最终索引绑定 → 完成检查。对一个阶段的每个剩余对象完成记录后再进入下一阶段。
+完整报告可能很长；保存在文件中，控制台只看 `summary()` 与当前批次。摘要仅合并显示重复诊断，不删除待验目标，也不会把任何目标转为通过。处理顺序为：来源单元字段 → 对应交接映射 → 逐段译文记录 → 逐 ID 结果 → 最终索引绑定 → 完成检查。对一个阶段的每个剩余对象完成记录后再进入下一阶段。译文阶段使用 `next_review_task()` 与 `require_unit_records()`；它们只显示当前单元及其真实缺项，仍调用原有检查逻辑，不能替代最终实际文件的检查。
 
 排版提示仍出现时，回到原规则判定。带单位的近似时长同样适用数学排版，例如“数十年”可写为 `$\text{数十}\,\text{年}$`；非精确不构成忽略提示的理由。真正的非问题项保存为 `presentation_review` 指向的 JSON。该文件的 `bindings.candidate` 用 `bind_file(CANDIDATE_PATH)` 绑定当前实际文件；`items` 每项写当前 `code`、`line`、`status: "not_an_issue"` 和具体 `reason`。候选变化后重新对照提示，不复用旧行号或旧理由。
 

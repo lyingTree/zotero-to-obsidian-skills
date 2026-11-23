@@ -4,6 +4,7 @@
 
 - [范围与证据边界](#范围与证据边界)
 - [准备记录](#准备记录)
+- [逐段待办与范围计划](#逐段待办与范围计划)
 - [逐段短入口与增量保存](#逐段短入口与增量保存)
 - [展开清单中的 block 定位](#展开清单中的-block-定位)
 - [逐段操作顺序](#逐段操作顺序)
@@ -112,6 +113,55 @@ review_path = prepare_translation_review(
 
 未选择的单元不能只从 `selected_units` 删掉。保留其 `unselected_inventory_units` 条目，并在 `excluded_units` 说明本次实际语种、非应译对象或局部修订授权条件，附真实定位证据。若仍属于本次应译范围，把它加入生成器的 `unit_ids`，为它建立待核记录。检查器不会按 `kind`、关键词或候选有没有中文自动排除单元。
 
+## 逐段待办与范围计划
+
+准备清单后先用 `translation_review_tasks.py` 查看实际待办。它按“范围 → 当前单元 → 全局记录”的顺序读取现有台账，当前单元未就绪时不会跳到后面的单元。它只显示已有目标，不判断语义，不填写状态，也不按对象类型自动排除内容。
+
+在本次 Python 调用脚本里使用：
+
+```python
+import json
+from translation_review_writer import ReviewWriter
+from translation_review_tasks import next_review_task, require_unit_records
+
+writer = ReviewWriter(actual_prepared_review_path)
+task = next_review_task(writer)
+print(json.dumps(task, ensure_ascii=False, indent=2))
+```
+
+| `stage` | 当前目标 |
+|---|---|
+| `scope` | 确认每个来源单元的处理范围 |
+| `unit` | 完成当前单元的全部记录 |
+| `global_records` | 处理报告指出的全局记录缺项 |
+| `save_final_records` | 保存实际正式复核文件 |
+
+`scope` 每次显示少量未说明范围的原单元及其实际源位置。仍需翻译的单元应在第一次逐段判断之前加入准备范围。实际不译的单元用 `writer.exclude(unit_id, condition, reason)` 各写自己的条件。再明确填写 `writer.scope(status, reason)`。类型标签、关键词或未被选中本身均不是排除依据。
+
+逐一核对题名、小节标题、正文、题注、表头、注释和声明中的实际应译内容。短标题也建立自己的单元。短标题的中文译文也要复核，不能因为它字数少、原题另外保留或不是正文段落而跳过。书目等明确照录原文的对象，则按实际适用规则给出排除理由。
+
+`unit` 给出完整原位置、实际候选片段、17个独立检查问题、10类扫描状态和14组逐处记录字段。原文片段与候选片段不会被静默截断；显示中省略的重复绑定仍在完整台账内。数值检查不能代替单位检查；用文字表达的时间尺度同样具有单位。完整性检查落实到实际命题，不能用概括性动作替代来源明确的动作。术语查询仍由实际读取和取舍产生。
+
+按下一节短入口完成本段后，再执行：
+
+```python
+if task["stage"] == "unit":
+    # 先按实际候选位置绑定本单元，再填写其每项目标。
+    require_unit_records(writer, task["unit_id"])
+    writer.save_draft(actual_new_checkpoint_path)
+    print(json.dumps(next_review_task(writer), ensure_ascii=False, indent=2))
+```
+
+若本段仍有缺项，`IncompleteUnitRecordsError.result` 保存该段的完整实际诊断；继续处理本段。`unit_record_report(writer, unit_id)` 可只读检查任一已选单元。没有做完时也可以保存新草稿，但保存草稿不表示本段就绪。下一次用 `ReviewWriter.from_draft(actual_checkpoint_path)` 恢复原输入仍有效的决定，再查看待办。
+
+只有 `unit` 阶段才读取 `task["unit_id"]`。本单元尚无候选定位时，先用 `writer.unit(unit_id, candidate_locations=actual_complete_candidate_locations)` 绑定实际完整范围，再填写检查；其他阶段按上表处理自己的目标。
+
+每条实质命题使用自己的 `claims` 记录；只填 `completeness: passed` 而没有命题记录会被拒绝。各类实际不存在时分别说明该类的缺省条件，不能把所有空组统一改成不适用。一个单元的判断不传播到下一单元。
+
+待办中的诊断显示有数量上限，`diagnostic_totals` 保留完整数量。显示上限不删除目标，也不影响原检查器判断。当前单元检查调用原样的最终校验器逻辑；完整就绪仍由正式文件的 `validate_translation_review()` 判断。
+
+全部单元就绪后，工具用临时预览文件检查全局记录。它保留源文疑点、术语覆盖、整体状态等实际未决项。这些临时文件不是交付物。`save_final_records` 只表示可以保存正式记录。随后调用 `writer.save(new_review_path, terminology_path=new_terminology_path)` 保存新文件。检查这次保存返回的实际报告。将正式复核文件接入完整工作流。将正式术语文件接入完整工作流。工具不为任何技能验收 ID 自动填写通过。工具不认证译义正确。
+
 ## 逐段短入口与增量保存
 
 `scripts/translation_review_writer.py` 提供 `ReviewWriter`。先用上节的真实 `prepare_translation_review()` 建立台账，再加载它。来源身份和全部来源位置从准备台账读取；每段只绑定一次完整候选位置。之后短调用里的状态、理由和独立比较仍由实际复核者逐项填写，文件路径、哈希、重复 evidence 和术语总表指针由入口展开。17 个检查、10 类扫描和 14 组 occurrence 不变；没有调用的目标继续是 `pending`。
@@ -149,9 +199,9 @@ writer.save_draft(work.joinpath("translation-decisions-paragraph-01.json"))
 同一候选版本下继续：
 
 1. 用 `ReviewWriter.from_draft(saved_draft_path)` 恢复已保存的短决定。入口重新核对准备台账及其实际来源、候选、清单与词表绑定。
-2. 用 `writer.unit(next_unit_id, candidate_locations=...)` 进入下一段，完成该段自己的检查、术语扫描及逐次 occurrence。尚未做完的段和目标继续保留；不能把上一段的结论复制给下一段。
+2. 用 `next_review_task(writer)` 确认当前段。用 `writer.unit(unit_id, candidate_locations=...)` 完成该段自己的检查、术语扫描及逐次 occurrence，再调用 `require_unit_records()`；尚未完成时继续本段，不能把上一段的结论复制给下一段。
 3. 完成当前批次后写另一个新草稿。也可以随时 `writer.save(new_partial_review_path, terminology_path=new_partial_terminology_path)`，保存可检查的部分台账并查看实际 `pending_ids`；保存成功不表示已经就绪。
-4. 所有实际应译单元完成后，明确填写 `writer.scope(status, reason)`、必要的 `writer.exclude(unit_id, condition, reason)`、`writer.source_issues_review(status, reason)`。发现源文疑点时，用 `unit.issue(issue_id, source, description, candidate_readings, disposition, status, reason)` 保留各个读法与处理，不用总括结论代替疑点记录。
+4. 所有实际应译单元完成后，明确填写 `writer.source_issues_review(status, reason)`；范围和排除条件已经在逐段判断前完成。发现源文疑点时，用 `unit.issue(issue_id, source, description, candidate_readings, disposition, status, reason)` 保留各个读法与处理，不用总括结论代替疑点记录。
 5. 明确调用 `writer.terminology_review("reviewed", covered_units=actual_reviewed_unit_ids, no_unlisted_reason=actual_empty_set_reason_if_applicable)` 和 `writer.review("reviewed")`，再保存新的正式台账与术语文件：
 
 ```python

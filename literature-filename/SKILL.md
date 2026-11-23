@@ -44,6 +44,8 @@ if not naming_validation["structurally_consistent"]:
 
 固定交付名 `candidate.md` 只确定 `delivery_path`；仍保存完整的拟用文献名、原题和变换映射。不要用只有 `filename` 的对象代替该返回值。`validate_naming_plan` 只读复算同一构建算法，逐字段检查来源文件哈希，按 `code`、JSON-pointer `field` 和 `message` 返回缺项或不一致；它不补写记录。`structurally_consistent` 只表示记录自洽，`plan_status="blocked"` 仍需处理阻断原因。未知真实路径限额保持未核，校验不认证元数据语义、真实库冲突或写入权限。
 
+仅交付本地候选时，路径验收的 `scope` 指向本次实际 `delivery_path`。保存该完整路径的长度检查依据。保存实际文件工具对该路径的访问结果。限额计数单位按当前文件系统解释，不能把 UTF-8 字节数当作 UTF-16 单元数。拟用文献名仍保留在命名计划中。未提供的未来库目录保持未核。未提供的未来库限额保持未核。当前交付路径的证据不能外推为未来入库路径的证据。
+
 ## 约束
 
 - [NAME-C01] 无可靠发表年时使用“无年份”。

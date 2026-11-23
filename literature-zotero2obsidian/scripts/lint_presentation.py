@@ -42,6 +42,22 @@ QUANTITY = re.compile(
     r"(?<![0-9A-Za-z_.])(?P<number>\d+(?:\.\d+)?(?:\s*[-\u2010-\u2015]\s*\d+(?:\.\d+)?)?)"
     r"\s*(?P<unit>小时|分钟|秒|千米|公里|厘米|毫米|米|年|km|cm|mm|m|h|s)(?![A-Za-z])"
 )
+ENGLISH_DURATION_UNIT = r"(?i:seconds?|minutes?|hours?|days?|weeks?|months?|years?|decades?|century|centuries)"
+ENGLISH_DURATION = re.compile(
+    r"(?<![0-9A-Za-z_.])(?P<number>\d+(?:\.\d+)?(?:\s*[-\u2010-\u2015]\s*\d+(?:\.\d+)?)?)"
+    r"\s*(?:[-\u2010-\u2015]\s*)?(?P<unit>" + ENGLISH_DURATION_UNIT + r")(?![A-Za-z])"
+)
+ADJACENT_ENGLISH_DURATION = re.compile(
+    r"\s*(?:[-\u2010-\u2015]\s*)?(?P<unit>" + ENGLISH_DURATION_UNIT + r")(?![A-Za-z])"
+)
+LETTER_LIST_ITEM = re.compile(
+    r"^ {0,3}(?:\*\*|__)?(?:\((?P<parenthesized>[a-z])\)|(?P<plain>[a-z])[).、])(?:\*\*|__)?\s+\S",
+    re.IGNORECASE,
+)
+FIGURE_CAPTION_NO_SPACE = re.compile(
+    r"^ {0,3}\*\*图(?P<number>[A-Za-z0-9](?:\\.|[^\r\n：*])*)：\*\*(?P<body>\S)"
+)
+REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[(?P<label>(?:\\.|[^\]\\\r\n])+)\]:[ \t]*(?P<payload>.*)$")
 CHINESE_QUANTITY = re.compile(
     r"(?P<number>[数几]?[零〇一二三四五六七八九十百千万亿两半]+(?:[-\u2010-\u2015至到][数几]?[零〇一二三四五六七八九十百千万亿两半]+)?)"
     r"\s*(?P<unit>小时|分钟|秒|千米|公里|厘米|毫米|米|年)"
@@ -94,7 +110,7 @@ def _replace_links(text: str, *, keep_labels: bool) -> str:
     start = 0
     for link in delivery_checks.scan_markdown_links(text):
         parts.append(text[start:link.start])
-        parts.append(link.label if keep_labels else "")
+        parts.append(link.label if keep_labels and not link.image else "")
         start = link.end
     parts.append(text[start:])
     return "".join(parts)
@@ -167,10 +183,74 @@ def _scan_panel_links(text: str, line: int) -> list[Prompt]:
 
 def _visible(text: str) -> str:
     value = note_checks._mask_delimited(text, "`")
+    comment = None
+    visible_lines = []
+    for line in value.splitlines():
+        line, comment = note_checks._mask_comments(line, comment)
+        visible_lines.append(line)
+    value = "\n".join(visible_lines)
     value = _replace_links(value, keep_labels=True)
-    value = WIKI.sub(lambda match: match[1].split("|", 1)[-1], value)
+    # An embed's target/size is not its visible caption. A regular wiki link's
+    # label is visible and remains eligible for a presentation prompt.
+    value = WIKI.sub(lambda match: "" if match.start() and value[match.start() - 1] == "!"
+                    and not note_checks._escaped(value, match.start() - 1)
+                    else match[1].split("|", 1)[-1], value)
     value = re.sub(r"<[^>]*>", "", value)
     return value
+
+
+def _reference_definition_end(lines: list[str], start: int) -> int | None:
+    """Recognize a hidden link definition without hiding malformed prose.
+
+    This is deliberately limited to a single-line label. Destinations and a
+    quoted title may continue on following nonblank lines. Footnote definitions
+    are visible content and are not treated as link definitions.
+    """
+    match = REFERENCE_DEFINITION.match(lines[start])
+    if match is None or not match["label"].strip() or match["label"].startswith("^"):
+        return None
+    end = start
+    payload = match["payload"].lstrip()
+    if not payload and end + 1 < len(lines):
+        end += 1
+        payload = lines[end].lstrip()
+    destination = re.match(r"<(?:\\.|[^\\<>\r\n])*>|(?:\\.|[^\s])+", payload)
+    if destination is None:
+        return None
+    target = destination[0]
+    synthetic = "[reference](" + target + ")"
+    links = delivery_checks.scan_markdown_links(synthetic)
+    if len(links) != 1 or links[0].end != len(synthetic):
+        return None
+    tail = payload[destination.end():].lstrip()
+    same_line_title = bool(tail)
+    destination_end = end
+    if not tail and end + 1 < len(lines):
+        tail = lines[end + 1].lstrip()
+        end += 1
+    if not tail or tail[0] not in {"'", '"', "("}:
+        return None if same_line_title else destination_end
+    closing = ")" if tail[0] == "(" else tail[0]
+    title_parts = []
+    cursor = 1
+    while True:
+        for index in range(cursor, len(tail)):
+            if tail[index] != closing or note_checks._escaped(tail, index):
+                continue
+            if tail[index + 1:].strip():
+                return None if same_line_title else destination_end
+            title_parts.append(tail[:index + 1])
+            title = "\n".join(title_parts)
+            synthetic = "[reference](" + target + " " + title + ")"
+            links = delivery_checks.scan_markdown_links(synthetic)
+            if len(links) == 1 and links[0].end == len(synthetic):
+                return end
+            return None if same_line_title else destination_end
+        title_parts.append(tail)
+        end += 1
+        if end >= len(lines) or not lines[end].strip():
+            return None if same_line_title else destination_end
+        tail, cursor = lines[end], 0
 
 
 def _calendar_year(number: str, unit: str) -> bool:
@@ -184,7 +264,7 @@ def _calendar_year(number: str, unit: str) -> bool:
 def _scan_split_quantity(text: str, line: int) -> list[Prompt]:
     findings = []
     for math in INLINE_MATH.finditer(text):
-        unit = ADJACENT_UNIT.match(text, math.end())
+        unit = ADJACENT_UNIT.match(text, math.end()) or ADJACENT_ENGLISH_DURATION.match(text, math.end())
         if unit is None:
             continue
         number = math[0][1:-1]
@@ -206,8 +286,7 @@ def _scan(text: str, line: int) -> list[Prompt]:
         visible_lines.append(source_line)
     text = "\n".join(visible_lines)
     findings.extend(_scan_panel_links(text, line))
-    math_visible = _replace_links(note_checks._mask_delimited(text, "`"), keep_labels=True)
-    math_visible = WIKI.sub(lambda match: match[1].split("|", 1)[-1], math_visible)
+    math_visible = _visible(text)
     for math in INLINE_MATH.finditer(math_visible):
         findings.extend(_scan_math(math[0][1:-1], line, display=False))
     findings.extend(_scan_split_quantity(math_visible, line))
@@ -237,7 +316,8 @@ def _scan(text: str, line: int) -> list[Prompt]:
     prose = INLINE_MATH.sub("ⓜ", visible)
     for match in PERCENT.finditer(prose):
         findings.append(Prompt("BODY-C184", line, "PERCENT_OUTSIDE_MATH", match[0], "百分量整体置于数学环境，百分号写作 \\%。"))
-    for match in (*QUANTITY.finditer(prose), *CHINESE_QUANTITY.finditer(prose), *CENTURY_DURATION.finditer(prose)):
+    for match in (*QUANTITY.finditer(prose), *ENGLISH_DURATION.finditer(prose),
+                  *CHINESE_QUANTITY.finditer(prose), *CENTURY_DURATION.finditer(prose)):
         number, unit = match["number"], match["unit"]
         if _calendar_year(number, unit):
             continue  # Calendar years and ranges are dates, not durations.
@@ -294,15 +374,67 @@ def _scan_table_titles(value: object, line: int) -> list[Prompt]:
     if not isinstance(sheets, list):
         return []
     findings = []
-    for sheet in sheets:
+    for index, sheet in enumerate(sheets, 1):
         if not isinstance(sheet, dict) or not isinstance(sheet.get("title"), str):
             continue
-        title = _visible(sheet["title"])
-        figure_label = re.match(r"图\s*[A-Za-z]*\d+(?:\.\d+)*[A-Za-z]*\s*(.*)",
-                                title.lstrip("*_ \t"))
-        if figure_label is not None and not figure_label[1].startswith("内表格"):
+        location = f"第{index}张工作表"
+        title = _visible(sheet["title"]).strip()
+        if not title:
+            continue
+        plain_title = re.sub(r"(?<!\\)(?:\*\*|__)", "", title).lstrip()
+        label = (re.match(r"(?P<kind>表)(?P<number>[^：:\r\n]+)(?=[:：])", plain_title)
+                 or re.match(r"(?P<kind>图)(?P<number>[^\r\n]+?)(?=内表格)", plain_title)
+                 or re.match(r"(?P<kind>表|图)(?P<number>[A-Za-z0-9](?:\\.|[A-Za-z0-9.()_ -])*)", plain_title))
+        number = label["number"].rstrip() if label is not None else ""
+        required_label = label["kind"] + number if label is not None else ""
+        if label is not None and label["kind"] == "图" and plain_title[label.end():].startswith("内表格"):
+            required_label += "内表格"
+        strong = re.match(r"^(?P<marker>\*\*|__)(?P<label>.+?)(?P=marker)", title)
+        if label is None:
+            if strong is None:
+                findings.append(Prompt("BODY-C18", line, "TABLE_TITLE_BOLD", title,
+                                       location + "的 title 未见完整粗体题注标签；先对照来源确认标签范围。"))
+            findings.append(Prompt("BODY-C106", line, "TABLE_TITLE_LABEL", title,
+                                   location + "的 title 未识别表号或图内表格标记；先对照来源确定对象类型与原编号，不自动补造或重排编号。"))
+            continue
+        if label is not None and (strong is None or not strong["label"].startswith(required_label)):
+            findings.append(Prompt("BODY-C18", line, "TABLE_TITLE_BOLD", title,
+                                   location + "的 title 题注标签按模板使用闭合的粗体。"))
+        if label is not None and label["kind"] == "表" and not re.match(
+            r"^\*\*表" + re.escape(number) + r"：\*\*", title
+        ):
+            findings.append(Prompt("BODY-C106", line, "TABLE_TITLE_LABEL", title,
+                                   location + "的独立表 title 使用 **表N：** 标签；N 保留实际表号。"))
+        if label is not None and label["kind"] == "图" and not plain_title[label.end():].startswith("内表格"):
             findings.append(Prompt("BODY-C263", line, "EMBEDDED_TABLE_TITLE", title,
-                                   "图内数据表的可编辑副本用“图N内表格”标明来源；N 取原图编号。"))
+                                   location + "的图内数据表可编辑副本用“图N内表格”标明来源；N 取原图编号。"))
+    return findings
+
+
+def _letter_list_structure(events: list[tuple[str, int, str]]) -> list[Prompt]:
+    """Prompt on adjacent alphabetic labels that are ordinary Markdown text.
+
+    This does not infer the source's block semantics. Genuine panel prose can be
+    explicitly reviewed as a non-issue; code and real Markdown list markers are
+    excluded from this heuristic.
+    """
+    findings = []
+    group = []
+
+    def finish():
+        if len(group) >= 2:
+            findings.append(Prompt("BODY-C104", group[0][0], "LETTER_LIST_NOT_MARKDOWN", group[0][1],
+                                   "这些字母标签仍是普通段落；对照来源确认列表后使用 Markdown 列表标记，并保留原字母标签。硬换行不产生列表结构。"))
+        group.clear()
+
+    for kind, line, text in events:
+        if kind == "blank":
+            continue
+        if kind != "text" or not LETTER_LIST_ITEM.match(_visible(text)):
+            finish()
+            continue
+        group.append((line, text))
+    finish()
     return findings
 
 
@@ -369,7 +501,10 @@ def lint_presentation(text: str) -> list[Prompt]:
     code_lines: dict[int, str] = {}
     list_indent = None
     last_visible: tuple[str, str] | None = None
+    reference_end = -1
     for position in range(start, len(lines)):
+        if position <= reference_end:
+            continue
         raw = lines[position]
         line = raw
         match = FENCE.match(line)
@@ -435,6 +570,11 @@ def lint_presentation(text: str) -> list[Prompt]:
                 events.append(("code", position + 1, raw))
                 last_visible = ("code", raw.strip())
             continue
+        if comment is None and (not events or events[-1][0] != "text"):
+            definition_end = _reference_definition_end(lines, position)
+            if definition_end is not None:
+                reference_end = definition_end
+                continue
         match = FENCE.match(line)
         if match:
             fence = (match[1][0], len(match[1]), match[2].strip(), position + 1)
@@ -459,6 +599,11 @@ def lint_presentation(text: str) -> list[Prompt]:
             continue
         kind = "heading" if HEADING.match(line) else "text"
         events.append((kind, position + 1, line))
+        caption = FIGURE_CAPTION_NO_SPACE.match(_visible(line))
+        if caption:
+            rule = "BODY-C96" if caption["number"].lower().startswith("s") else "BODY-C95"
+            findings.append(Prompt(rule, position + 1, "FIGURE_CAPTION_SPACE", line,
+                                   "粗体图号标签闭合后保留模板中的空格，再接题注正文。"))
         image_match = STANDALONE_IMAGE.fullmatch(line)
         # Wiki embeds can target PDFs, videos or Markdown blocks. Only an
         # actual image resource belongs to the standalone-figure rule.
@@ -475,6 +620,7 @@ def lint_presentation(text: str) -> list[Prompt]:
         last_visible = (kind, line.strip())
     findings.extend(_heading_spacing(events))
     findings.extend(_paragraph_spacing(events))
+    findings.extend(_letter_list_structure(events))
     return list(dict.fromkeys(findings))
 
 

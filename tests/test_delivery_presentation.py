@@ -334,6 +334,198 @@ class PresentationTests(unittest.TestCase):
         text = "```rich-table\n---\n" + yaml.safe_dump(table, allow_unicode=True) + "---\n```"
         self.assertEqual(self.codes(text), {"NUMERIC_RANGE_OUTSIDE_MATH"})
 
+    def table_note(self, table, *, wrapped=True):
+        payload = yaml.safe_dump(table, allow_unicode=True)
+        if wrapped:
+            payload = "---\n" + payload + "---\n"
+        return "```rich-table\n" + payload + "```\n"
+
+    def test_plain_table_title_requires_bold_label_in_wrapped_v2(self):
+        text = self.table_note({"version": 2, "title": "表7：校准数据。", "columns": [], "rows": []})
+        self.assertEqual(self.codes(text), {"TABLE_TITLE_BOLD", "TABLE_TITLE_LABEL"})
+
+    def test_complete_table_label_is_accepted_with_or_without_wrapper(self):
+        table = {"version": 2, "title": "**表7：** 校准数据。", "columns": [], "rows": []}
+        for wrapped in (True, False):
+            with self.subTest(wrapped=wrapped):
+                self.assertEqual(self.codes(self.table_note(table, wrapped=wrapped)), set())
+
+    def test_unclosed_table_bold_is_not_a_complete_label(self):
+        text = self.table_note({"version": 2, "title": "**表7：校准数据。", "columns": [], "rows": []})
+        self.assertEqual(self.codes(text), {"TABLE_TITLE_BOLD", "TABLE_TITLE_LABEL"})
+
+    def test_later_sheet_table_label_has_its_own_prompt(self):
+        table = {"version": 3, "sheets": [
+            {"title": "**表7：** 校准数据。", "columns": [], "rows": []},
+            {"title": "表8：校准数据。", "columns": [], "rows": []},
+        ]}
+        prompts = lint_presentation(self.table_note(table))
+        self.assertEqual({item.code for item in prompts}, {"TABLE_TITLE_BOLD", "TABLE_TITLE_LABEL"})
+        self.assertTrue(all("第2张工作表" in item.message for item in prompts))
+
+    def test_identical_bad_titles_on_different_sheets_keep_separate_prompts(self):
+        table = {"version": 3, "sheets": [
+            {"title": "表7：校准数据。", "columns": [], "rows": []},
+            {"title": "表7：校准数据。", "columns": [], "rows": []},
+        ]}
+        prompts = lint_presentation(self.table_note(table))
+        self.assertEqual(sum(item.code == "TABLE_TITLE_BOLD" for item in prompts), 2)
+        self.assertEqual(sum(item.code == "TABLE_TITLE_LABEL" for item in prompts), 2)
+
+    def test_figure_table_title_checks_bold_without_treating_it_as_independent_table(self):
+        table = {"version": 2, "title": "图7内表格：校准数据。", "columns": [], "rows": []}
+        self.assertEqual(self.codes(self.table_note(table)), {"TABLE_TITLE_BOLD"})
+        table["title"] = "**图7内表格：** 校准数据。"
+        self.assertEqual(self.codes(self.table_note(table)), set())
+
+    def test_main_and_supplement_caption_labels_require_the_template_space(self):
+        prompts = [item for item in lint_presentation("**图7：**说明。\n\n**图S7：**说明。")
+                   if item.code == "FIGURE_CAPTION_SPACE"]
+        self.assertEqual([item.rule_id for item in prompts], ["BODY-C95", "BODY-C96"])
+        self.assertNotIn("FIGURE_CAPTION_SPACE", self.codes("**图7：** 说明。\n\n**图S7：** 说明。"))
+
+    def test_caption_space_prompt_ignores_nonvisible_examples(self):
+        for text in ("`**图S7：**说明。`", "<!-- **图S7：**说明。 -->", "    **图S7：**说明。",
+                     "```text\n**图S7：**说明。\n```", "$$\n**图S7：**说明。\n$$"):
+            with self.subTest(text=text):
+                self.assertNotIn("FIGURE_CAPTION_SPACE", self.codes(text))
+
+    def test_alphabetic_labels_with_hard_breaks_remain_plain_markdown(self):
+        for labels in (("a)", "b)"), ("(a)", "(b)"), ("**a)**", "**b)**"), ("__a.__", "__b.__")):
+            with self.subTest(labels=labels):
+                text = labels[0] + " First class.  \n" + labels[1] + " Second class.\n"
+                prompts = [item for item in lint_presentation(text) if item.code == "LETTER_LIST_NOT_MARKDOWN"]
+                self.assertEqual(len(prompts), 1)
+                self.assertEqual(prompts[0].line, 1)
+
+    def test_real_markdown_lists_and_isolated_letters_are_not_prompted(self):
+        for text in ("1. a) First class.\n2. b) Second class.", "- a) First class.\n- b) Second class.",
+                     "a) An isolated label.\n\nOrdinary paragraph.",
+                     "a) First panel.\n\n## Separate section\nb) Other panel."):
+            with self.subTest(text=text):
+                self.assertNotIn("LETTER_LIST_NOT_MARKDOWN", self.codes(text))
+
+    def test_alphabetic_list_prompt_ignores_code_comments_and_math(self):
+        for text in ("```text\na) First class.\nb) Second class.\n```",
+                     "<!--\na) First class.\nb) Second class.\n-->",
+                     "$$\na) First class.\nb) Second class.\n$$",
+                     "    a) First class.\n    b) Second class."):
+            with self.subTest(text=text):
+                self.assertNotIn("LETTER_LIST_NOT_MARKDOWN", self.codes(text))
+
+    def test_english_durations_include_ranges_hyphenated_values_and_reference_titles(self):
+        text = "Period: 7.25 year; a 3-year survey; span 2-4 months.\n\n1. A. Example. A 5.5 year cycle. *Journal* (2020)."
+        quantities = [item.excerpt for item in lint_presentation(text) if item.code == "QUANTITY_OUTSIDE_MATH"]
+        self.assertEqual(quantities, ["7.25 year", "3-year", "2-4 months", "5.5 year"])
+
+    def test_english_duration_split_across_math_boundary_is_prompted(self):
+        text = r"A $7$ year period and $2\text{-}4$ months."
+        quantities = [item.excerpt for item in lint_presentation(text) if item.code == "QUANTITY_SPLIT_MATH"]
+        self.assertEqual(quantities, ["$7$ year", r"$2\text{-}4$ months"])
+
+    def test_english_duration_prompts_exclude_dates_math_code_and_destinations(self):
+        text = r"Published: 7 June 2020. $7.25\,\mathrm{yr}$; `3-year`; [label](https://example.test/5-year)."
+        self.assertNotIn("QUANTITY_OUTSIDE_MATH", self.codes(text))
+        self.assertNotIn("QUANTITY_SPLIT_MATH", self.codes(text))
+        self.assertEqual(self.codes("```text\n7.25 year\n```"), set())
+
+    def test_linked_or_commented_complete_table_labels_are_visible_and_valid(self):
+        for title in ("[**表9：**](<https://example.test/catalog/7-year>) 虚构光学实验。",
+                      "<!-- internal remark -->**表9：** 虚构光学实验。",
+                      "%% internal remark %%**表9：** 虚构光学实验。"):
+            with self.subTest(title=title):
+                text = self.table_note({"version": 2, "title": title, "columns": [], "rows": []})
+                self.assertEqual(self.codes(text), set())
+
+    def test_partial_bold_table_marker_is_not_a_bold_label(self):
+        for title in ("**表**9：虚构光学实验。", "**图9**内表格：虚构光学实验。"):
+            with self.subTest(title=title):
+                text = self.table_note({"version": 2, "title": title, "columns": [], "rows": []})
+                expected = {"TABLE_TITLE_BOLD", "TABLE_TITLE_LABEL"} if title.startswith("**表") else {"TABLE_TITLE_BOLD"}
+                self.assertEqual(self.codes(text), expected)
+
+    def test_visible_title_without_object_marker_requests_review_without_inventing_number(self):
+        for title, expected in (("虚构校验结果", {"TABLE_TITLE_BOLD", "TABLE_TITLE_LABEL"}),
+                                ("**虚构校验结果**", {"TABLE_TITLE_LABEL"})):
+            with self.subTest(title=title):
+                prompts = lint_presentation(self.table_note({"version": 2, "title": title, "columns": [], "rows": []}))
+                self.assertEqual({item.code for item in prompts}, expected)
+                self.assertTrue(all(item.level == "review" for item in prompts))
+                self.assertTrue(any("不自动补造或重排编号" in item.message for item in prompts))
+
+    def test_title_literal_subnumbers_and_unicode_numbers_are_not_flattened(self):
+        for title in ("**表IV：** 虚构光学实验。", "**表9.2(a)：** 虚构光学实验。",
+                      "**表甲：** 虚构光学实验。", "**图S 9(a)内表格：** 虚构光学实验。"):
+            with self.subTest(title=title):
+                text = self.table_note({"version": 2, "title": title, "columns": [], "rows": []})
+                self.assertNotIn("TABLE_TITLE_BOLD", self.codes(text))
+                self.assertNotIn("TABLE_TITLE_LABEL", self.codes(text))
+                self.assertNotIn("EMBEDDED_TABLE_TITLE", self.codes(text))
+
+    def test_each_v3_sheet_still_has_distinct_title_prompts_after_visibility_projection(self):
+        table = {"version": 3, "sheets": [
+            {"title": "[**表9：**](<#^kept-table>) 虚构校准。", "columns": [], "rows": []},
+            {"title": "%% internal %%表9：虚构校准。", "columns": [], "rows": []},
+            {"title": "**表**9：虚构校准。", "columns": [], "rows": []},
+        ]}
+        prompts = [item for item in lint_presentation(self.table_note(table)) if item.code.startswith("TABLE_TITLE_")]
+        self.assertEqual(len(prompts), 4)
+        self.assertEqual(sum("第2张工作表" in item.message for item in prompts), 2)
+        self.assertEqual(sum("第3张工作表" in item.message for item in prompts), 2)
+
+    def test_hidden_title_examples_do_not_become_table_labels(self):
+        for title in ("`表9：虚构校验。`", "<!-- 表9：虚构校验。 -->", "%% 表9：虚构校验。 %%"):
+            with self.subTest(title=title):
+                text = self.table_note({"version": 2, "title": title, "columns": [], "rows": []})
+                self.assertEqual(self.codes(text), set())
+
+    def test_english_duration_ignores_embed_targets_and_html_attributes(self):
+        for text in ("![[assets/9-year-lens.png]]  ", "![[assets/lens.png|9-year]]  ",
+                     "![9 years](<https://example.test/7-year.png>)  ",
+                     '<span data-description="$9$ years">Mirror</span>',
+                     "[[assets/9-year|Mirror]]"):
+            with self.subTest(text=text):
+                self.assertNotIn("QUANTITY_OUTSIDE_MATH", self.codes(text))
+                self.assertNotIn("QUANTITY_SPLIT_MATH", self.codes(text))
+        self.assertIn("QUANTITY_OUTSIDE_MATH", self.codes("[[9-year]]"))
+        self.assertIn("QUANTITY_OUTSIDE_MATH", self.codes("[9 years](<https://example.test/catalog>)"))
+
+    def test_hidden_reference_link_destinations_and_multiline_titles_are_not_prose(self):
+        text = ('[catalog]: <https://example.test/9-year> "7 years"\n'
+                '[other]:\n  <https://example.test/8-year>\n  "6 years\n'
+                'a) Example one.\nb) Example two."\n\nVisible for 4 years.')
+        prompts = lint_presentation(text)
+        quantities = [item.excerpt for item in prompts if item.code == "QUANTITY_OUTSIDE_MATH"]
+        self.assertEqual(quantities, ["4 years"])
+        self.assertNotIn("LETTER_LIST_NOT_MARKDOWN", {item.code for item in prompts})
+
+    def test_reference_style_visible_label_remains_eligible_for_duration_review(self):
+        text = '[9 years][catalog]\n\n[catalog]: <https://example.test/7-year> "5 years"'
+        quantities = [item.excerpt for item in lint_presentation(text) if item.code == "QUANTITY_OUTSIDE_MATH"]
+        self.assertEqual(quantities, ["9 years"])
+
+    def test_footnotes_and_malformed_or_inline_definition_like_prose_are_not_hidden(self):
+        for text in ("[^detail]: 9 years", "[catalog]: target not a 9-year title",
+                     'Ordinary prose.\n[catalog]: /target "9 years"'):
+            with self.subTest(text=text):
+                self.assertIn("QUANTITY_OUTSIDE_MATH", self.codes(text))
+
+    def test_figure_caption_space_handles_literal_source_number_shapes(self):
+        for number in ("S 9(a)", "SIV", r"S9\*", "S9.2(a)"):
+            with self.subTest(number=number):
+                prefix = "**图" + number + "：**"
+                prompts = [item for item in lint_presentation(prefix + "孔径示意。") if item.code == "FIGURE_CAPTION_SPACE"]
+                self.assertEqual(len(prompts), 1)
+                self.assertEqual(prompts[0].rule_id, "BODY-C96")
+                self.assertNotIn("FIGURE_CAPTION_SPACE", self.codes(prefix + " 孔径示意。"))
+
+    def test_visible_linked_letter_labels_remain_non_markdown_list(self):
+        text = '[a) Mirror](<#^kept-a>)  \n[b) Lens](<#^kept-b>)'
+        prompts = [item for item in lint_presentation(text) if item.code == "LETTER_LIST_NOT_MARKDOWN"]
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(prompts[0].level, "review")
+        self.assertNotIn("LETTER_LIST_NOT_MARKDOWN", self.codes('[Mirror](<a)>)\n[Lens](<b)>)'))
+
 
 if __name__ == "__main__":
     unittest.main()

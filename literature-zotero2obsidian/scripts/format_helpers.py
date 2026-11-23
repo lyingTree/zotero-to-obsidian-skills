@@ -525,6 +525,60 @@ def new_figure_table_anchor(
     return anchor
 
 
+def plan_supplement_figure_caption(
+    original_number: str | None,
+    caption: str,
+    *,
+    display_number: str | None = None,
+    original_number_reason: str | None = None,
+) -> dict[str, Any]:
+    """Format a new SI figure caption from explicit source-number facts.
+
+    The caller supplies the actually observed original number (or its actual
+    absence). Existing S prefixes and literal punctuation are preserved. The
+    function does not read a PDF, invent a source number, or rename any anchor.
+    """
+    body = _text(caption, "caption")
+    if body != body.strip():
+        raise ValueError("caption must not have leading or trailing whitespace")
+
+    def number_text(value: Any, label: str) -> str:
+        text = _text(value, label)
+        if text != text.strip() or any(unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
+                                      for character in text):
+            raise ValueError(f"{label} must be one literal number without controls, line breaks or outer whitespace")
+        return text
+
+    def escaped(value: str) -> str:
+        # The number is literal text, never math, a comment, strikethrough or
+        # an HTML entity. Keep the caller's original metadata unescaped.
+        return re.sub(r"([\\`*_\[\]<>$~%&])", r"\\\1", value)
+
+    if original_number is None:
+        reason = _text(original_number_reason, "original_number_reason")
+        display = number_text(display_number, "display_number")
+        if not display.lower().startswith("s"):
+            raise ValueError("An explicitly generated SI navigation number needs its S prefix")
+        return {
+            "original_number": None, "original_number_reason": reason,
+            "display_number": display, "display_number_origin": "generated_navigation",
+            "caption": f"**图{escaped(display)}：** {body}（来源无图号）",
+        }
+    original = number_text(original_number, "original_number")
+    if original_number_reason is not None:
+        raise ValueError("Use an absence reason only for an actually unnumbered source figure")
+    expected = original if original.lower().startswith("s") else "S" + original
+    display = expected if display_number is None else number_text(display_number, "display_number")
+    if display != expected:
+        raise ValueError("Preserve the original number; only add one S prefix when it is absent")
+    note = f"（来源原号：{escaped(original)}）" if display != original else ""
+    return {
+        "original_number": original, "display_number": display,
+        "display_number_origin": "source_literal" if display == original else "normalized_source",
+        "caption": f"**图{escaped(display)}：** {body}{note}",
+    }
+
+
 def apply_visible_text_edits(
     *, text_file: Mapping[str, Any], edits: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:

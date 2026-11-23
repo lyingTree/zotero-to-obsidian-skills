@@ -34,6 +34,7 @@ def _load(name, filename):
 prepare = _load("compact_example_prepare", "prepare_translation_review.py")
 writer_tools = _load("compact_example_writer", "translation_review_writer.py")
 validator = _load("compact_example_validate", "validate_translation_review.py")
+tasks = _load("compact_example_tasks", "translation_review_tasks.py")
 
 
 def demonstrate(directory: Path) -> dict:
@@ -70,6 +71,12 @@ def demonstrate(directory: Path) -> dict:
         unit_ids=[UNIT_ID], glossary_path=glossary, progress=None)
 
     writer = writer_tools.ReviewWriter(prepared, progress=None)
+    if tasks.next_review_task(writer)["stage"] != "scope":
+        raise AssertionError("The invented scope still needs its own decision")
+    writer.scope("passed", "This invented inventory contains exactly the one requested sentence, which is selected.")
+    current = tasks.next_review_task(writer)
+    if current["stage"] != "unit" or current["unit_id"] != UNIT_ID:
+        raise AssertionError(current)
     unit = writer.unit(UNIT_ID, candidate_locations=[{"lines": [1, 1]}])
     source_sentence, translated_sentence = unit.source(SOURCE_TEXT), unit.candidate(CANDIDATE_TEXT)
     unit.occurrence("claims", "position-claim", source_sentence, translated_sentence, "passed",
@@ -136,14 +143,18 @@ def demonstrate(directory: Path) -> dict:
     for name, status, reason in checks:
         unit.check(name, status, reason)
 
-    # A real task can checkpoint after this paragraph and continue other units.
+    # A real task can checkpoint after this complete unit and then continue.
+    tasks.require_unit_records(writer, UNIT_ID)
     writer.save_draft(draft)
     writer = writer_tools.ReviewWriter.from_draft(draft, progress=None)
-    writer.scope("passed", "This invented inventory contains exactly the one requested sentence, which is selected.")
+    if tasks.next_review_task(writer)["stage"] != "global_records":
+        raise AssertionError("The invented unit is complete but global records remain pending")
     writer.source_issues_review("passed", "The actual source sentence is readable; its two nouns, modifier attachments and spatial predicate introduce no unresolved source reading.")
     writer.terminology_review("reviewed", covered_units=[UNIT_ID],
                               no_unlisted_reason="Both discovered component terms have context-matched glossary entries; their actual phrase and family queries are recorded.")
     writer.review("reviewed")
+    if tasks.next_review_task(writer)["stage"] != "save_final_records":
+        raise AssertionError("The explicit invented decisions should now allow a final save")
     report = writer.save(output, terminology_path=terminology)
     # Independently call the existing validator too, without replacing its gates.
     checked = validator.validate_translation_review(output, inventory_path, candidate)
