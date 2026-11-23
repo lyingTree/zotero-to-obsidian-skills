@@ -23,7 +23,7 @@
 
 ## 依赖
 
-以下两个技能由安装脚本从各自上游仓库自动获取，不随本仓库分发：
+以下两个技能由安装脚本从各自上游仓库自动获取，不随本仓库分发。默认版本锁定在 [dependencies.lock.json](dependencies.lock.json) 中的完整提交 SHA；更新时显式更换锁定版本或指定覆盖 ref：
 
 - `obsidian-cli` — 通过 `obsidian` CLI 操作库；来源 [obsidianmd/obsidian-skills](https://github.com/obsidianmd/obsidian-skills)（`plugins/obsidian/skills/obsidian-cli`）
 - `zotero-skills` — Zotero 条目与库管理；来源 [WenyuChiou/zotero-skills](https://github.com/WenyuChiou/zotero-skills)（`skills/zotero-skills` + 根 `scripts/`）
@@ -37,29 +37,41 @@
 
 ## 安装
 
-1. 把本仓库的 12 个 `literature-*` 技能目录放到宿主 Skills 目录下，保持同级（技能间使用 `../literature-*` 相对引用）。
-2. 运行安装脚本，自动获取上面两个依赖技能并安装 Python 依赖：
+需要 Python 3.10+ 和 Git。推荐在 Python 编辑器中打开 [install.py](install.py)，设置顶部配置后运行脚本，无需拼接命令行参数：
 
-   ```powershell
-   # Windows
-   ./install.ps1
-   ```
+```python
+SKILLS_ROOT = Path(r"D:\YourAgent\skills")
+INSTALL_PYTHON_DEPENDENCIES = True
+# OBSIDIAN_SKILLS_REF / ZOTERO_SKILLS_REF 留空时使用锁定的提交。
+```
 
-   ```bash
-   # macOS / Linux
-   ./install.sh
-   ```
+一次安装本仓库的 12 个技能和两个外部依赖，全部位于目标 Skills 目录的同一层。目标目录不存在时自动创建；默认目标为仓库目录时，已有的本仓库技能原地保留，只安装依赖。运行中的进度会显示在输出中。
 
-   脚本把 `obsidian-cli`、`zotero-skills` 安装到与 `literature-*` 同级的目录，并执行 `pip install -r zotero-skills/requirements.txt`。可用 `-SkillsRoot`（PowerShell）或首个参数（bash）指定目标目录。
+安装器先下载、检查全部源文件并在目标文件系统暂存，再提交目录变更。已有技能会保存在 `.z2o-backups/<安装ID>/previous/`；发生可捕获的提交异常时按相反顺序回滚。安装记录保留实际依赖 SHA、目录及备份位置。拒绝覆盖符号链接或非技能目录；不会删除备份中的本地修改。
 
-3. 需要 Zotero 桌面端运行（本地读）、Obsidian 桌面端运行（`obsidian` CLI）。
-4. Zotero 写入所需 API Key / library ID 从环境变量或本机配置读取，绝不写入仓库。
+Python 依赖在发布技能目录前安装。pip 失败会返回失败，不显示安装成功。pip 对当前 Python 环境的包变更不能随文件回滚，建议在所用 Agent 的专用 Python 环境中运行。已经管理好依赖时可将 `INSTALL_PYTHON_DEPENDENCIES` 设为 `False`，相应状态会明确记录。
+
+兼容入口仍保留：[install.ps1](install.ps1) 用于 Windows，[install.sh](install.sh) 用于 macOS/Linux。原有目标目录和版本参数转交同一个 Python 安装核心；ref 可指定分支、标签或完整提交 SHA。
+
+运行文献处理前需要 Zotero 桌面端提供本地读取，Obsidian 桌面端提供官方 `obsidian` CLI；安装技能本身不会安装这两个应用。Rich Table 格式的笔记另需目标库启用兼容插件。Zotero 写入所需凭据从环境变量或本机配置读取，绝不写入仓库。
 
 ## 使用
 
 对 Agent 说"把某篇 Zotero 文献整理进 Obsidian"，主入口 `literature-zotero2obsidian` 会按流程调用其余技能。也可单独触发某个子技能（如只改文件名、只建链接）。
 
+完整流程先检查身份和环境，完成命名与目录预规划，再提取、翻译和处理补充材料，随后构建属性、题头、正文及链接，验收后提交并回读。不同条目可以有界并行；同一条目的候选链按依赖顺序执行，写入同一目标时保持独占。
+
+## 检查与维护
+
+- **候选笔记检查**：在 [validate_note.py](literature-zotero2obsidian/scripts/validate_note.py) 中设置 `NOTE_PATH` 后运行。只读检查 YAML、块 ID、本篇断链、Rich Table 和公式锚间距，结果附行号；完整范围见[自动检查说明](literature-zotero2obsidian/references/automated-validation.md)。
+- **仓库检查**：在编辑器运行 [scripts/run_checks.py](scripts/run_checks.py)，检查 12 个技能的元数据、相对引用、依赖锁定，并运行隔离回归测试。验证依赖见 [requirements-dev.txt](requirements-dev.txt)。
+- **持续集成**：[GitHub Actions](.github/workflows/validate.yml) 在 Windows/Linux、Python 3.10/3.13 上运行上述检查，并检查安装包装脚本的语法。
+
+静态检查不能证明全文提取、翻译、图片裁剪或 Obsidian 渲染正确。`run.json`、来源映射、候选链和回执仍按[交接约定](literature-zotero2obsidian/references/pipeline-contract.md)由执行 Agent 维护；本仓库没有把这些约定冒充成已实现的自动流水线。
+
 ## 说明
 
 - 项目根、vault 与文献根在运行时确认后写入 `run.json`。
-- `obsidian-cli`、`zotero-skills` 为外部依赖，由 `install.ps1` / `install.sh` 从各自上游仓库自动获取；`zotero-skills` 遵循 MIT 许可。
+- 主文与补充材料分别使用书目作用域；多个 SI 来源保留可见原号，用稳定来源标记消除机器 ID 冲突。
+- 附件采用年份、作者和题名哈希目录；身份或版本冲突时稳定消歧，禁止以同名覆盖不同内容。
+- 两个外部依赖按各自上游许可分发，安装时随目录保留各自的 `LICENSE`。

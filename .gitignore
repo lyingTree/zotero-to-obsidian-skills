@@ -24,3 +24,12 @@ Thumbs.db
 # 外部依赖（由 install 脚本自动获取，不入库）
 /obsidian-cli/
 /zotero-skills/
+
+# 安装暂存、备份、回执和本地配置（不发布用户数据）
+.z2o-*/
+.z2o-*.json
+.z2o-*.lock
+install.local.json
+.env
+.env.*
+.pytest_cache/
