@@ -118,6 +118,10 @@ class GlossaryCandidateTests(unittest.TestCase):
             glossary_tools.GlossaryIndex(self.glossary)
 
     def test_glossary_rows_and_hash_use_the_same_read_snapshot(self):
+        alias_parent = self.root.joinpath("alias-directory")
+        alias_parent.mkdir()
+        self.glossary = alias_parent.joinpath("..", self.glossary.name)
+        actual_path = self.glossary.resolve(strict=True)
         original = self.glossary.read_bytes()
         replacement = original.replace("径向速度".encode("utf-8"), "变更后的译名".encode("utf-8"))
         open_file = Path.open
@@ -128,7 +132,7 @@ class GlossaryCandidateTests(unittest.TestCase):
             nonlocal replaced
             with open_file(path, mode, *args, **kwargs) as stream:
                 yield stream
-            if path != self.glossary or mode != "rb" or replaced:
+            if mode != "rb" or replaced or path.resolve(strict=True) != actual_path:
                 return
             replaced = True
             with open_file(path, "wb") as stream:
