@@ -43,6 +43,5 @@
 
 ## 说明
 
-- 本仓库不含任何个人路径、账号或凭据；项目根、vault 与文献根在运行时确认后写入 `run.json`。
+- 项目根、vault 与文献根在运行时确认后写入 `run.json`。
 - `zotero-skills` 源自 [WenyuChiou/zotero-skills](https://github.com/WenyuChiou/zotero-skills)（commit `e390313c82e76856a525e87a0ae2d0281499e3ab`），遵循 MIT 许可，见 `zotero-skills/LICENSE`。
-- 已剔除第三方 `vendor/`（改由 `requirements.txt` 重建）与编译缓存/二进制。
