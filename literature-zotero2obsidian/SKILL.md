@@ -7,6 +7,8 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 每条规则的 ID 用于定位对应证据。
 
+完整生成任务先读[分阶段执行路线](references/execution-plan.md)。每次只推进一个阶段；阶段清单用于定位工作，具体内容规则仍以对应子技能为准。
+
 ## 范围与约束
 
 - [PIPE-C01] 明确本次处理的条目。
@@ -51,6 +53,15 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 - [PIPE-C40] 子步骤可独立调用。
 - [PIPE-C41] 按需读取同一 skills 根下的规则。
 - [PIPE-C42] 按需读取同一 skills 根下的工具说明。
+- [PIPE-C43] 完整生成任务采用[分阶段执行路线](references/execution-plan.md)。
+- [PIPE-C44] PDF 内容处理前生成[逐页来源材料](references/delivery-checks.md)。
+- [PIPE-C45] 最终候选建立[来源到交付物的索引](references/delivery-checks.md)。
+- [PIPE-C46] 完整候选交付前运行 `validate_delivery.py`。
+- [PIPE-C47] 完整候选交付前运行 `lint_presentation.py`。
+- [PIPE-C48] 对检查器的每条提示记录处置依据。
+- [PIPE-C49] 完整生成任务在结束前逐页核对来源覆盖。
+- [PIPE-C50] 完整生成任务在结束前逐对象核对来源内容。
+- [PIPE-C51] 只生成离线候选时按[离线候选模式](references/project-profile.md#离线候选模式)规划路径。
 
 ## 十一个子 skill
 
@@ -79,7 +90,7 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 5. 提取完成后补齐第 4 步 plan 的资源清单、稳定路径和冲突处理，再依次执行第 6、7、8、9、10 步；各步接收上一步完整候选。
 6. 单项任务完成预检后从指定稿进入对应步骤，只补实际依赖。先登记修改范围与输入基线，例如书目脚注迁移只重连受影响调用；既有范围外问题单独报告，不静默重写。
 7. 从本次最后候选生成 final.md，仅移除已登记的工作标记，并将本地资源引用固定为从库根起算的附件三级目录路径。比较其他内容并计算待提交哈希。
-8. 按本次范围执行[静态校验](references/automated-validation.md)与[逐篇验收](references/acceptance.md)，分别记录源码、内容证据和待验项目。静态结果不替代原文核验、Obsidian 缓存或界面验收。
+8. 按本次范围执行[静态校验](references/automated-validation.md)、[来源交付索引检查](references/delivery-checks.md)与[逐篇验收](references/acceptance.md)，分别记录源码、内容证据和待验项目。静态结果不替代原文核验、Obsidian 缓存或界面验收。
 9. 需要写库时交第 4 步 commit，提交后按实际能力回读文件、CLI 缓存及界面，分别记录结果。
 10. 将证据写入各条目的 run.json，结论写入 report.md；以这些记录及实际产物恢复进度，不依赖对话记忆或假定文献库使用 Git。批次持续报告已完成、运行中、阻断与剩余条目数，单篇异常不阻塞其他独立条目。
 
@@ -105,3 +116,9 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 - [ ] [PIPE-A18] 条目独占提交有记录可核对。
 - [ ] [PIPE-A19] 目标路径独占提交有记录可核对。
 - [ ] [PIPE-A20] 批次进度计数可由运行记录复核。
+- [ ] [PIPE-A21] 每份范围内 PDF 具有逐页来源材料。
+- [ ] [PIPE-A22] 来源交付索引对应当前候选哈希。
+- [ ] [PIPE-A23] 来源交付索引检查没有未解决的错误。
+- [ ] [PIPE-A24] 排版提示均有逐条处置记录。
+- [ ] [PIPE-A25] 每页来源均有覆盖核对记录。
+- [ ] [PIPE-A26] 每个来源对象均有内容核对记录。

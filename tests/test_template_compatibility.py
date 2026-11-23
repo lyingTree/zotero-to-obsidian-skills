@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 import unittest
 
 from template_support import (
-    ROOT, TEMPLATE_TYPES, render_template, render_template_result,
+    ROOT, TEMPLATE_TYPES, document_body, render_template, render_template_result,
     replace_table, table_data, v2_body, workbook_body,
 )
 
@@ -122,6 +124,94 @@ class TemplateCompatibilityTests(unittest.TestCase):
                 }])
                 self.assertEqual(len(result["events"]["renames"]), 1)
                 self.assertEqual(path.read_bytes(), before)
+
+    def test_figure_table_copies_preserve_source_fields_and_existing_anchors(self):
+        for name in TEMPLATE_TYPES:
+            for version in (2, 3):
+                with self.subTest(template=name, version=version):
+                    data = table_data(self.generated(name, version))
+                    sheets = data["sheets"] if version == 3 else [data]
+                    for sheet in sheets:
+                        sheet["title"] = "**图9内表格：** 来源中的分类表"
+                        sheet["columns"][0]["name"] = "图内文字"
+                        column = sheet["columns"][0]["id"]
+                        sheet["rows"][0]["cells"][column] = "图内文字：原表中的字段"
+                        sheet["footer"] = "保留原图。[1](<#^ref-1>)"
+                    block = "```rich-table\n" + json.dumps(data, ensure_ascii=False) + "\n```"
+                    body = document_body(block).replace(
+                        "表内引用可回溯到本文书目。",
+                        "图内文字用于标识数据类别，表格副本按来源转录。\n\n"
+                        "![[assets/figure.png]]  \n**图9：** 原始图件。\n^fig-9",
+                    ).replace("\n^tbl-1\n", "\n^tbl-fig-main-9\n")
+                    note = render_template(name, body)
+                    actual = table_data(note)
+                    self.assertEqual(actual, data)
+                    self.assertIn("图内文字用于标识数据类别", note)
+                    self.assertIn("![[assets/figure.png]]  \n**图9：** 原始图件。\n^fig-9", note)
+                    self.assertEqual(note.count("\n^tbl-fig-main-9\n"), 1)
+                    self.assertIn("[1](<#^ref-1>)", note)
+                    self.assertEqual(validator.validate_note(note), [])
+
+    def test_real_templates_preserve_id_based_merges_in_v2_and_every_v3_sheet(self):
+        for name in TEMPLATE_TYPES:
+            for version in (2, 3):
+                with self.subTest(template=name, version=version):
+                    data = table_data(self.generated(name, version))
+                    sheets = data["sheets"] if version == 3 else [data]
+                    for sheet in sheets:
+                        column, value_column = (item["id"] for item in sheet["columns"])
+                        first = sheet["rows"][0]
+                        first["cells"][column] = "组甲"
+                        sheet["rows"].append({
+                            "id": "r_000002",
+                            "cells": {column: "", value_column: "[1](<#^ref-1>)"},
+                        })
+                        sheet["merges"] = [{
+                            "anchor": first["id"] + "." + column,
+                            "end": "r_000002." + column,
+                        }]
+                    block = "```rich-table\n" + json.dumps(data, ensure_ascii=False) + "\n```"
+                    note = render_template(name, document_body(block))
+                    actual = table_data(note)
+                    self.assertEqual(actual, data)
+                    actual_sheets = actual["sheets"] if version == 3 else [actual]
+                    for sheet in actual_sheets:
+                        self.assertEqual(len(sheet["rows"]), 2)
+                        self.assertEqual(len(sheet["merges"]), 1)
+                        self.assertIs(sheet["locked"], True)
+                        self.assertEqual(sheet["theme"], "grid")
+                    self.assertEqual(note.count("\n^tbl-1\n"), 1)
+                    self.assertEqual(validator.validate_note(note), [])
+
+    def test_transcription_words_inside_fences_are_preserved_as_data(self):
+        for name in TEMPLATE_TYPES:
+            for fence in ("```", "~~~"):
+                with self.subTest(template=name, fence=fence):
+                    literal = fence + "text\n图内文字：原始代码输入\n" + fence
+                    body = v2_body().replace(
+                        "表内引用可回溯到本文书目。",
+                        "图内文字是本段讨论的对象。\n\n" + literal,
+                    )
+                    note = render_template(name, body)
+                    self.assertIn(literal, note)
+                    self.assertIn("图内文字是本段讨论的对象。", note)
+                    self.assertEqual(validator.validate_note(note), [])
+
+    def test_extra_transcription_labels_are_still_rejected_by_real_templates(self):
+        labels = (
+            "图内文字：额外转录",
+            "**图内标注：** 额外说明",
+            "- 图内节点依次为：甲、乙",
+            "### 1.1 图内文字翻译",
+            "图内翻译：额外翻译",
+        )
+        for name in TEMPLATE_TYPES:
+            for label in labels:
+                with self.subTest(template=name, label=label):
+                    body = v2_body().replace("表内引用可回溯到本文书目。", label)
+                    with self.assertRaises(subprocess.CalledProcessError) as raised:
+                        render_template(name, body)
+                    self.assertIn("额外的图内转录或解释标记", raised.exception.stderr)
 
 
 if __name__ == "__main__":

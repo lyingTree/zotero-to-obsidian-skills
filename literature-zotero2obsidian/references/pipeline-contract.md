@@ -19,6 +19,8 @@ JSON 交接文件用序列化器生成并立即回读；LaTeX 反斜杠不得手
 | source.raw.jsonl | 格式解析/OCR 的原始输出及页、段或元素位置，不做通顺化覆盖 | 2 |
 | source.md | 原语言、连续段落、保留逻辑结构的完整内容；稳定块标识 | 2 |
 | source-map.json | 块、来源、图表公式、引文和参考文献之间的映射 | 2；后续只追加核验与对齐信息 |
+| source-inventory.json | PDF 逐页材料及已核实来源单元；字段见[来源交付索引](delivery-checks.md) | 2、11；后续增量补齐来源单元 |
+| delivery-manifest.json | 来源单元与当前最终候选的对应关系；含实际文件哈希 | 总入口 |
 | assets/ | 原图裁剪或提取结果、必要表格结构及核对材料 | 2 |
 | translated.md | 逐块对应的中文全文；中文文献跳过时不生成重复文件 | 3 |
 | terminology.json | 术语表路径与哈希、采用译法、语境、未决术语及块号 | 3 |
@@ -113,6 +115,8 @@ JSON 交接文件用序列化器生成并立即回读；LaTeX 反斜杠不得手
 拆分规则时保留旧目标的条件和例外。已有 ID 不重用到其他含义。格式检查仅验证 ID 与条目结构；目标是否单一仍须逐项进行语义复核。
 
 ## 状态、重跑与保护
+
+完整 PDF 流程先用 `prepare_source_inventory.py` 保存逐页核对材料，再依[来源交付索引](delivery-checks.md)增量登记对象。提取脚本不自动认定可见内容已经核验。旧 source-map、si-map、link-map 继续保存各自详细证据；delivery-manifest 只建立最终交付索引，不代替这些记录。候选变化后重新生成索引中的哈希，重新检查受影响目标。
 
 - 阶段状态：pending、running、passed、blocked、failed、skipped。skipped 必须有适用性理由，如中文无需全文翻译；不等于完成未做的核验。
 - passed 要有相应检查证据，不能仅凭输出文件存在。某些非必需信息不可用时记录缺项，完成范围按 coverage 陈述。

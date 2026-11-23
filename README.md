@@ -61,9 +61,13 @@ Python 依赖在发布技能目录前安装。pip 失败会返回失败，不显
 
 完整流程先检查身份和环境，完成命名与目录预规划，再提取、翻译和处理补充材料，随后构建属性、题头、正文及链接，验收后提交并回读。不同条目可以有界并行；同一条目的候选链按依赖顺序执行，写入同一目标时保持独占。
 
+从全文新建笔记时，按[分阶段执行路线](literature-zotero2obsidian/references/execution-plan.md)先盘点来源、再组装候选、最后逐页对源。主文与每份 SI 分别核对题名、署名和单位。图中真正的数据表另建可编辑 Rich Table，原图保留完整；日期、公式与表格符号按可见页面核验。
+
 ## 检查与维护
 
 - **候选笔记检查**：在 [validate_note.py](literature-zotero2obsidian/scripts/validate_note.py) 中设置 `NOTE_PATH` 后运行。只读检查 YAML、块 ID、本篇断链、Citation Preview 1.3.0 锚点兼容性、Rich Table 和公式锚间距。支持模板的 `---` 外包裹、v2 单表、v3 全部工作表；逐表检查锁定、主题及表内链接，结果附行号和工作表信息。完整范围见[自动检查说明](literature-zotero2obsidian/references/automated-validation.md)。
+- **来源交付检查**：按[来源交付索引](literature-zotero2obsidian/references/delivery-checks.md)运行来源准备脚本与 `validate_delivery.py`，检查实际源页、文件哈希、已盘点对象的交付位置及资源文件。来源映射通过不代表译文语义通过。
+- **排版提示**：[lint_presentation.py](literature-zotero2obsidian/scripts/lint_presentation.py) 提示裸邮箱、裸 DOI、常见量值和间距问题；逐条核对后修正或保留有依据的例外，不自动全局替换。
 - **仓库检查**：在编辑器运行 [scripts/run_checks.py](scripts/run_checks.py)，检查 12 个技能的元数据、相对引用、依赖锁定，并运行隔离回归测试。Python 验证依赖见 [requirements-dev.txt](requirements-dev.txt)；完整回归另需 Node.js 24 执行四份真实 Templater 模板，无 npm 依赖。模板回归使用内存中的应用/API 替身，不连接真实文献库；仅运行候选笔记校验器不需要 Node.js。
 - **持续集成**：[GitHub Actions](.github/workflows/validate.yml) 在 Windows/Linux、Python 3.10/3.13、Node.js 24 上运行上述检查，并检查安装包装脚本的语法。
 
