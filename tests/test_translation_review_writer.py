@@ -89,7 +89,9 @@ class WriterFixture(unittest.TestCase):
 
 class CompactReviewTests(WriterFixture):
     def test_module_cache_is_isolated_by_resolved_skill_root(self):
-        first = self.base.joinpath("invented-snapshot-one")
+        alias = self.base.joinpath("path-alias")
+        alias.mkdir()
+        first = alias.joinpath("..", "invented-snapshot-one")
         second = self.base.joinpath("invented-snapshot-two")
         for directory, value in ((first, "first-contract"), (second, "second-contract")):
             directory.mkdir()
@@ -101,8 +103,8 @@ class CompactReviewTests(WriterFixture):
         self.assertEqual(one.VALUE, "first-contract")
         self.assertEqual(two.VALUE, "second-contract")
         self.assertIsNot(one, two)
-        self.assertEqual(Path(one.__file__).resolve(), first.joinpath("invented_contract.py"))
-        self.assertEqual(Path(two.__file__).resolve(), second.joinpath("invented_contract.py"))
+        self.assertEqual(Path(one.__file__).resolve(), first.joinpath("invented_contract.py").resolve())
+        self.assertEqual(Path(two.__file__).resolve(), second.joinpath("invented_contract.py").resolve())
 
     def test_real_prepare_and_unchanged_validate_complete_invented_example(self):
         result = example.demonstrate(self.base.joinpath("complete-example"))
@@ -212,21 +214,38 @@ class CompactReviewTests(WriterFixture):
         self.assertNotEqual(row["candidate_selection"]["raw_text"], row["candidate_cell"]["text"])
 
     def test_repeated_text_needs_explicit_choice_including_within_one_line(self):
-        self.candidate.write_text("徽片，徽片。\n徽片。\n", encoding="utf-8")
-        writer = self.writer()
-        unit = writer.unit("one", candidate_locations=[{"lines": [1, 2]}])
-        self.assert_writer_error("TRW_LOCATION_AMBIGUOUS", lambda: unit.candidate("徽片"))
-        self.assert_writer_error("TRW_LOCATION_AMBIGUOUS", lambda: unit.candidate("徽片", lines=[1, 1]))
-        second = unit.candidate("徽片", lines=[1, 1], occurrence=2)
-        self.assertEqual(second.locator["char_range"], [3, 5])
-        self.assertEqual(unit.candidate("徽片", lines=[2, 2]).locator["char_range"], [7, 9])
+        cases = (
+            ("lf", "徽片，徽片。\n徽片。\n".encode("utf-8"), [7, 9]),
+            ("crlf", "徽片，徽片。\r\n徽片。\r\n".encode("utf-8"), [8, 10]),
+        )
+        for ending, raw, expected in cases:
+            with self.subTest(line_ending=ending):
+                self.candidate.write_bytes(raw)
+                self.prepared = self.base.joinpath("pending-" + ending + ".json")
+                writer = self.writer()
+                unit = writer.unit("one", candidate_locations=[{"lines": [1, 2]}])
+                self.assert_writer_error("TRW_LOCATION_AMBIGUOUS", lambda: unit.candidate("徽片"))
+                self.assert_writer_error("TRW_LOCATION_AMBIGUOUS", lambda: unit.candidate("徽片", lines=[1, 1]))
+                second = unit.candidate("徽片", lines=[1, 1], occurrence=2)
+                self.assertEqual(second.locator["char_range"], [3, 5])
+                selected = unit.candidate("徽片", lines=[2, 2])
+                self.assertEqual(selected.locator["char_range"], expected)
+                actual = self.candidate.read_bytes().decode("utf-8")
+                self.assertEqual(actual[expected[0]:expected[1]], selected.raw_text)
 
     def test_ambiguous_complete_unit_quote_requires_explicit_lines(self):
-        self.candidate.write_text("same\nsame\n", encoding="utf-8")
-        writer = self.writer()
-        self.assert_writer_error("TRW_LOCATION_AMBIGUOUS", lambda: writer.unit("one", candidate_locations=[{"quote": "same"}]))
-        unit = writer.unit("one", candidate_locations=[{"lines": [2, 2]}])
-        self.assertEqual(unit.candidate("same").locator["char_range"], [5, 9])
+        cases = (("lf", b"same\nsame\n", [5, 9]), ("crlf", b"same\r\nsame\r\n", [6, 10]))
+        for ending, raw, expected in cases:
+            with self.subTest(line_ending=ending):
+                self.candidate.write_bytes(raw)
+                self.prepared = self.base.joinpath("pending-" + ending + ".json")
+                writer = self.writer()
+                self.assert_writer_error("TRW_LOCATION_AMBIGUOUS", lambda: writer.unit("one", candidate_locations=[{"quote": "same"}]))
+                unit = writer.unit("one", candidate_locations=[{"lines": [2, 2]}])
+                selected = unit.candidate("same")
+                self.assertEqual(selected.locator["char_range"], expected)
+                actual = self.candidate.read_bytes().decode("utf-8")
+                self.assertEqual(actual[expected[0]:expected[1]], selected.raw_text)
 
     def test_inline_unit_selection_keeps_occurrence_inside_unique_parent_quote(self):
         self.candidate.write_text("prefix 徽片，徽片。 suffix\n", encoding="utf-8")
