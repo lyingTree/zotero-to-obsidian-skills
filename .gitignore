@@ -20,3 +20,7 @@ Thumbs.db
 *.log
 *.tmp
 *.bak
+
+# 外部依赖（由 install 脚本自动获取，不入库）
+/obsidian-cli/
+/zotero-skills/

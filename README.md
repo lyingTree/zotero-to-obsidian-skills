@@ -2,7 +2,7 @@
 
 版本：**v1.0.0**
 
-将 Zotero 文献全文处理为 Obsidian 中文文献笔记的 Agent 技能包，由 12 个 `literature-*` 技能加 2 个依赖技能组成。适用于支持 Agent Skills（`SKILL.md`）的宿主。
+将 Zotero 文献全文处理为 Obsidian 中文文献笔记的 Agent 技能包，含 12 个 `literature-*` 技能；`obsidian-cli` 与 `zotero-skills` 两个依赖技能由安装脚本从上游自动获取，不随本仓库分发。适用于支持 Agent Skills（`SKILL.md`）的宿主。
 
 ## 组成
 
@@ -22,17 +22,29 @@
 | `literature-internal-links` | 篇内图/表/公式/引文链接 |
 | `literature-library-links` | 参考文献指向库内其他文献的出链 |
 | `literature-supplement-materials` | 补充材料（SI）提取与翻译 |
-| `obsidian-cli` | 通过 `obsidian` CLI 操作库（依赖） |
-| `zotero-skills` | Zotero 条目与库管理（依赖） |
+| `obsidian-cli` | 通过 `obsidian` CLI 操作库（外部依赖，自动安装） |
+| `zotero-skills` | Zotero 条目与库管理（外部依赖，自动安装） |
 
 ## 安装
 
-1. 把本仓库各技能目录放到宿主 Skills 目录下，保持目录同级（技能间使用 `../literature-*` 相对引用）。
-2. 安装 `zotero-skills` 的 Python 依赖：
+1. 把本仓库的 12 个 `literature-*` 技能目录放到宿主 Skills 目录下，保持同级（技能间使用 `../literature-*` 相对引用）。
+2. 运行安装脚本，自动从上游获取两个依赖技能并安装 Python 依赖：
+
+   ```powershell
+   # Windows
+   ./install.ps1
+   ```
 
    ```bash
-   pip install -r zotero-skills/requirements.txt
+   # macOS / Linux
+   ./install.sh
    ```
+
+   脚本把 `obsidian-cli`、`zotero-skills` 安装到与 `literature-*` 同级的目录，并执行 `pip install -r zotero-skills/requirements.txt`。可用 `-SkillsRoot`（PowerShell）或首个参数（bash）指定目标目录。
+
+   依赖来源：
+   - `obsidian-cli` ← [obsidianmd/obsidian-skills](https://github.com/obsidianmd/obsidian-skills)（`plugins/obsidian/skills/obsidian-cli`）
+   - `zotero-skills` ← [WenyuChiou/zotero-skills](https://github.com/WenyuChiou/zotero-skills)（`skills/zotero-skills` + 根 `scripts/`）
 
 3. 需要 Zotero 桌面端运行（本地读）、Obsidian 桌面端运行（`obsidian` CLI）。
 4. Zotero 写入所需 API Key / library ID 从环境变量或本机配置读取，绝不写入仓库。
@@ -44,4 +56,4 @@
 ## 说明
 
 - 项目根、vault 与文献根在运行时确认后写入 `run.json`。
-- `zotero-skills` 源自 [WenyuChiou/zotero-skills](https://github.com/WenyuChiou/zotero-skills)（commit `e390313c82e76856a525e87a0ae2d0281499e3ab`），遵循 MIT 许可，见 `zotero-skills/LICENSE`。
+- `obsidian-cli`、`zotero-skills` 为外部依赖，不随本仓库分发，由 `install.ps1` / `install.sh` 从各自上游仓库自动获取；`zotero-skills` 遵循 MIT 许可。
