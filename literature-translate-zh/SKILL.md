@@ -9,15 +9,18 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 
 - item.json、source.md、source-map.json、术语表。
 - 读取[交接约定](../literature-zotero2obsidian/references/pipeline-contract.md)；涉及项目路径、模板、工具或阻断级别时读取[项目配置](../literature-zotero2obsidian/references/project-profile.md)。
+- 开始翻译前完整读取[逐段翻译复核操作](references/translation-review.md)。
 
 ## 执行步骤
 
-1. 核实语种，确定应译块。
-2. 按来源块逐段翻译。
-3. 按源块 ID 回查尚未完成的译块。
-4. 逐项核对每个译块中的数值表达。
-5. 逐处核对引文所支持的陈述。
-6. 将术语采用记录写入 `terminology.json`。
+1. 核实语种，按源块 ID 列出本次应译范围。
+2. 绑定实际术语表指纹。
+3. 按来源块逐段翻译。
+4. 在清单与候选固定后生成默认待核的 `translation-review.json`。
+5. 按[逐段操作顺序](references/translation-review.md#逐段操作顺序)逐项回查完整来源段。
+6. 将每个专业术语的检索与取舍记录写入对应来源块。
+7. 将术语采用决定汇入 `terminology.json`。
+8. 按[验收证据位置](references/translation-review.md#验收证据位置)填写各 ID 的实际结果。
 
 ## 约束
 
@@ -96,12 +99,28 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 - [TRN-C71] 翻译开始前在 `terminology.json` 登记实际术语表指纹。
 - [TRN-C72] 每个未收录专业术语独立登记一条记录。
 - [TRN-C73] 已解决的未收录术语记录其译法依据。
+- [TRN-C74] 每个应译来源块建立独立翻译复核记录。
+- [TRN-C75] 每个应译块保存逐类术语扫描记录。
+- [TRN-C76] 每条术语候选保存完整短语的检索记录。
+- [TRN-C77] 每条术语候选保存词族检索记录。
+- [TRN-C78] 有别名的术语候选保存别名检索记录。
+- [TRN-C79] 每处方位关系建立独立对照记录。
+- [TRN-C80] 每处否定范围建立独立对照记录。
+- [TRN-C81] 每处适用边界建立独立对照记录。
+- [TRN-C82] 译文保留原文未消歧的指代关系。
+- [TRN-C83] 译文保留原文未消歧的修饰范围。
+- [TRN-C84] 未完成核对的复核项保持 `pending`。
+- [TRN-C85] 复核结论仅支持其绑定的译稿版本。
+- [TRN-C86] 每个数值表达式建立独立对照记录。
+- [TRN-C87] 每个单位表达式建立独立对照记录。
+- [TRN-C88] 每个符号表达式建立独立对照记录。
+- [TRN-C89] 每个公式表达式建立独立对照记录。
 
 ### 术语记录的具体做法
 
 完整 PDF 流程调用 `prepare_sources(..., glossary_path=实际术语表路径)`，自动建立含真实路径和 SHA-256 的 `terminology.json`。生成时 `review_status` 为 `pending`；翻译者仍需实际查看术语表并填写记录。独立翻译任务也按同一结构建立记录，不改共享术语表。
 
-逐来源块检索专业概念及方法名称的原词、别名和缩写。术语表已有条目时写入 `adopted`，记录 `original`、`translation`、`context`、`source_units` 和 `glossary_locator`。未收录时写入 `unlisted`，每条分别填写：
+逐来源块按[术语类别与词族检索](references/translation-review.md#术语类别与词族检索)穷举候选，不设术语数量上限。方法、估计器、统计量、度量和流程名称分别进入扫描；完整短语未命中后继续查词族，不能据此直接宣告未收录。术语表已有同概念条目时写入 `adopted`，记录 `original`、`translation`、`context`、`source_units` 和 `glossary_locator`。仅有相关词族条目时记录参考依据，不能冒称完整术语已收录。未收录时写入 `unlisted`，每条分别填写：
 
 | 字段 | 单一记录目标 |
 |---|---|
@@ -117,29 +136,40 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 
 `covered_units` 登记已完成术语核对的正文、章节、图题注、表格、题名和题头说明单元。全部相应单元完成后将 `review_status` 改为 `reviewed`。若没有未收录术语，用 `no_unlisted_reason` 记录实际检索依据，不以空列表代替核对。交付检查会绑定本次记录的文件哈希，但不会自动判定术语译义正确。
 
+### 翻译复核记录
+
+使用[准备函数](scripts/prepare_translation_review.py)生成来源块骨架，或按同一结构手工记录。骨架不自动选择应译范围，不自动提取术语，不填写语义通过。完整操作、逐表达式定位、状态条件及各验收 ID 的 JSON 位置见[逐段翻译复核操作](references/translation-review.md)。
+
 ## 产物
 
-- run.json.content_input、terminology.json；需要翻译时生成 translated.md。
+- run.json.content_input、terminology.json、translation-review.json；需要翻译时生成 translated.md。
 
 ## 验收标准
 
 每项验收按其 ID 单独记录判定结果。
 
-- [ ] [TRN-A01] 每个应译块均有对应译块或未译原因。
-- [ ] [TRN-A02] 已逐段复核翻译歧义。
-- [ ] [TRN-A03] 已逐段复核否定含义。
-- [ ] [TRN-A04] 已逐段复核结论强度。
-- [ ] [TRN-A05] 翻译复核记录注明实际覆盖范围。
-- [ ] [TRN-A06] 每项数值差异已判定是否仅为表示变化，包括月份、二维/2-D、Unicode 上下标等情形。
-- [ ] [TRN-A07] 术语已对照核实。
-- [ ] [TRN-A08] 单位已对照核实。
-- [ ] [TRN-A09] 公式已对照核实。
-- [ ] [TRN-A10] 引文标签已对照核实。
-- [ ] [TRN-A11] 未决术语已登记。
-- [ ] [TRN-A12] 原文疑点已登记。
-- [ ] [TRN-A13] 每个应译正文块均保留原块的完整信息。
-- [ ] [TRN-A14] 每处方位关系与原文一致。
-- [ ] [TRN-A15] 每处数字引文仍对应原文所支持的陈述。
-- [ ] [TRN-A16] 每个图内数据表的可编辑副本已完成应译文本的翻译。
-- [ ] [TRN-A17] 术语记录中的文件哈希与实际术语表一致。
-- [ ] [TRN-A18] 每个未收录术语均有本次采用译法的依据或未决记录。
+- [ ] [TRN-A01] 每个应译块均有对应译块或未译原因。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A02] 每个应译块的翻译歧义均有对照记录。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A03] 每个应译块的否定核对结果均有记录。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A04] 每个应译块的结论强度均有对照记录。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A05] 翻译复核记录注明实际覆盖范围。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A06] 每项数值差异均有来源支持的判定记录。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A07] 每条采用术语均有对源核对依据。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A08] 每处单位表达式与来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A09] 每处公式表达式与来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A10] 每处引文标签与来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A11] 未决术语已登记。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A12] 原文疑点已登记。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A13] 每个应译正文块均保留原块的完整信息。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A14] 每处方位关系与原文一致。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A15] 每处数字引文仍对应原文所支持的陈述。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A16] 每个图内数据表的可编辑副本已完成应译文本的翻译。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A17] 术语记录中的文件哈希与实际术语表一致。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A18] 每个未收录术语均有本次采用译法的依据或未决记录。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A19] 每个应译块的术语类别扫描结果已记录。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A20] 每条术语候选的词族检索结果已记录。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A21] 每处否定范围与原文一致。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A22] 每处适用边界与原文一致。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A23] 译文保留原文未消歧的指代关系。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A24] 译文保留原文未消歧的修饰范围。 <!-- check-type: offline_outcome -->
+- [ ] [TRN-A25] 翻译复核记录绑定当前译稿的文件哈希。 <!-- check-type: offline_outcome -->

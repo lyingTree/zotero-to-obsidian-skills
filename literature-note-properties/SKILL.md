@@ -44,11 +44,11 @@ description: 按文献类型及既有模板构建或修复 Obsidian 文献 YAML 
 
 ## 验收标准
 
-- [ ] [PROP-A01] YAML 可成功解析。
-- [ ] [PROP-A02] YAML 没有重复键。
-- [ ] [PROP-A03] 全文仅有一个起始属性区。
-- [ ] [PROP-A04] 解析后的 YAML 顶层没有 `库内参考文献` 键。
-- [ ] [PROP-A05] 属性键集合符合本次新建或修复场景。
-- [ ] [PROP-A06] 属性值类型符合对应模板。
-- [ ] [PROP-A07] 属性值来源符合本次新建或修复场景。
-- [ ] [PROP-A08] 属性区外内容与输入候选一致。
+- [ ] [PROP-A01] YAML 可成功解析。 <!-- check-type: offline_outcome -->
+- [ ] [PROP-A02] YAML 没有重复键。 <!-- check-type: offline_outcome -->
+- [ ] [PROP-A03] 全文仅有一个起始属性区。 <!-- check-type: offline_outcome -->
+- [ ] [PROP-A04] 解析后的 YAML 顶层没有 `库内参考文献` 键。 <!-- check-type: offline_outcome -->
+- [ ] [PROP-A05] 属性键集合符合本次新建或修复场景。 <!-- check-type: offline_outcome -->
+- [ ] [PROP-A06] 属性值类型符合对应模板。 <!-- check-type: offline_outcome -->
+- [ ] [PROP-A07] 属性值来源符合本次新建或修复场景。 <!-- check-type: offline_outcome -->
+- [ ] [PROP-A08] 属性区外内容与输入候选一致。 <!-- check-type: offline_outcome -->

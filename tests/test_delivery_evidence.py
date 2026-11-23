@@ -79,13 +79,16 @@ class DeliveryEvidenceTests(unittest.TestCase):
             self.units.append({"id": identity, "kind": "metadata", "source": "main", "field": field,
                                "evidence": [{**self.evidence, "quote": original}]})
             self.deliveries.append({"unit": identity, "target": {"quote": target}})
+        author = next(unit for unit in self.units if unit.get("field") == "author")
+        author.update(affiliation_numbers=["1"], affiliation_units=["main-affiliation"])
         self.source["header_fields"] = {
             name: {"status": "present", "units": ["main-" + field]} for name, field in checker.FIELDS.items()
         }
         for identity, kind, extra, target in [
             ("paragraph", "paragraph", {}, {"quote": CITATION}),
             ("citation", "citation", {"references": ["reference"]}, {"quote": CITATION}),
-            ("reference", "reference", {"number": "1"}, {"anchor": "ref-1"}),
+            ("reference", "reference", {"number": "1", "bibliography_id": "main-references",
+                                        "original_text": "1. Author. A source. 2024."}, {"anchor": "ref-1"}),
             ("formula", "formula", {}, {"anchor": "eq-1"}),
             ("table", "table", {"shape": {"rows": 1, "columns": 1}, "merges": []}, {"anchor": "tbl-1"}),
             ("figure", "figure", {"contains_table": False}, {"quote": FIGURE}),
@@ -122,27 +125,157 @@ class DeliveryEvidenceTests(unittest.TestCase):
         self.assertEqual(report.source_fidelity, "not_assessed")
         self.assertTrue(report.independent_review_required)
 
-    def add_checks(self):
+    def test_bibliography_identity_is_not_inferred_from_anchor(self):
+        reference = next(unit for unit in self.units if unit["kind"] == "reference")
+        del reference["bibliography_id"]
+        self.assertIn("BIBLIOGRAPHY_ID_MISSING", self.codes())
+
+    def test_author_relation_requires_explicit_source_affiliation_units(self):
+        author = next(unit for unit in self.units if unit.get("field") == "author")
+        del author["affiliation_units"]
+        self.assertIn("AUTHOR_AFFILIATION_MAPPING", self.codes())
+
+    def test_author_relation_rejects_non_affiliation_target(self):
+        author = next(unit for unit in self.units if unit.get("field") == "author")
+        author["affiliation_units"] = ["main-title"]
+        self.assertIn("AUTHOR_AFFILIATION_UNIT", self.codes())
+
+    def test_unnumbered_author_relation_requires_source_specific_reason(self):
+        author = next(unit for unit in self.units if unit.get("field") == "author")
+        author["affiliation_numbers"] = [None]
+        self.assertIn("AUTHOR_AFFILIATION_REASON", self.codes())
+        author["affiliation_reason"] = "The source gives one institute below the authors without numbered markers."
+        self.assertNotIn("AUTHOR_AFFILIATION_REASON", self.codes())
+
+    def test_absent_author_relation_is_not_inferred_from_a_visible_institute(self):
+        author = next(unit for unit in self.units if unit.get("field") == "author")
+        author.update(affiliation_numbers=[], affiliation_units=[])
+        self.assertIn("AUTHOR_AFFILIATION_REASON", self.codes())
+        author["affiliation_reason"] = "The source does not identify this author's affiliation relationship."
+        self.assertFalse(any(code.startswith("AUTHOR_") for code in self.codes()))
+
+    def test_supplement_original_and_display_numbers_are_distinct_fields(self):
+        self.source["role"] = "supplement"
+        for unit in self.units:
+            if unit["kind"] not in {"figure", "table"}:
+                continue
+            unit.update(original_number="8", display_number="S8")
+        self.assertNotIn("SUPPLEMENT_ORIGINAL_NUMBER", self.codes())
+        figure = next(unit for unit in self.units if unit["kind"] == "figure")
+        del figure["original_number"]
+        self.assertIn("SUPPLEMENT_ORIGINAL_NUMBER", self.codes())
+
+    def test_unnumbered_supplement_object_requires_a_reason(self):
+        self.source["role"] = "supplement"
+        for unit in self.units:
+            if unit["kind"] in {"figure", "table"}:
+                unit.update(original_number=None, display_number="S1")
+        self.assertIn("SUPPLEMENT_NUMBER_ABSENCE", self.codes())
+        for unit in self.units:
+            if unit["kind"] in {"figure", "table"}:
+                unit["original_number_reason"] = "The source caption has no object number."
+        self.assertNotIn("SUPPLEMENT_NUMBER_ABSENCE", self.codes())
+
+    def add_translation_review(self):
+        self.bind()
+        self.translation_review_path = self.base.joinpath("translation-review.json")
+        ledger = {
+            "schema_version": 1,
+            "bindings": {
+                "source_inventory": checker.source_tools.file_record(self.inventory_path),
+                "candidate": checker.source_tools.file_record(self.note),
+                "sources": {"main": checker.source_tools.file_record(self.pdf)},
+                "glossary": None,
+            },
+            "units": {"paragraph": {"source_id": "main"}},
+            "terminology_record": None,
+        }
+        self.translation_review_path.write_text(json.dumps(ledger), encoding="utf-8")
+        checker.write_delivery_manifest(self.inventory_path, self.note, self.deliveries, self.manifest_path,
+                                        translation_review_path=self.translation_review_path)
+        return ledger
+
+    def test_translation_review_binds_files_without_granting_semantic_acceptance(self):
+        self.add_translation_review()
+        report = checker.validate_delivery(self.manifest_path)
+        self.assertEqual(report.findings, [])
+        self.assertEqual(report.source_fidelity, "not_assessed")
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["translation_review"], checker.source_tools.file_record(self.translation_review_path))
+
+    def test_translation_review_detects_candidate_changed_after_review(self):
+        self.add_translation_review()
+        self.note.write_text(self.note.read_text(encoding="utf-8") + "\nA later addition.\n", encoding="utf-8")
+        checker.write_delivery_manifest(self.inventory_path, self.note, self.deliveries, self.manifest_path,
+                                        translation_review_path=self.translation_review_path)
+        findings = checker.validate_delivery(self.manifest_path).findings
+        self.assertTrue(any(item.code == "FILE_HASH_MISMATCH" and item.object_id == "translation_review:candidate"
+                            for item in findings))
+
+    def test_translation_review_rejects_different_source_with_current_hash(self):
+        ledger = self.add_translation_review()
+        other = self.base.joinpath("other-source.pdf")
+        shutil.copyfile(self.pdf, other)
+        ledger["bindings"]["sources"]["main"] = checker.source_tools.file_record(other)
+        self.translation_review_path.write_text(json.dumps(ledger), encoding="utf-8")
+        checker.write_delivery_manifest(self.inventory_path, self.note, self.deliveries, self.manifest_path,
+                                        translation_review_path=self.translation_review_path)
+        self.assertIn("TRN_REVIEW_SOURCE_IDENTITY", {item.code for item in checker.validate_delivery(self.manifest_path).findings})
+
+    def test_bibliography_identity_requires_a_nonempty_string(self):
+        reference = next(unit for unit in self.units if unit["kind"] == "reference")
+        for value in (None, "", "   ", 7):
+            with self.subTest(value=value):
+                reference["bibliography_id"] = value
+                self.assertIn("BIBLIOGRAPHY_ID_MISSING", self.codes())
+
+    def test_reference_locator_does_not_replace_the_complete_source_entry(self):
+        reference = next(unit for unit in self.units if unit["kind"] == "reference")
+        del reference["original_text"]
+        self.assertIn("REFERENCE_ORIGINAL_TEXT", self.codes())
+
+    def add_checks(self, *, live=False):
         self.bind()
         skills = self.base.joinpath("skills")
         rule_path = skills.joinpath("literature-example", "SKILL.md")
         rule_path.parent.mkdir(parents=True)
-        rule_path.write_text("- [ ] [DEMO-A01] 候选题名与来源相符。\n", encoding="utf-8")
+        rule_type = "live_environment" if live else "offline_outcome"
+        objective = "实际应用中的标题显示正确。" if live else "候选题名与来源相符。"
+        rule_path.write_text(f"- [ ] [DEMO-A01] {objective} <!-- check-type: {rule_type} -->\n", encoding="utf-8")
         self.checks_path = self.base.joinpath("checks.json")
         checker._load_sibling("check_records").prepare_check_records(
             skills, self.checks_path, sources={"main": self.pdf}, candidate_path=self.note,
             scopes={"DEMO-A01": [{"object_id": "main-title", "locator": "candidate.md title"}]},
-            requirement_types={"DEMO-A01": "offline_outcome"}, inventory_path=self.inventory_path,
+            requirement_types={"DEMO-A01": rule_type}, inventory_path=self.inventory_path,
         )
         self.inventory = json.loads(self.inventory_path.read_text(encoding="utf-8"))
 
     def test_per_id_ledger_is_bound_without_claiming_pending_checks_passed(self):
         self.add_checks()
-        self.assertEqual(self.codes(), set())
+        self.assertEqual(self.codes(), {"CHECK_OFFLINE_INCOMPLETE"})
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["checks"], checker.source_tools.file_record(self.checks_path))
         result = checker._load_sibling("check_records").validate_check_records(self.checks_path)
         self.assertFalse(result.recorded_checks_complete)
+        self.assertTrue(result.structurally_consistent)
+        self.assertFalse(result.offline_records_ready)
+
+    def test_pending_real_application_check_does_not_block_offline_delivery(self):
+        self.add_checks(live=True)
+        ledger = json.loads(self.checks_path.read_text(encoding="utf-8"))
+        ledger["checks"][0].update(status="blocked", reason="Actual application unavailable for this exact heading.")
+        self.checks_path.write_text(json.dumps(ledger), encoding="utf-8")
+        self.assertEqual(self.codes(), set())
+        report = checker._load_sibling("check_records").validate_check_records(self.checks_path)
+        self.assertTrue(report.offline_records_ready)
+        self.assertEqual(report.live_unverified_ids, ["DEMO-A01"])
+
+    def test_offline_goal_cannot_be_relabelled_as_live_to_escape_completion(self):
+        self.add_checks()
+        ledger = json.loads(self.checks_path.read_text(encoding="utf-8"))
+        ledger["checks"][0].update(requirement_type="live_environment", environment_kind="actual_ui")
+        self.checks_path.write_text(json.dumps(ledger), encoding="utf-8")
+        self.assertIn("CHECK_TYPE_CONFLICT", self.codes())
 
     def test_per_id_ledger_diagnostics_reach_delivery_report(self):
         self.add_checks()

@@ -7,6 +7,7 @@
 - [填写原子来源单元](#填写原子来源单元)
 - [记录各来源的题头](#记录各来源的题头)
 - [映射最终候选](#映射最终候选)
+- [逐段翻译核对记录](#逐段翻译核对记录)
 - [逐图视觉核对记录](#逐图视觉核对记录)
 - [合并单元格](#合并单元格)
 - [完成交付检查](#完成交付检查)
@@ -44,6 +45,10 @@ inventory_path = prepare_sources(
 ```
 
 该调用生成 `source-inventory.json`。每个来源包含实际 PDF 的路径、SHA-256 和页数。每页包含完整 PNG、文字层文件和非空文字块。PNG 的像素哈希与文件哈希分别保留。脚本显示逐页进度，不覆盖已有同名清单。
+
+每页 `image_index.occurrences` 记录内容流实际调用的图像 xref、完整对象 bbox 和变换矩阵。每个来源的 `image_objects` 去重保存原图文件与 SMask 的哈希。原图对象的范围不一定覆盖整幅图，页上另绘的文字、线条或其他对象仍须一并盘点。
+
+按[图件导出脚本示例](../../literature-fulltext-extract/references/figure-crop.md)调用 `export_image_object(...)`，使用实际页码、xref、来源哈希与无后缀目标路径。返回的 `asset` 可进入最终交付映射，导出记录另存为证据。遇到 `PageRenderRequired` 时，改用 `render_page_region(...)` 处理源页上确认过的完整范围；四边检查分别完成。导出记录中的 `visual_review` 与 `edge_reviews` 只针对源页和图像文件。
 
 传入 `glossary_path` 时同时创建 `terminology.json`，术语表路径与哈希由实际文件生成，其余采用记录仍待填写。按[翻译技能](../../literature-translate-zh/SKILL.md#术语记录的具体做法)逐块完成术语台账；`write_delivery_manifest()` 自动绑定台账的最终文件哈希。`TERMINOLOGY_PENDING` 表示记录尚未完成，`TERM_UNRESOLVED` 表示仍有译法未决；台账通过结构检查不等于译义已通过独立验收。
 
@@ -95,13 +100,23 @@ inventory_path = prepare_sources(
 | `figure` | 用布尔值 `contains_table` 记录图中是否有真正的行列表格。 |
 | `table` | `shape` 给数据行数和列数；`merges` 给源合并范围。嵌图表另给父图 `parent_id`。 |
 | `formula` | 一个来源公式对应一个单元。 |
-| `reference` | `number` 保存来源书目的编号或标签。 |
+| `reference` | `number` 保存来源书目的编号或标签；`bibliography_id` 保存所属书目列表身份；`original_text` 保存该条完整原始书目。 |
 | `citation` | `references` 保存该次调用对应的书目单元 ID。 |
 | `cross_reference` | `target_unit` 保存该次图表、公式或章节调用的实际对象 ID。 |
 
+每名作者的 metadata 单元另填 `affiliation_numbers` 与 `affiliation_units`。两数组同序一一对应：前者逐项保留源页可见标记，后者指向同一来源内的 affiliation 单元 ID。例如 `{"affiliation_numbers":["2","4"],"affiliation_units":["main-affiliation-2","main-affiliation-4"]}`。源页存在明确但无编号的关系时，编号位置用 `null`，另写 `affiliation_reason` 说明依据。来源不能确定关系时，两数组留空并填写该原因，不从作者姓名推断。
+
+补充材料中的 figure 与 table 单元另填 `original_number` 和 `display_number`。`original_number` 原样记录来源编号，例如 `"8"`；`display_number` 单独记录交付中的编号，例如 `"S8"`。原对象无编号时，`original_number` 为 `null`，用 `original_number_reason` 保存源页依据。这些字段不能用目标锚点前缀代替；已有笔记的链接保持原约定。
+
 引用在源文中出现两次时建立两个 citation 单元。它们可以指向同一 reference 单元。跨来源使用书目时，另用 `cross_source_reason` 保存来源依据；主文与 SI 的同号书目不是同一条。
 
+每条 `reference` 单元均填写 `bibliography_id`，如已由源页确认的 `main-references` 或 `supplement-a-references`。同一 PDF 内存在独立书目列表时分别命名。该值由列表边界和实际条目身份确定，不能根据 `ref-`、`sref-` 等目标锚点前缀反推。`BIBLIOGRAPHY_ID_MISSING` 检查漏填记录；ID 与源列表是否相符仍需逐条对照。
+
+`original_text` 从原始来源抄录完整条目，保留原刊缩写、拼写和疑点。它不同于用于定位的短 `quote`，也不能只复制已重排或格式化的候选书目。`REFERENCE_ORIGINAL_TEXT` 检查缺项；字段是否完整、是否与源书目相符由逐条对源核对确认。
+
 单位后的每条通讯说明、版权说明等独立登记为一个 `metadata` / `header_note` 单元，目标为该来源题头引用块中的对应行。作者行中的邮箱链接另属于 `email`；这条链接不能代替来源中的完整通讯说明。`HEADER_NOTE_LAYOUT` 检查已登记说明是否映射到引用块；说明有没有漏盘点仍须对照源页核验。
+
+日期按类别分别登记。发表日期使用 `publication_date`；收稿日期与接受日期各有自己的 `header_note` 单元。一个 PDF 文字块含三个日期，不代表它们是一个元信息单元。卷期页码、开放获取声明和 DOI 也分别登记，目标片段各自只覆盖对应字段。引用块的分行示例见[题头技能](../../literature-header-format/SKILL.md#元信息逐项拆分)。
 
 每处来源裸网址独立登记为 `metadata` / `external_url`，`value` 为经源页核定的完整 URL，`display_text` 为来源的原显示文字。每次调用有独立的目标片段。例如来源显示 `https://example.org/data/`，则两个字段均保留该 URL；源页原本显示命名链接时，`display_text` 保留该名称。`URL_DISPLAY_TEXT` 检查显示文字，`URL_LINK` 检查实际目标。来源中的排版断行须按源页复原，不凭网站名称替换显示文字。DOI 解析网址使用 `doi` 专用字段，按 DOI 规范化规则处理。
 
@@ -169,6 +184,27 @@ deliveries = [
 `cross_reference` 的目标映射使检查器能够区分具体方法小节与整个 SI 章。给 section 单元选择完整的 Markdown 标题行；给 cross_reference 单元选择实际链接所在片段。
 
 如需行号定位，使用 `{"lines":[起行,止行],"sha256":"该行段的真实哈希"}`。行段按 UTF-8、LF、包含原有行尾换行计算。整个候选的文件哈希同时绑定，后续编辑会使检查失败。
+
+## 逐段翻译核对记录
+
+按[逐段翻译复核](../../literature-translate-zh/references/translation-review.md)完成原文与候选的逐段对照。`prepare_translation_review(...)` 只建立待填骨架，不从术语命中、空列表或已生成候选推导语义正确。
+
+先完成 inventory 的来源单元与工具指针，再为最终候选生成翻译记录。记录的 `bindings.source_inventory`、`bindings.candidate` 和 `bindings.sources` 分别绑定实际清单、候选和来源 PDF。检查记录、图像记录仍以各自方式保存；翻译记录不新增 inventory 指针。
+
+完整核对后，通过显式参数绑定最终文件：
+
+```python
+manifest_path = write_delivery_manifest(
+    inventory_path,
+    candidate_path,
+    deliveries,
+    work.joinpath("delivery-manifest.json"),
+    resource_root=output_root,
+    translation_review_path=work.joinpath("translation-review.json"),
+)
+```
+
+检查器验证翻译记录与本次实际文件的身份和哈希。候选、来源或清单在记录之后发生变化时，旧记录不能继续充当最终证据。该绑定检查不判断译义是否正确；每段的语义结论仍由文件内容对照与逐 ID 验收支撑。
 
 ## 逐图视觉核对记录
 
@@ -287,4 +323,4 @@ print(report.to_dict())
 
 `SOURCE_BLOCK_UNMAPPED` 定位遗漏盘点的文字块。`HEADER_PENDING` 定位未核实的独立题头字段。`UNIT_NOT_DELIVERED` 定位尚未交付的来源对象。`TARGET_QUOTE` 定位不唯一或已变化的目标片段。`EMBEDDED_TABLE_MISSING` 定位图内表格的独立结构缺口。`TABLE_MERGES_MISMATCH` 定位合并范围差异。`OUTPUT_CITATION_UNMAPPED` 定位没有来源调用记录的书目链接。
 
-按发现逐项修复后重新绑定最终候选哈希。保留完整机器发现清单。最后另行对照原页核验译文、数字、公式、书目身份、引文语境和图像完整性；Obsidian 原生缓存与插件界面仍单独验收。
+按发现逐项修复后重新绑定最终候选哈希。保留完整机器发现清单。最后对照原页核验译文、数字、公式、书目身份、引文语境和图像完整性；本次验收对象始终是 Markdown 及其引用资源。

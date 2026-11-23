@@ -3,6 +3,8 @@
 Call prepare_check_records(...) and validate_check_records(path) from a Python
 script. A clean report establishes record shape and current file bindings only.
 It cannot establish that an observation happened or that a source was understood.
+The current workflow accepts Markdown and resource files. Environment record
+fields remain readable for historical ledgers; they create no UI review task.
 """
 
 from __future__ import annotations
@@ -56,6 +58,11 @@ class CheckRecordsReport:
     pending_ids: list[str] = field(default_factory=list)
     blocked_ids: list[str] = field(default_factory=list)
     unclassified_ids: list[str] = field(default_factory=list)
+    offline_ids: list[str] = field(default_factory=list)
+    offline_unresolved_ids: list[str] = field(default_factory=list)
+    offline_failed_ids: list[str] = field(default_factory=list)
+    process_unverified_ids: list[str] = field(default_factory=list)
+    live_unverified_ids: list[str] = field(default_factory=list)
     source_fidelity: str = "not_assessed"
     execution_truth: str = "not_assessed"
     live_behavior: str = "not_assessed"
@@ -63,8 +70,8 @@ class CheckRecordsReport:
     evidence_boundary: str = (
         "Only atomic-ID coverage, record structure, existing evidence locations and "
         "current file hashes are checked. Status, scope, applicability and observation "
-        "claims are supplied by the recorder. Independent comparison with the source "
-        "and independent observation of process or actual UI remain necessary."
+        "claims are supplied by the recorder. Independent comparison against "
+        "the source files is still required for file acceptance. Unobserved process history is not inferred."
     )
 
     @property
@@ -77,9 +84,21 @@ class CheckRecordsReport:
         return (self.structurally_consistent and self.expected_count > 0
                 and not self.pending_ids and not self.blocked_ids and not self.unclassified_ids)
 
+    @property
+    def offline_records_ready(self) -> bool:
+        """Recorded offline checks are resolved without a reported failure.
+
+        This is a completion gate over the recorder's claims, not semantic
+        acceptance. Pending process and live checks remain separately visible.
+        Unclassified IDs cannot silently escape the offline completion gate.
+        """
+        return (self.structurally_consistent and self.expected_count > 0
+                and not self.offline_unresolved_ids and not self.unclassified_ids)
+
     def to_dict(self) -> dict:
         return {**asdict(self), "structurally_consistent": self.structurally_consistent,
-                "recorded_checks_complete": self.recorded_checks_complete}
+                "recorded_checks_complete": self.recorded_checks_complete,
+                "offline_records_ready": self.offline_records_ready}
 
 
 @dataclass(frozen=True)
@@ -262,6 +281,208 @@ def bind_file(path: Path) -> dict:
     return {"path": str(path), "sha256": _Files().digest(path)}
 
 
+def scopes_from_deliveries(
+    inventory_path: Path,
+    candidate_path: Path,
+    deliveries: Sequence[dict],
+    *,
+    unit_ids: Sequence[str],
+) -> list[dict]:
+    """Check locator structure and copy explicitly selected object scopes.
+
+    The caller chooses the objects appropriate to each atomic goal. This helper
+    creates scopes only: it never supplies applicability, evidence or a result.
+    No mutable inventory/manifest is used as hash-bound acceptance evidence.
+    Candidate locations are checked against the actual Markdown file. Source
+    pages are bounded by the inventory's declared page_count; PDFs are not read.
+    This does not establish source coverage, semantics or the truth of a source
+    locator. Full delivery validation and source comparison remain necessary.
+    """
+    import importlib.util
+    import math
+    import sys
+
+    if isinstance(unit_ids, (str, bytes)) or not isinstance(unit_ids, Sequence) or not unit_ids:
+        raise ValueError("Select explicit source unit IDs; record an absent-object condition separately.")
+    if any(not isinstance(identity, str) or not identity.strip() for identity in unit_ids):
+        raise ValueError("Every selected unit ID must be a nonempty string.")
+    if len(set(unit_ids)) != len(unit_ids):
+        raise ValueError("Do not repeat selected unit IDs.")
+    inventory_path = Path(inventory_path).resolve(strict=True)
+    candidate_path = Path(candidate_path).resolve(strict=True)
+    if not candidate_path.is_file():
+        raise ValueError("candidate_path must identify the actual candidate file.")
+    inventory = _load_json(inventory_path)
+    if not isinstance(inventory, dict):
+        raise ValueError("The source inventory must be an object.")
+    candidate = candidate_path.read_text(encoding="utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+    candidate_lines = candidate.splitlines(keepends=True)
+    line_hashes: dict[tuple[int, int], str] = {}
+    anchors: Counter | None = None
+
+    def visible_anchors() -> Counter:
+        # Reuse validate_note's lexical helpers and state transitions without
+        # grading tables, equations or bibliography while selecting a scope.
+        path = Path(__file__).resolve().parent.joinpath("validate_note.py")
+        path_key = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
+        module_name = f"literature_scope_validate_note_{path_key}"
+        note = sys.modules.get(module_name)
+        if note is None:
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            if spec is None or spec.loader is None:
+                raise ImportError(path)
+            note = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = note
+            spec.loader.exec_module(note)
+        lines = candidate.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        first = note._frontmatter(lines, [])
+        found = Counter()
+        fence = None
+        equation = False
+        comment = None
+        list_indent = None
+        code_lines = {}
+        for position in range(first, len(lines)):
+            raw = lines[position]
+            if fence:
+                if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*", raw):
+                    fence = None
+                continue
+            if equation:
+                if raw.strip() == "$$":
+                    equation = False
+                continue
+            indentation = len(raw.expandtabs(4)) - len(raw.expandtabs(4).lstrip(" "))
+            continuation = list_indent is not None and indentation >= list_indent
+            if raw.strip() and not continuation:
+                list_indent = None
+            if comment is None and indentation >= 4 and not (
+                    continuation and list_indent is not None and indentation < list_indent + 4):
+                continue
+            numbered = note._ENTRY.match(raw) if comment is None else None
+            if numbered:
+                list_indent = numbered.end()
+            opening = note._FENCE.match(raw) if comment is None else None
+            if opening and not (opening[1][0] == "`" and "`" in opening[2]):
+                fence = (opening[1][0], len(opening[1]))
+                list_indent = None
+                continue
+            if position not in code_lines:
+                end = position + 1
+                if raw.strip() and not note._HEADING.match(raw):
+                    while end < len(lines) and lines[end].strip() and not (
+                            note._FENCE.match(lines[end]) or note._HEADING.match(lines[end])
+                            or note._ENTRY.match(lines[end])):
+                        end += 1
+                paragraph = note._mask_paragraph_code("\n".join(lines[position:end]), comment).split("\n")
+                code_lines.update(enumerate(paragraph, start=position))
+            code_safe = code_lines[position]
+            if comment is None and re.fullmatch(r" {0,3}\$\$.+\$\$[ \t]*", code_safe):
+                continue
+            line, comment = note._mask_comments(note._mask_delimited(code_safe, "$"), comment)
+            opening = note._FENCE.match(line)
+            if opening and not (opening[1][0] == "`" and "`" in opening[2]):
+                fence = (opening[1][0], len(opening[1]))
+                continue
+            if line.strip() == "$$":
+                equation = True
+                continue
+            match = note._ANCHOR.search(line)
+            if match:
+                found[match[1]] += 1
+        return found
+
+    def check_target(target: Any, identity: str) -> None:
+        nonlocal anchors
+        choices = set(target) & {"anchor", "quote", "lines"} if isinstance(target, dict) else set()
+        if len(choices) != 1:
+            raise ValueError(f"{identity}: select exactly one candidate target: anchor, quote or lines.")
+        if "quote" in choices:
+            quote = target["quote"]
+            if not isinstance(quote, str) or not quote.strip():
+                raise ValueError(f"{identity}: candidate quote must be nonempty and unique.")
+            start = candidate.find(quote)
+            if start < 0 or candidate.find(quote, start + 1) >= 0:
+                raise ValueError(f"{identity}: candidate quote must be nonempty and unique.")
+            return
+        if "lines" in choices:
+            bounds = target["lines"]
+            if (not isinstance(bounds, list) or len(bounds) != 2
+                    or any(type(value) is not int for value in bounds)
+                    or not 1 <= bounds[0] <= bounds[1] <= len(candidate_lines)):
+                raise ValueError(f"{identity}: candidate lines need a valid one-based inclusive range.")
+            key = tuple(bounds)
+            if key not in line_hashes:
+                content = "".join(candidate_lines[bounds[0] - 1:bounds[1]])
+                line_hashes[key] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            if target.get("sha256") != line_hashes[key]:
+                raise ValueError(f"{identity}: candidate line-range sha256 does not match the actual text.")
+            return
+        anchor = target["anchor"]
+        if anchors is None:
+            anchors = visible_anchors()
+        if not isinstance(anchor, str) or anchors[anchor] != 1:
+            raise ValueError(f"{identity}: candidate anchor must name one visible block definition.")
+
+    def index(rows, key: str, label: str):
+        if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
+            raise ValueError(f"{label} must be an object sequence.")
+        output = {}
+        for row in rows:
+            identity = row.get(key) if isinstance(row, dict) else None
+            if not isinstance(identity, str) or not identity.strip() or identity in output:
+                raise ValueError(f"{label} requires unique nonempty {key} values.")
+            output[identity] = row
+        return output
+
+    units = index(inventory.get("units"), "id", "units")
+    sources = index(inventory.get("sources"), "id", "sources")
+    targets = index(deliveries, "unit", "deliveries")
+    missing = set(unit_ids) - (units.keys() & targets.keys())
+    if missing:
+        raise ValueError(f"Selected objects lack source units or delivery locators: {sorted(missing)}")
+    scopes = []
+    for identity in unit_ids:
+        unit, target = units[identity], targets[identity].get("target")
+        source_id = unit.get("source")
+        if not isinstance(source_id, str) or source_id not in sources:
+            raise ValueError(f"{identity}: unknown source identity.")
+        page_count = sources[source_id].get("page_count")
+        if type(page_count) is not int or page_count < 1:
+            raise ValueError(f"{identity}: the source needs a positive inventory page_count.")
+        locations = unit.get("evidence")
+        if (not isinstance(locations, list) or not locations
+                or any(not isinstance(location, dict) for location in locations)):
+            raise ValueError(f"{identity}: explicit source locations are required.")
+        for location in locations:
+            if type(location.get("page")) is not int or not 1 <= location["page"] <= page_count:
+                raise ValueError(f"{identity}: source page must fall within inventory page_count.")
+            if not set(location) & {"bbox", "quote", "image_xref"}:
+                raise ValueError(f"{identity}: each source location needs an object locator.")
+            if "bbox" in location:
+                box = location["bbox"]
+                valid = (isinstance(box, list) and len(box) == 4
+                         and all(type(value) is int or type(value) is float and math.isfinite(value)
+                                 for value in box))
+                if not valid or not (box[0] < box[2] and box[1] < box[3]):
+                    raise ValueError(f"{identity}: source bbox must be a finite nonempty rectangle.")
+            if "quote" in location and (not isinstance(location["quote"], str) or not location["quote"].strip()):
+                raise ValueError(f"{identity}: source quote must be a nonempty string.")
+            if "image_xref" in location and (type(location["image_xref"]) is not int or location["image_xref"] < 1):
+                raise ValueError(f"{identity}: source image_xref must be a positive integer.")
+        check_target(target, identity)
+        scopes.append({"object_id": identity, "locator": {
+            "source_id": source_id,
+            "source_locations": [
+                {key: deepcopy(value) for key, value in location.items()
+                 if key in {"page", "bbox", "coordinate_system", "image_xref", "quote"}}
+                for location in locations
+            ],
+            "candidate_path": str(candidate_path), "candidate_target": deepcopy(target),
+        }})
+    return scopes
+
+
 def bind_evidence(path: Path, locator: dict, *, evidence_type: str = "offline_result",
                   observation: dict | None = None) -> dict:
     """Bind an existing file; this helper does not claim its content proves a check.
@@ -377,7 +598,7 @@ def prepare_check_records(
                        "rule": rule.location(), "requirement_type": requirement_type,
                        "environment_kind": environment_kind,
                        "scope": deepcopy(scopes.get(rule.id, [])), "status": "not_verified",
-                       "evidence": [], "reason": "尚未逐项核验；此骨架不构成执行、内容或界面通过证据。",
+                       "evidence": [], "reason": "尚未逐项核验；此骨架不构成执行或内容通过证据。",
                        "applicability_condition": ""})
     value = {"schema_version": SCHEMA_VERSION,
              "created_at": datetime.now(timezone.utc).isoformat(),
@@ -523,8 +744,9 @@ def validate_check_records(path: Path, *, progress: Progress | None = None) -> C
     """Validate each record and actual file location without assigning results.
 
     Honest blocked/not_verified records with scope and reasons are valid pending
-    records. They do not prevent offline candidate generation. An unclassified
-    record may remain pending but cannot claim passed, failed or not_applicable.
+    records. They do not prevent work-in-progress candidate generation, but an
+    unresolved offline or unclassified record prevents offline_records_ready.
+    An unclassified record cannot claim passed, failed or not_applicable.
     """
     report = CheckRecordsReport()
     path = Path(path).resolve()
@@ -690,6 +912,16 @@ def validate_check_records(path: Path, *, progress: Progress | None = None) -> C
                 report.findings.append(CheckFinding("CHECK_ENVIRONMENT_CONFLICT", identity, "The environment kind conflicts with the source rule declaration."))
         elif environment_kind is not None:
             report.findings.append(CheckFinding("CHECK_ENVIRONMENT_KIND_INVALID", identity, "Only live-environment records may declare an environment kind."))
+        if requirement_type == "offline_outcome":
+            report.offline_ids.append(identity)
+            if status not in ("passed", "not_applicable"):
+                report.offline_unresolved_ids.append(identity)
+            if status == "failed":
+                report.offline_failed_ids.append(identity)
+        elif requirement_type == "execution_process" and status not in ("passed", "not_applicable"):
+            report.process_unverified_ids.append(identity)
+        elif requirement_type == "live_environment" and status not in ("passed", "not_applicable"):
+            report.live_unverified_ids.append(identity)
         refs = item.get("evidence")
         if not isinstance(refs, list) or not all(_nonempty(ref) for ref in refs):
             report.findings.append(CheckFinding("CHECK_EVIDENCE_REFS_INVALID", identity, "evidence must be a list of individual evidence IDs."))

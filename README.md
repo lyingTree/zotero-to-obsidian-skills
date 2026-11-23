@@ -53,7 +53,7 @@ Python 依赖在发布技能目录前安装。pip 失败会返回失败，不显
 
 兼容入口仍保留：[install.ps1](install.ps1) 用于 Windows，[install.sh](install.sh) 用于 macOS/Linux。原有目标目录和版本参数转交同一个 Python 安装核心；ref 可指定分支、标签或完整提交 SHA。
 
-运行文献处理前需要 Zotero 桌面端提供本地读取，Obsidian 桌面端提供官方 `obsidian` CLI；安装技能本身不会安装这两个应用。Rich Table 格式的笔记另需目标库启用兼容插件。Zotero 写入所需凭据从环境变量或本机配置读取，绝不写入仓库。
+从真实 Zotero 文献库读取时，需要已核实的 Zotero 读取接口；写入现有笔记时，需要目标 vault 的文件访问能力。已有 PDF 的离线整理直接生成 Markdown 与资源文件。验收比较这些文件与来源、参考 Markdown，不要求启动应用或审查应用界面。安装技能本身不会安装桌面应用。Zotero 写入所需凭据从环境变量或本机配置读取，绝不写入仓库。
 
 ## 使用
 
@@ -72,7 +72,7 @@ Python 依赖在发布技能目录前安装。pip 失败会返回失败，不显
 - **仓库检查**：在编辑器运行 [scripts/run_checks.py](scripts/run_checks.py)，检查 12 个技能的元数据、相对引用、依赖锁定，并运行隔离回归测试。Python 验证依赖见 [requirements-dev.txt](requirements-dev.txt)；完整回归另需 Node.js 24 执行四份真实 Templater 模板，无 npm 依赖。模板回归使用内存中的应用/API 替身，不连接真实文献库；仅运行候选笔记校验器不需要 Node.js。
 - **持续集成**：[GitHub Actions](.github/workflows/validate.yml) 在 Windows/Linux、Python 3.10/3.13、Node.js 24 上运行上述检查，并检查安装包装脚本的语法。
 
-静态检查不能证明全文提取、翻译、图片裁剪或 Obsidian 渲染正确。`run.json`、来源映射、候选链和回执仍按[交接约定](literature-zotero2obsidian/references/pipeline-contract.md)由执行 Agent 维护；本仓库没有把这些约定冒充成已实现的自动流水线。
+静态检查不能证明全文提取、翻译或图片裁剪正确。这些结果仍需按文件内容逐项对源核对。`run.json`、来源映射、候选链和回执按[交接约定](literature-zotero2obsidian/references/pipeline-contract.md)由执行 Agent 维护；本仓库没有把这些约定冒充成已实现的自动流水线。
 
 ## 规则粒度与模型执行测试
 

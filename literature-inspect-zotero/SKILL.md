@@ -77,10 +77,10 @@ description: 只读检查指定 Zotero 条目的完整可用信息、集合层�
 
 ## 验收标准
 
-- [ ] [ZOT-A01] 已获数据可追溯到原记录。
-- [ ] [ZOT-A02] 每项缺失信息标明原记录为空、无法读取或未读完。
-- [ ] [ZOT-A03] 每个附件都有角色记录。
-- [ ] [ZOT-A04] 每个附件都有可用性记录。
-- [ ] [ZOT-A05] 已选主全文有版本证据。
-- [ ] [ZOT-A06] 主全文选择被阻断时有明确原因。
-- [ ] [ZOT-A07] 每个语言结论有正文定位或待核原因。
+- [ ] [ZOT-A01] 已获数据可追溯到原记录。 <!-- check-type: offline_outcome -->
+- [ ] [ZOT-A02] 每项缺失信息标明原记录为空、无法读取或未读完。 <!-- check-type: offline_outcome -->
+- [ ] [ZOT-A03] 每个附件都有角色记录。 <!-- check-type: offline_outcome -->
+- [ ] [ZOT-A04] 每个附件都有可用性记录。 <!-- check-type: offline_outcome -->
+- [ ] [ZOT-A05] 已选主全文有版本证据。 <!-- check-type: offline_outcome -->
+- [ ] [ZOT-A06] 主全文选择被阻断时有明确原因。 <!-- check-type: offline_outcome -->
+- [ ] [ZOT-A07] 每个语言结论有正文定位或待核原因。 <!-- check-type: offline_outcome -->

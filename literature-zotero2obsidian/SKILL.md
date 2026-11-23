@@ -7,6 +7,8 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 每条规则的 ID 用于定位对应证据。
 
+验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，不审查应用界面，不要求点击交互、阅读视图、插件显示或原生缓存检查。
+
 完整生成任务先读[分阶段执行路线](references/execution-plan.md)。每次只推进一个阶段；阶段清单用于定位工作，具体内容规则仍以对应子技能为准。
 
 ## 范围与约束
@@ -83,42 +85,41 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 ## 执行步骤
 
-1. 先确认任务范围、身份线索、读写授权和项目配置，完成[运行预检](references/project-profile.md#运行预检)：核对实际依赖能力、路径边界、库外工作根及本次所需模板、术语表与插件。预检先于提取、翻译和正文修改；缺失能力按影响范围记录阻断或待验，不伪装已执行。
+1. 先确认任务范围、身份线索、读写授权和项目配置，完成[运行预检](references/project-profile.md#运行预检)：核对实际文件处理能力、路径边界、库外工作根及本次所需模板、术语表与解析器。预检先于提取、翻译和正文修改；缺失能力按影响范围记录阻断或待验，不伪装已执行。
 2. 第 1 步读取条目一次。第 5 步命名与第 4 步 plan 复用同一份 item.json，先确定目标目录、既有映射和写前条件；尚未提取的资源只登记规划，不编造文件或哈希。
 3. 第 2 步提取主全文，第 3 步翻译或选择中文原稿。
 4. 有补充材料时，第 11 步按来源命名空间将 SI 并入所选主稿。没有 SI 时记录不适用。
 5. 提取完成后补齐第 4 步 plan 的资源清单、稳定路径和冲突处理，再依次执行第 6、7、8、9、10 步；各步接收上一步完整候选。
 6. 单项任务完成预检后从指定稿进入对应步骤，只补实际依赖。先登记修改范围与输入基线，例如书目脚注迁移只重连受影响调用；既有范围外问题单独报告，不静默重写。
 7. 从本次最后候选生成 final.md，仅移除已登记的工作标记，并将本地资源引用固定为从库根起算的附件三级目录路径。比较其他内容并计算待提交哈希。
-8. 按本次范围执行[静态校验](references/automated-validation.md)、[来源交付索引检查](references/delivery-checks.md)与[逐篇验收](references/acceptance.md)，分别记录源码、内容证据和待验项目。静态结果不替代原文核验、Obsidian 缓存或界面验收。
-9. 需要写库时交第 4 步 commit，提交后按实际能力回读文件、CLI 缓存及界面，分别记录结果。
+8. 按本次范围执行[静态校验](references/automated-validation.md)、[来源交付索引检查](references/delivery-checks.md)与[逐篇验收](references/acceptance.md)，分别记录源码、内容证据和未决项目。语法检查通过后继续对照原文核验内容。
+9. 需要写库时交第 4 步 commit，提交后回读实际 Markdown 文件和引用资源，核对文件内容及哈希。
 10. 将证据写入各条目的 run.json，结论写入 report.md；以这些记录及实际产物恢复进度，不依赖对话记忆或假定文献库使用 Git。批次持续报告已完成、运行中、阻断与剩余条目数，单篇异常不阻塞其他独立条目。
 
 ## 验收标准
 
-- [ ] [PIPE-A01] 本次范围内的每个[逐篇验收项](references/acceptance.md)都有独立结果。
-- [ ] [PIPE-A02] 本次涉及的书目标题层级正确。
-- [ ] [PIPE-A03] 本次涉及的书目节序号正确。
-- [ ] [PIPE-A04] 本次涉及的书目章节链接落点正确。
-- [ ] [PIPE-A05] 每个复用项有依据。
-- [ ] [PIPE-A06] 每个未做项有依据。
-- [ ] [PIPE-A07] 每个不适用项有依据。
-- [ ] [PIPE-A08] 每个阻断项有依据。
-- [ ] [PIPE-A09] 报告记录提取状态。
-- [ ] [PIPE-A10] 报告记录翻译状态。
-- [ ] [PIPE-A11] 报告记录写入状态。
-- [ ] [PIPE-A12] 报告记录回读状态。
-- [ ] [PIPE-A13] 报告记录界面验收状态。
-- [ ] [PIPE-A14] 报告列出未决项。
-- [ ] [PIPE-A15] 单项修复结论没有超出本次修改范围。
-- [ ] [PIPE-A16] 预检先于内容处理。
-- [ ] [PIPE-A17] 并行任务没有共享可变稿件。
-- [ ] [PIPE-A18] 条目独占提交有记录可核对。
-- [ ] [PIPE-A19] 目标路径独占提交有记录可核对。
-- [ ] [PIPE-A20] 批次进度计数可由运行记录复核。
-- [ ] [PIPE-A21] 每份范围内 PDF 具有逐页来源材料。
-- [ ] [PIPE-A22] 来源交付索引对应当前候选哈希。
-- [ ] [PIPE-A23] 来源交付索引检查没有未解决的错误。
-- [ ] [PIPE-A24] 排版提示均有逐条处置记录。
-- [ ] [PIPE-A25] 每页来源均有覆盖核对记录。
-- [ ] [PIPE-A26] 每个来源对象均有内容核对记录。
+- [ ] [PIPE-A01] 本次范围内的每个[逐篇验收项](references/acceptance.md)都有独立结果。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A02] 本次涉及的书目标题层级正确。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A03] 本次涉及的书目节序号正确。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A04] 本次涉及的书目章节链接落点正确。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A05] 每个复用项有依据。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A06] 每个未做项有依据。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A07] 每个不适用项有依据。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A08] 每个阻断项有依据。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A09] 报告记录提取状态。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A10] 报告记录翻译状态。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A11] 报告记录写入状态。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A12] 报告记录回读状态。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A14] 报告列出未决项。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A15] 单项修复结论没有超出本次修改范围。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A16] 预检先于内容处理。 <!-- check-type: execution_process -->
+- [ ] [PIPE-A17] 并行任务没有共享可变稿件。 <!-- check-type: execution_process -->
+- [ ] [PIPE-A18] 条目独占提交有记录可核对。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A19] 目标路径独占提交有记录可核对。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A20] 批次进度计数可由运行记录复核。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A21] 每份范围内 PDF 具有逐页来源材料。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A22] 来源交付索引对应当前候选哈希。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A23] 来源交付索引检查没有未解决的错误。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A24] 排版提示均有逐条处置记录。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A25] 每页来源均有覆盖核对记录。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A26] 每个来源对象均有内容核对记录。 <!-- check-type: offline_outcome -->

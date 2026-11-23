@@ -242,6 +242,7 @@ def write_delivery_manifest(
     manifest_path: Path,
     *,
     resource_root: Path | None = None,
+    translation_review_path: Path | None = None,
 ) -> Path:
     """Bind completed files to a mapping. This does not invent missing targets."""
     if not inventory_path.is_file() or not candidate_path.is_file():
@@ -285,6 +286,8 @@ def write_delivery_manifest(
         if not checks_path.is_absolute():
             checks_path = inventory_path.parent.joinpath(checks_path)
         manifest["checks"] = source_tools.file_record(checks_path)
+    if translation_review_path is not None:
+        manifest["translation_review"] = source_tools.file_record(translation_review_path)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest_path
@@ -506,8 +509,12 @@ class _Audit:
             self.evidence(unit.get("evidence"), source, identity, visual=kind in {"metadata", "figure", "table", "formula"})
             if kind == "metadata" and unit.get("field") not in {*FIELDS.values(), "doi", "email", "header_note", "external_url"}:
                 self.fail("METADATA_FIELD", identity, "Declare one supported metadata field.")
+            if kind == "metadata" and unit.get("field") == "author":
+                self.check_author_affiliations(identity, unit)
             if kind == "figure" and type(unit.get("contains_table")) is not bool:
                 self.fail("FIGURE_TABLE_CLASSIFICATION", identity, "Inspect the figure and explicitly classify whether it contains a table.")
+            if kind in {"figure", "table"} and self.sources[source].get("role") == "supplement":
+                self.check_supplement_number(identity, unit)
             if kind == "table":
                 shape = unit.get("shape")
                 if not isinstance(shape, dict) or any(type(shape.get(key)) is not int or shape[key] < 1 for key in ("rows", "columns")):
@@ -516,6 +523,14 @@ class _Audit:
                     self.fail("SOURCE_TABLE_MERGES", identity, "Record each source merged range; use an empty array only when the source has none.")
             if kind == "reference" and not str(unit.get("number", "")).strip():
                 self.fail("REFERENCE_NUMBER", identity, "Retain the reference's source number or source label.")
+            if kind == "reference" and (not isinstance(unit.get("bibliography_id"), str)
+                                        or not unit["bibliography_id"].strip()):
+                self.fail("BIBLIOGRAPHY_ID_MISSING", identity,
+                          "Record this entry's evidence-based bibliography_id explicitly; an anchor prefix is not a bibliography identity.")
+            if kind == "reference" and (not isinstance(unit.get("original_text"), str)
+                                        or not unit["original_text"].strip()):
+                self.fail("REFERENCE_ORIGINAL_TEXT", identity,
+                          "Keep this complete original bibliography entry in original_text; a short locator quote or the formatted candidate is not the source record.")
         for source_id, source in self.sources.items():
             decisions = source.get("header_fields")
             if not isinstance(decisions, dict):
@@ -576,6 +591,55 @@ class _Audit:
             excluded_pages.add(key)
         for key in sorted(set(self.pages) - self.used_pages - excluded_pages):
             self.fail("SOURCE_PAGE_UNMAPPED", f"{key[0]}:page-{key[1]}", "Record content from this page or a justified page exclusion.")
+
+    def check_author_affiliations(self, identity: str, unit: dict):
+        numbers, affiliations = unit.get("affiliation_numbers"), unit.get("affiliation_units")
+        if not isinstance(numbers, list) or not isinstance(affiliations, list):
+            self.fail("AUTHOR_AFFILIATION_MAPPING", identity,
+                      "Record parallel affiliation_numbers and affiliation_units arrays for this author.")
+            return
+        if len(numbers) != len(affiliations):
+            self.fail("AUTHOR_AFFILIATION_MAPPING", identity,
+                      "Each source affiliation marker must map to one affiliation unit in the same position.")
+            return
+        if any(value is not None and (not isinstance(value, str) or not value.strip()) for value in numbers):
+            self.fail("AUTHOR_AFFILIATION_NUMBER", identity,
+                      "Preserve visible affiliation markers as strings; use null only for an unnumbered source relationship.")
+        if not affiliations or None in numbers:
+            reason = unit.get("affiliation_reason")
+            if not isinstance(reason, str) or not reason.strip():
+                self.fail("AUTHOR_AFFILIATION_REASON", identity,
+                          "Explain the source-specific absent or unnumbered affiliation relationship.")
+        seen = set()
+        for affiliation_id in affiliations:
+            if not isinstance(affiliation_id, str) or affiliation_id not in self.units:
+                self.fail("AUTHOR_AFFILIATION_UNIT", identity,
+                          "Every affiliation relationship must name an actual source unit.")
+                continue
+            affiliation = self.units[affiliation_id]
+            if (affiliation.get("kind") != "metadata" or affiliation.get("field") != "affiliation"
+                    or affiliation.get("source") != unit.get("source")):
+                self.fail("AUTHOR_AFFILIATION_UNIT", identity,
+                          "An author's affiliation must be an affiliation metadata unit from the same source.")
+            if affiliation_id in seen:
+                self.fail("AUTHOR_AFFILIATION_DUPLICATE", identity,
+                          "Record each author-to-affiliation relationship once.")
+            seen.add(affiliation_id)
+
+    def check_supplement_number(self, identity: str, unit: dict):
+        original = unit.get("original_number")
+        if "original_number" not in unit or (original is not None and
+                (not isinstance(original, str) or not original.strip())):
+            self.fail("SUPPLEMENT_ORIGINAL_NUMBER", identity,
+                      "Record the literal source number separately from the normalized display number.")
+        if "original_number" in unit and original is None:
+            reason = unit.get("original_number_reason")
+            if not isinstance(reason, str) or not reason.strip():
+                self.fail("SUPPLEMENT_NUMBER_ABSENCE", identity,
+                          "Explain that this source object is unnumbered instead of inventing an original number.")
+        if not isinstance(unit.get("display_number"), str) or not unit["display_number"].strip():
+            self.fail("SUPPLEMENT_DISPLAY_NUMBER", identity,
+                      "Record the delivery's display number independently from the source's literal number.")
 
     def resolve_target(self, target: Any, identity: str) -> tuple[int, int, str] | None:
         if not isinstance(target, dict):
@@ -910,6 +974,59 @@ class _Audit:
                 if not isinstance(entry.get("resolution_basis"), str) or not entry["resolution_basis"].strip():
                     self.fail("TERM_RESOLUTION_BASIS", identity, "Record the evidence used to resolve the proposed translation.")
 
+    def check_translation_review(self, manifest: dict, inventory_path: Path):
+        """Check immutable file bindings; never grade a translation ledger's prose."""
+        if "translation_review" not in manifest:
+            return
+        path = self.record(manifest["translation_review"], self.path.parent, "translation_review")
+        if path is None:
+            return
+        ledger = self.read_json(path, "translation_review")
+        if ledger.get("schema_version") != 1:
+            self.fail("TRN_REVIEW_VERSION", "translation_review", "Expected translation-review schema_version 1.")
+        bindings = ledger.get("bindings")
+        if not isinstance(bindings, dict):
+            self.fail("TRN_REVIEW_BINDINGS", "translation_review", "Bind the actual inventory and final candidate files.")
+            return
+        for key, expected in (("source_inventory", inventory_path), ("candidate", self.candidate_path)):
+            bound = self.record(bindings.get(key), path.parent, "translation_review:" + key)
+            if bound is not None and bound != expected.resolve():
+                self.fail("TRN_REVIEW_FILE_IDENTITY", key, "Bind this delivery's actual file, not a different copy.")
+        source_bindings = bindings.get("sources")
+        if not isinstance(source_bindings, dict):
+            self.fail("TRN_REVIEW_SOURCES", "translation_review", "Bind every source used in the selected review units.")
+            return
+        units = ledger.get("units")
+        if not isinstance(units, dict) or not units:
+            self.fail("TRN_REVIEW_UNITS", "translation_review", "Select the source units reviewed in this translation ledger.")
+            return
+        required_sources = set()
+        for identity, row in units.items():
+            if identity not in self.units or not isinstance(row, dict):
+                self.fail("TRN_REVIEW_UNIT", str(identity), "Every review unit must name an actual inventory unit.")
+                continue
+            source_id = self.units[identity].get("source")
+            if row.get("source_id") != source_id:
+                self.fail("TRN_REVIEW_UNIT_SOURCE", identity, "Keep the inventory source identity for this review unit.")
+            required_sources.add(source_id)
+        if set(source_bindings) != required_sources:
+            self.fail("TRN_REVIEW_SOURCES", "translation_review", "The bound sources must match the selected units' sources.")
+        for source_id, binding in source_bindings.items():
+            bound = self.record(binding, path.parent, "translation_review:source:" + source_id)
+            source = self.sources.get(source_id)
+            if source is None:
+                self.fail("TRN_REVIEW_SOURCE_IDENTITY", source_id, "This source does not belong to the inventory.")
+                continue
+            expected = Path(source["path"])
+            if not expected.is_absolute():
+                expected = inventory_path.parent.joinpath(expected)
+            if bound is not None and bound != expected.resolve():
+                self.fail("TRN_REVIEW_SOURCE_IDENTITY", source_id, "Bind the actual source PDF used by this inventory.")
+        if bindings.get("glossary") is not None:
+            self.record(bindings["glossary"], path.parent, "translation_review:glossary")
+        if ledger.get("terminology_record") is not None:
+            self.record(ledger["terminology_record"], path.parent, "translation_review:terminology")
+
     def check_acceptance_records(self, inventory: dict, manifest: dict, base: Path):
         expected = inventory.get("checks_path")
         if expected is None and "checks" not in manifest:
@@ -930,6 +1047,12 @@ class _Audit:
         result = checker.validate_check_records(path, progress=self.progress)
         for item in result.findings:
             self.report.findings.append(DeliveryFinding(item.code, item.object_id, item.message, item.level))
+        for identity in result.offline_unresolved_ids:
+            self.fail("CHECK_OFFLINE_INCOMPLETE", identity,
+                      "This offline acceptance record is unresolved or failed; complete its source comparison before claiming an offline-ready delivery.")
+        for identity in result.unclassified_ids:
+            self.fail("CHECK_BOUNDARY_UNCLASSIFIED", identity,
+                      "Classify this check's actual evidence boundary; an unclassified record cannot be excluded from offline completion.")
         bindings = ledger.get("bindings")
         if not isinstance(bindings, dict):
             return  # The ledger checker already diagnoses the missing structure.
@@ -1371,6 +1494,7 @@ class _Audit:
         self.check_terminology(inventory, manifest, inventory_path.parent)
         self.check_deliveries(manifest)
         self.check_figure_reviews(inventory, manifest, inventory_path.parent)
+        self.check_translation_review(manifest, inventory_path)
         self.check_acceptance_records(inventory, manifest, inventory_path.parent)
         return self.report
 

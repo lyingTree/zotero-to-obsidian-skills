@@ -16,8 +16,10 @@ description: 为文献正文中的图、表、公式和引文建立指向本篇�
 2. 按原文逐处登记调用，重复出现逐次登记。
 3. 将每处调用绑定到其实际支持的陈述。
 4. 为每处调用补建对应链接。
-5. 逐处回读链接落点。
+5. 直接读取 Markdown，逐处解析链接目标。Rich Table 先解析数据块，再核对各字段中的调用。
 6. 对照输入基线检查既有 ID。
+
+书目锚点按 Citation Preview 1.3.0 的兼容语法作静态检查；不启动插件。新锚点采用兼容格式，既有链接按下列保留规则处理，兼容 warning 不触发自动迁移。
 
 ## 约束
 
@@ -163,92 +165,75 @@ description: 为文献正文中的图、表、公式和引文建立指向本篇�
 
 ## 验收标准
 
-每项验收按其 ID 单独记录判定结果。
+每项验收按其 ID 单独记录判定结果。链接可达性按目标文件及其中的标题、块 ID 定义核对；对象范围按 Markdown 源码边界核对。
 
-- [ ] [LINK-A01] 数字引文已逐组渲染核对。
-- [ ] [LINK-A02] 数字引文已逐组回读核对。
-- [ ] [LINK-A03] 每组数字引文只有一对可见 ASCII 方括号。
-- [ ] [LINK-A04] 每组数字引文的方括号位于上标内。
-- [ ] [LINK-A05] 数字引文范围连接线使用 ASCII `-`。
-- [ ] [LINK-A06] 每个显式引文编号指向对应书目。
-- [ ] [LINK-A07] 数字引文验收覆盖单条 `[1]`、范围 `[1-7]` 及合引 `[1,4-7]`。
-- [ ] [LINK-A08] 作者简称已逐处对照原刊核验。
-- [ ] [LINK-A09] 双作者连接词已逐处对照原刊核验。
-- [ ] [LINK-A10] 同作者多年份引文已逐项链接。
-- [ ] [LINK-A11] 原刊证据不足的引文已记录待核位置。
-- [ ] [LINK-A12] 链接显示文字中的范围连接线为 ASCII `-`。
-- [ ] [LINK-A13] 链接之间的范围连接线为 ASCII `-`。
-- [ ] [LINK-A14] 范围连接线没有 U+2013 残留。
-- [ ] [LINK-A15] 可唯一匹配的引文漏链数为零。
-- [ ] [LINK-A16] 已建篇内链接均可达。
-- [ ] [LINK-A17] 改名或重编号后的章节链接经回读到达完整编号标题。
-- [ ] [LINK-A18] 受标题变更影响的可枚举入链经回读到达完整编号标题。
-- [ ] [LINK-A19] 补充书目章节链接按上级章节区分。
-- [ ] [LINK-A20] 书目条目引文落在对应块锚。
-- [ ] [LINK-A21] 原生图块从图片起始。
-- [ ] [LINK-A22] 原生图块覆盖下方题注。
-- [ ] [LINK-A23] 每个公式锚的起始位置已用 Obsidian 原生缓存核对。
-- [ ] [LINK-A82] 每个公式锚的结束位置已用 Obsidian 原生缓存核对。
-- [ ] [LINK-A24] 公式锚范围从起始 `$$` 开始。
-- [ ] [LINK-A25] 公式锚范围覆盖完整公式。
-- [ ] [LINK-A26] 公式锚范围止于闭合 `$$` 或紧随其后的锚行。
-- [ ] [LINK-A27] 公式锚范围内不含公式及其锚行以外的内容。
-- [ ] [LINK-A28] 现有公式引用仍指向对应块。
-- [ ] [LINK-A29] 表格闭合围栏与表锚之间零空行。
-- [ ] [LINK-A30] 表锚顶格书写。
-- [ ] [LINK-A31] 表锚独占一行。
-- [ ] [LINK-A32] 表锚后有内容时恰留一空行。
-- [ ] [LINK-A33] 每个表锚 ID 唯一。
-- [ ] [LINK-A34] 已有表格调用保持可达。
-- [ ] [LINK-A35] 每个表锚的原生缓存范围从 rich-table 开围栏起始。
-- [ ] [LINK-A36] 每个表锚的原生缓存范围覆盖到闭合围栏。
-- [ ] [LINK-A37] 每个表格跳转指向对应表格。
-- [ ] [LINK-A38] 阅读视图可用时已验证完整表格渲染。
-- [ ] [LINK-A39] 表格源码验收有独立记录。
-- [ ] [LINK-A40] 表格原生缓存验收有独立记录。
-- [ ] [LINK-A41] 表格界面验收有独立记录。
-- [ ] [LINK-A42] 仅能解析锚点时仍已独立验收表格源码间距。
-- [ ] [LINK-A43] 已迁移的旧调用仍可解析。
-- [ ] [LINK-A44] 真实脚注仍可解析。
-- [ ] [LINK-A45] 最后一行非空内容为「Zotero原条目」链接标题。
-- [ ] [LINK-A46] 「Zotero原条目」链接标题只出现一次。
-- [ ] [LINK-A47] Obsidian 原生缓存将该标题识别为最后一个 H2。
-- [ ] [LINK-A48] 渲染后原条目链接文字正确。
-- [ ] [LINK-A49] 渲染后原条目 href 正确。
-- [ ] [LINK-A50] 原条目标题下没有另列链接。
-- [ ] [LINK-A51] 每项未决问题均有定位。
-- [ ] [LINK-A52] 每项未决问题均有原因。
-- [ ] [LINK-A53] 无对应对象的检查记为不适用。
-- [ ] [LINK-A54] 写前已逐条核对 bibliography_id。
-- [ ] [LINK-A55] 写前已逐条核对书目实际来源。
-- [ ] [LINK-A56] 写前已逐条核对书目列表序号。
-- [ ] [LINK-A57] 写前已逐条核对书目稳定 ID。
-- [ ] [LINK-A58] 每条书目末尾锚点唯一。
-- [ ] [LINK-A59] 每处引文落在对应书目。
-- [ ] [LINK-A60] 新建主文书目采用 `^ref-N`。
-- [ ] [LINK-A61] 新建单份 SI 书目采用 `^sref-N`。
-- [ ] [LINK-A62] 新建多份 SI 书目采用 `^sref-src<source_token>-N`。
-- [ ] [LINK-A63] 既有列表补锚沿用已核实且插件支持的前缀。
-- [ ] [LINK-A64] 既有 ID 与输入基线一致。
-- [ ] [LINK-A65] 既有调用与输入基线一致。
-- [ ] [LINK-A66] 既有插件支持的其他前缀未被拒绝。
-- [ ] [LINK-A67] 旧 ID 的插件兼容性问题单列 warning。
-- [ ] [LINK-A68] 旧 ID 的数字后缀差异单列 warning。
-- [ ] [LINK-A69] 旧 ID 的兼容或编号 warning 未触发迁移。
-- [ ] [LINK-A70] 范围内缺锚已修复。
-- [ ] [LINK-A71] 范围内重复定义已修复。
-- [ ] [LINK-A72] 范围内断链已修复。
-- [ ] [LINK-A73] 范围内目标错配已修复。
-- [ ] [LINK-A74] 范围外既有问题已单独报告。
-- [ ] [LINK-A75] 本次明确迁移时已核对旧 ID 到新 ID 的映射。
-- [ ] [LINK-A76] 本次明确迁移时已核对全部受影响调用。
-- [ ] [LINK-A77] 写后已用 Obsidian 原生缓存逐条核对书目 ID。
-- [ ] [LINK-A78] 写后已用 Obsidian 原生缓存逐条核对书目落点。
-- [ ] [LINK-A79] 插件块内引文已在渲染后单独核对。
-- [ ] [LINK-A80] 书目回读记录标明通过、失败或未验证。
-- [ ] [LINK-A81] 候选检查结果已供第 4 步回读实际落库文件使用。
-- [ ] [LINK-A83] 每处书目引文的陈述位置与原文一致。
-- [ ] [LINK-A84] 每条书目的实际调用次数与来源逐处登记结果一致。
-- [ ] [LINK-A85] 每个具体 SI 方法链接均定位到对应方法小节。
-- [ ] [LINK-A86] 每个具体 SI 对象链接均定位到对应对象块。
-- [ ] [LINK-A87] 每个图内数据表副本均有独立表锚。
+- [ ] [LINK-A02] 数字引文的源码格式已逐组核对。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A03] 每组数字引文只有一对可见 ASCII 方括号。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A04] 每组数字引文的方括号位于上标内。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A05] 数字引文范围连接线使用 ASCII `-`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A06] 每个显式引文编号指向对应书目。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A07] 数字引文验收覆盖单条 `[1]`、范围 `[1-7]` 及合引 `[1,4-7]`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A08] 作者简称已逐处对照原刊核验。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A09] 双作者连接词已逐处对照原刊核验。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A10] 同作者多年份引文已逐项链接。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A11] 原刊证据不足的引文已记录待核位置。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A12] 链接显示文字中的范围连接线为 ASCII `-`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A13] 链接之间的范围连接线为 ASCII `-`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A14] 范围连接线没有 U+2013 残留。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A15] 可唯一匹配的引文漏链数为零。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A16] 每条篇内链接的源码目标均存在。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A17] 改名或重编号后的章节链接源码目标匹配完整编号标题。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A18] 受标题变更影响的可枚举入链源码目标匹配完整编号标题。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A19] 补充书目章节链接按上级章节区分。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A20] 书目条目引文落在对应块锚。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A24] 公式锚范围从起始 `$$` 开始。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A25] 公式锚范围覆盖完整公式。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A26] 公式锚范围止于闭合 `$$` 或紧随其后的锚行。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A27] 公式锚范围内不含公式及其锚行以外的内容。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A28] 现有公式引用仍指向对应块。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A29] 表格闭合围栏与表锚之间零空行。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A30] 表锚顶格书写。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A31] 表锚独占一行。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A32] 表锚后有内容时恰留一空行。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A33] 每个表锚 ID 唯一。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A34] 已有表格调用保持可达。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A37] 每处表格链接的目标锚归属于对应表格。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A39] 表格源码验收有独立记录。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A43] 已迁移的旧调用仍可解析。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A44] 真实脚注仍可解析。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A45] 最后一行非空内容为「Zotero原条目」链接标题。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A46] 「Zotero原条目」链接标题只出现一次。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A50] 原条目标题下没有另列链接。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A51] 每项未决问题均有定位。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A52] 每项未决问题均有原因。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A53] 无对应对象的检查记为不适用。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A54] 写前已逐条核对 bibliography_id。 <!-- check-type: execution_process -->
+- [ ] [LINK-A55] 写前已逐条核对书目实际来源。 <!-- check-type: execution_process -->
+- [ ] [LINK-A56] 写前已逐条核对书目列表序号。 <!-- check-type: execution_process -->
+- [ ] [LINK-A57] 写前已逐条核对书目稳定 ID。 <!-- check-type: execution_process -->
+- [ ] [LINK-A58] 每条书目末尾锚点唯一。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A59] 每处引文落在对应书目。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A60] 新建主文书目采用 `^ref-N`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A61] 新建单份 SI 书目采用 `^sref-N`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A62] 新建多份 SI 书目采用 `^sref-src<source_token>-N`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A63] 既有列表补锚沿用已核实且插件支持的前缀。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A64] 既有 ID 与输入基线一致。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A65] 既有调用与输入基线一致。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A66] 既有插件支持的其他前缀未被拒绝。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A67] 旧 ID 的插件兼容性问题单列 warning。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A68] 旧 ID 的数字后缀差异单列 warning。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A69] 旧 ID 的兼容或编号 warning 未触发迁移。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A70] 范围内缺锚已修复。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A71] 范围内重复定义已修复。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A72] 范围内断链已修复。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A73] 范围内目标错配已修复。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A74] 范围外既有问题已单独报告。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A75] 本次明确迁移时已核对旧 ID 到新 ID 的映射。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A76] 本次明确迁移时已核对全部受影响调用。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A80] 书目文件核对记录标明通过、失败或未验证。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A81] 候选检查结果已供第 4 步直接核对实际落库文件使用。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A83] 每处书目引文的陈述位置与原文一致。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A84] 每条书目的实际调用次数与来源逐处登记结果一致。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A85] 每个具体 SI 方法链接均定位到对应方法小节。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A86] 每个具体 SI 对象链接均定位到对应对象块。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A87] 每个图内数据表副本均有独立表锚。 <!-- check-type: offline_outcome -->

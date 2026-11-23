@@ -41,6 +41,11 @@ CHINESE_QUANTITY = re.compile(
     r"\s*(?P<unit>小时|分钟|秒|千米|公里|厘米|毫米|米|年)"
 )
 CHINESE_YEAR_DIGITS = str.maketrans("零〇一二三四五六七八九", "00123456789")
+ADJACENT_UNIT = re.compile(r"\s*(?P<unit>小时|分钟|秒|千米|公里|厘米|毫米|米|年|km|cm|mm|m|h|s)(?![A-Za-z])")
+HEADER_LABEL = re.compile(
+    r"(?<![A-Za-z])(?:Received|Accepted|Published(?:\s+online)?|Publication\s+date|DOI)\s*[:：]"
+    r"|(?:收稿|接收|接受|录用|在线发表|发表|出版)(?:日期)?\s*[:：]", re.IGNORECASE
+)
 
 
 def _sibling(name: str):
@@ -140,6 +145,28 @@ def _visible(text: str) -> str:
     return value
 
 
+def _calendar_year(number: str, unit: str) -> bool:
+    if unit != "年":
+        return False
+    number = number.replace(r"\text{-}", "-").replace(r"\mathrm{-}", "-")
+    years = re.split(r"\s*[-\u2010-\u2015至到]\s*", number.translate(CHINESE_YEAR_DIGITS).strip())
+    return all(year.isdigit() and 1500 <= int(year) <= 2199 for year in years)
+
+
+def _scan_split_quantity(text: str, line: int) -> list[Prompt]:
+    findings = []
+    for math in INLINE_MATH.finditer(text):
+        unit = ADJACENT_UNIT.match(text, math.end())
+        if unit is None:
+            continue
+        number = math[0][1:-1]
+        if _calendar_year(number, unit["unit"]):
+            continue
+        findings.append(Prompt("BODY-C169", line, "QUANTITY_SPLIT_MATH", text[math.start():unit.end()],
+                               "数值已在数学环境内而单位仍在外；核对量的含义后将完整量值写入同一数学环境。"))
+    return findings
+
+
 def _scan(text: str, line: int) -> list[Prompt]:
     if not text.strip():
         return []
@@ -155,6 +182,7 @@ def _scan(text: str, line: int) -> list[Prompt]:
     math_visible = WIKI.sub(lambda match: match[1].split("|", 1)[-1], math_visible)
     for math in INLINE_MATH.finditer(math_visible):
         findings.extend(_scan_math(math[0][1:-1], line, display=False))
+    findings.extend(_scan_split_quantity(math_visible, line))
     # A valid existing Markdown/autolink must not be flagged as a naked link.
     naked = note_checks._mask_delimited(text, "`")
     naked = _replace_links(naked, keep_labels=False)
@@ -169,6 +197,9 @@ def _scan(text: str, line: int) -> list[Prompt]:
         for match in pattern.finditer(naked):
             findings.append(Prompt(rule, line, code, match[0], message))
     visible = _visible(text)
+    if re.match(r"^ {0,3}>\s", visible) and len(HEADER_LABEL.findall(visible)) > 1:
+        findings.append(Prompt("HDR-C30", line, "HEADER_ITEMS_SAME_LINE", visible.strip(),
+                               "题头元信息的一行包含多个带标签的项目；每个日期类别与 DOI 分别占一条引用行。"))
     for match in NON_ASCII_DASH.finditer(visible):
         findings.append(Prompt("BODY-C173", line, "VISIBLE_DASH", match[0], "核对该可见连接线是否应使用 ASCII -；不得修改链接目标。"))
     prose = INLINE_MATH.sub("ⓜ", visible)
@@ -176,8 +207,7 @@ def _scan(text: str, line: int) -> list[Prompt]:
         findings.append(Prompt("BODY-C184", line, "PERCENT_OUTSIDE_MATH", match[0], "百分量整体置于数学环境，百分号写作 \\%。"))
     for match in (*QUANTITY.finditer(prose), *CHINESE_QUANTITY.finditer(prose)):
         number, unit = match["number"], match["unit"]
-        years = re.split(r"\s*[-\u2010-\u2015至到]\s*", number.translate(CHINESE_YEAR_DIGITS))
-        if unit == "年" and all(year.isdigit() and 1500 <= int(year) <= 2199 for year in years):
+        if _calendar_year(number, unit):
             continue  # Calendar years and ranges are dates, not durations.
         findings.append(Prompt("BODY-C169", line, "QUANTITY_OUTSIDE_MATH", match[0], "按完整原句核对这是量值而非日期/编号；适用时数值与单位放入同一数学环境，保留原有近似限定。"))
     heading_prefix = NUMBERED_HEADING_PREFIX.match(prose)
@@ -214,6 +244,41 @@ def _table_strings(value: object):
             for cell in row["cells"].values():
                 if isinstance(cell, str):
                     yield cell
+
+
+def _scan_table_titles(value: object, line: int) -> list[Prompt]:
+    if not isinstance(value, dict):
+        return []
+    sheets = value.get("sheets") if value.get("version") == 3 else [value]
+    if not isinstance(sheets, list):
+        return []
+    findings = []
+    for sheet in sheets:
+        if not isinstance(sheet, dict) or not isinstance(sheet.get("title"), str):
+            continue
+        title = _visible(sheet["title"])
+        if re.search(r"图\s*[A-Za-z]*\d+[A-Za-z]*\s*内表(?!格)", title):
+            findings.append(Prompt("BODY-C263", line, "EMBEDDED_TABLE_TITLE", title,
+                                   "图内数据表的可编辑副本用“图N内表格”标明来源；N 取原图编号。"))
+    return findings
+
+
+def _paragraph_spacing(events: list[tuple[str, int, str]]) -> list[Prompt]:
+    findings = []
+    start = 0
+    while start < len(events):
+        if events[start][0] != "blank":
+            start += 1
+            continue
+        end = start + 1
+        while end < len(events) and events[end][0] == "blank":
+            end += 1
+        if (end - start > 1 and start > 0 and end < len(events)
+                and events[start - 1][0] == events[end][0] == "text"):
+            findings.append(Prompt("BODY-C66", events[start][1], "PARAGRAPH_GAP_EXTRA", events[end][2][:80],
+                                   "相邻可见正文段落之间存在连续空行；核对块边界后仅保留一空行。"))
+        start = end
+    return findings
 
 
 def _heading_spacing(events: list[tuple[str, int, str]]) -> list[Prompt]:
@@ -278,6 +343,7 @@ def lint_presentation(text: str) -> list[Prompt]:
                     table = None
                 for value in _table_strings(table):
                     findings.extend(_scan(value, first_line))
+                findings.extend(_scan_table_titles(table, first_line))
             fence, payload = None, []
             continue
         if in_math:
@@ -356,6 +422,7 @@ def lint_presentation(text: str) -> list[Prompt]:
         findings.extend(_scan(line, position + 1))
         last_visible = (kind, line.strip())
     findings.extend(_heading_spacing(events))
+    findings.extend(_paragraph_spacing(events))
     return list(dict.fromkeys(findings))
 
 

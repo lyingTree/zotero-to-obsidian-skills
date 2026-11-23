@@ -73,11 +73,11 @@ description: 将文献参考条目与 Obsidian 文献库中已有笔记核对，
 
 ## 验收标准
 
-- [ ] [LIB-A01] 每条已建出链均可达。
-- [ ] [LIB-A02] 每条已建出链有唯一身份证据。
-- [ ] [LIB-A03] 每条已建出链有版本证据。
-- [ ] [LIB-A04] 每条未链接书目都有原因。
-- [ ] [LIB-A05] 原始书目信息完整保留。
-- [ ] [LIB-A06] 原 DOI/URL 完整保留。
-- [ ] [LIB-A07] 本篇锚点完整保留。
-- [ ] [LIB-A08] YAML 属性区与输入一致。
+- [ ] [LIB-A01] 每条已建出链均可达。 <!-- check-type: offline_outcome -->
+- [ ] [LIB-A02] 每条已建出链有唯一身份证据。 <!-- check-type: offline_outcome -->
+- [ ] [LIB-A03] 每条已建出链有版本证据。 <!-- check-type: offline_outcome -->
+- [ ] [LIB-A04] 每条未链接书目都有原因。 <!-- check-type: offline_outcome -->
+- [ ] [LIB-A05] 原始书目信息完整保留。 <!-- check-type: offline_outcome -->
+- [ ] [LIB-A06] 原 DOI/URL 完整保留。 <!-- check-type: offline_outcome -->
+- [ ] [LIB-A07] 本篇锚点完整保留。 <!-- check-type: offline_outcome -->
+- [ ] [LIB-A08] YAML 属性区与输入一致。 <!-- check-type: offline_outcome -->

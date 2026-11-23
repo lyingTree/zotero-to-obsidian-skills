@@ -61,8 +61,8 @@ description: 为文献生成“年份-作者-原文标题.md”命名计划，�
 
 ## 验收标准
 
-- [ ] [NAME-A01] 相同输入与映射产生相同名称。
-- [ ] [NAME-A02] 文件名通过长度检查。
-- [ ] [NAME-A03] 完整目标路径通过长度检查。
-- [ ] [NAME-A04] 冲突处理有身份证据。
-- [ ] [NAME-A05] 冲突处理不会覆盖既有文件。
+- [ ] [NAME-A01] 相同输入与映射产生相同名称。 <!-- check-type: offline_outcome -->
+- [ ] [NAME-A02] 文件名通过长度检查。 <!-- check-type: offline_outcome -->
+- [ ] [NAME-A03] 完整目标路径通过长度检查。 <!-- check-type: offline_outcome -->
+- [ ] [NAME-A04] 冲突处理有身份证据。 <!-- check-type: offline_outcome -->
+- [ ] [NAME-A05] 冲突处理不会覆盖既有文件。 <!-- check-type: offline_outcome -->

@@ -16,13 +16,15 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 2. 按图清单逐幅放置原图。
 3. 按表清单逐表构建 Rich Table，包含图内数据表。
 4. 按公式清单逐式排版。
-5. 按书目清单逐条回读参考文献。
+5. 直接读取 Markdown 文件，按书目清单逐条核对参考文献。
 6. 按本页约束扫描量值与链接格式。
 7. 向第 9 步交接受结构变化影响的调用。
 
+书目 ID 的兼容性按第 9 步的语法规则静态核对，保留对应 warning；不以插件运行作为验收条件。
+
 ## 约束
 
-每条约束按其 ID 单独记录执行证据。
+每条约束按其 ID 单独记录执行证据。验收对象为 Markdown 源码、解析后的结构化字段及引用的资源文件。
 
 - [BODY-C01] 沿用第 7 步生成的题头。
 - [BODY-C02] 保留唯一的原题 H1。
@@ -75,7 +77,7 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 - [BODY-C48] 转义处理保留链接目标。
 - [BODY-C49] 转义处理保留锚点。
 - [BODY-C50] 转义处理保留结构化数据。
-- [BODY-C51] 插件字段按插件实际解析方式转义。
+- [BODY-C51] 结构化字段按对应数据格式转义。
 - [BODY-C52] 扫描可见文本中的裸网址，包括 `www.` 形式。
 - [BODY-C53] 建立网址链接前核对目标。
 - [BODY-C54] 核实后的裸网址写为 `[原显示文字](<完整URL>)`。
@@ -100,7 +102,7 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 - [BODY-C73] 空白修改只作用于已定位的目标。
 - [BODY-C74] 空白修改保留结构缩进。
 - [BODY-C75] 空白修改保留脚注结构。
-- [BODY-C76] 空白修改保留插件块结构。
+- [BODY-C76] 空白修改保留结构化数据块。
 - [BODY-C77] 空白修改保留代码结构。
 - [BODY-C78] 显示公式单独成块。
 - [BODY-C79] 显示公式与前面的引导句、标题或其他块之间恰留一空行。
@@ -143,10 +145,6 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 - [BODY-C115] 数据块外不重复题注。
 - [BODY-C116] 数据块外不重复表注。
 - [BODY-C117] 表注不计入 `rows`。
-- [BODY-C118] 探测 rich-table 插件 manifest 的 id。
-- [BODY-C119] 探测 rich-table 插件 manifest 的 version。
-- [BODY-C120] 插件缺失时阻断该表的实际落库验收。
-- [BODY-C121] 插件不兼容时阻断该表的实际落库验收。
 - [BODY-C122] 表格使用 rich-table 数据块。
 - [BODY-C123] Rich Table 版本限定为 v2 单表或 v3 多工作表。
 - [BODY-C124] v2 顶层包含 columns。
@@ -289,7 +287,7 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 - [BODY-C263] 图内数据表副本的标题使用“图N内表格”标识来源。
 - [BODY-C264] 图内数据表副本不得占用原文独立表格的编号。
 - [BODY-C265] 图内数据表转换不得改动原图。
-- [BODY-C266] 缺少真实插件时，仍按仓库模板完成离线 Rich Table 源码。
+- [BODY-C266] 按仓库模板完成 Rich Table 源码。
 - [BODY-C267] 图内数据表副本的每个单元格须与来源逐格核对。
 - [BODY-C268] 量值格式扫描覆盖表格的所有可见文本字段。
 - [BODY-C269] 可见文本中已核实的裸 DOI 标识符须建立 DOI 解析链接。
@@ -298,7 +296,6 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 - [BODY-C272] 每个合并范围的 `end` 指向源范围的右下单元格。
 - [BODY-C273] 合并范围内被覆盖单元格的内容为空或省略。
 - [BODY-C274] 不得用重复组标签替代原有合并关系。
-- [BODY-C275] 物理合并显示仅在实际插件验收后标记通过。
 - [BODY-C276] 相邻父子标题之间留一空行。
 - [BODY-C277] 每处来源中的裸网址独立登记为一个来源单元。
 
@@ -307,6 +304,10 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 标题后直接出现下级标题时，按下级标题前的间距留一空行；首块为显示公式时按公式前间距处理。普通正文直接接标题下一行。此处分别适用 BODY-C276、BODY-C79 与 BODY-C68。
 
 量值范围与减法按原意区分。例如，来源表示“五至七年”时写为 `$5\text{-}7\,\text{年}$`；表示差值时保留减号。中文数词表达的时长同样属于带单位量，例如“十二年的资料”写为“$12\,\text{年}$的资料”。近似限定仍依原文保留，例如“数十年”可保留为 `$\text{数十}\,\text{年}$`，不得只替换其中的“十”而变成精确值。公历年份仍按日期处理。
+
+复核量值时同时看闭合 `$` 右侧：`$12$年` 仍然把单位留在数学环境外，应为 `$12\,\text{年}$`。同样检查题注、表头、单元格及每份 SI 的正文。`QUANTITY_SPLIT_MATH` 提示专门列出这种边界，不能仅因数值已带 `$` 就结束核对。
+
+从图中另建的可编辑表格，标题示例为 `**图8内表格。** 原图中表格的说明`；保留“内表格”三个字，图编号取实际父图。该表的独立锚点仍按篇内链接技能生成。
 
 来源若直接显示 `https://example.org/data/`，建立 `[https://example.org/data/](https://example.org/data/)`，保留原网址显示文字。来源原本带有命名链接时保留其显示文字。不要自行把裸网址的显示文字换成机构名称。来源清单可用 `external_url` 记录每处链接的目标和原显示文字。
 
@@ -318,137 +319,118 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 
 每项验收按其 ID 单独记录判定结果。
 
-- [ ] [BODY-A01] 文本变化均有来源依据。
-- [ ] [BODY-A02] 数字变化均有来源依据。
-- [ ] [BODY-A03] 对象数量变化均有来源依据。
-- [ ] [BODY-A04] 书目数量变化均有来源依据。
-- [ ] [BODY-A05] 原文有摘要时，源码恰有一处 `## 摘要`。
-- [ ] [BODY-A06] Obsidian 将摘要标题解析为 H2。
-- [ ] [BODY-A07] 摘要首段紧接标题下一行。
-- [ ] [BODY-A08] 摘要段首没有旧摘要标签残留。
-- [ ] [BODY-A09] 摘要内容完整。
-- [ ] [BODY-A10] 摘要分段完整。
-- [ ] [BODY-A11] 原文无摘要时，候选稿没有摘要节。
-- [ ] [BODY-A12] H1 内容为原题。
-- [ ] [BODY-A13] 正文首个编号 H2 为 `1`。
-- [ ] [BODY-A14] 参与编号的标题逐级连续。
-- [ ] [BODY-A15] 普通内容紧接标题下一行。
-- [ ] [BODY-A16] 标题后首块为显示公式时留一空行。
-- [ ] [BODY-A17] 受保护的语法块保持完整。
-- [ ] [BODY-A18] 主文书目标题源码符合 `## N 参考文献`。
-- [ ] [BODY-A19] 补充书目标题源码符合 `### M.K 参考文献`。
-- [ ] [BODY-A20] 书目标题的原生解析层级符合要求。
-- [ ] [BODY-A21] 书目节序号在同级连续。
-- [ ] [BODY-A22] 首条书目紧接标题。
-- [ ] [BODY-A23] 书目标题没有附加文字。
-- [ ] [BODY-A24] 受影响的章节链接已按第 9 步核对。
-- [ ] [BODY-A25] 补充材料位于主文全部内容之后，包括主文参考文献。
-- [ ] [BODY-A26] 最后一个 H2 为「Zotero原条目」链接标题，按[篇内链接验收](../literature-internal-links/SKILL.md#验收标准)核对。
-- [ ] [BODY-A27] 已按检查表复核源码差异。
-- [ ] [BODY-A28] 转义处理经复跑保持幂等。
-- [ ] [BODY-A29] 受影响的解析结构已核对。
-- [ ] [BODY-A30] 已用 Obsidian 阅读视图或原生离屏渲染核对改动及相邻块的可见文本。
-- [ ] [BODY-A31] 已用 Obsidian 阅读视图或原生离屏渲染核对改动及相邻块的格式范围。
-- [ ] [BODY-A32] 已用 Obsidian 阅读视图或原生离屏渲染核对改动及相邻块的对象。
-- [ ] [BODY-A33] 内链落点已用原生缓存核对。
-- [ ] [BODY-A34] 锚点落点已用原生缓存核对。
-- [ ] [BODY-A35] 外链实际 href 已核对。
-- [ ] [BODY-A36] 插件字段实际显示已用对应插件核对。
-- [ ] [BODY-A37] 各项检查均有证据记录。
-- [ ] [BODY-A38] 各项检查均有实际覆盖范围记录。
-- [ ] [BODY-A39] 缺少对应环境的检查已标待验。
-- [ ] [BODY-A40] 待验检查均注明位置。
-- [ ] [BODY-A41] 每个数值均已对照输入核对。
-- [ ] [BODY-A42] 每个单位均已对照输入核对。
-- [ ] [BODY-A43] 每个幂次均已对照输入核对。
-- [ ] [BODY-A44] 每个数学符号均已对照输入核对。
-- [ ] [BODY-A45] 每个数值范围均已对照输入核对。
-- [ ] [BODY-A46] 没有遗漏的裸单位。
-- [ ] [BODY-A47] 带单位的量没有被拆入不同数学环境。
-- [ ] [BODY-A48] 单行显示公式源码已逐块检查。
-- [ ] [BODY-A49] 多行显示公式源码已逐块检查。
-- [ ] [BODY-A50] 显示公式前恰有一空行。
-- [ ] [BODY-A51] 已有公式锚紧接闭合 `$$`。
-- [ ] [BODY-A52] 显示公式块后有内容时恰有一空行。
-- [ ] [BODY-A53] 公式锚点范围已按[篇内链接验收](../literature-internal-links/SKILL.md#验收标准)核对。
-- [ ] [BODY-A54] 有编号显示公式末尾没有冗余字符。
-- [ ] [BODY-A55] 无编号显示公式末尾没有冗余字符。
-- [ ] [BODY-A56] 多行显示公式末尾没有冗余字符。
-- [ ] [BODY-A57] 公式数学含义已对照差异核对。
-- [ ] [BODY-A58] 公式编号已对照差异核对。
-- [ ] [BODY-A59] 公式锚点已对照差异核对。
-- [ ] [BODY-A60] 单行公式渲染已抽查。
-- [ ] [BODY-A61] 多行公式渲染已抽查。
-- [ ] [BODY-A62] 公式未决项已记录。
-- [ ] [BODY-A63] 可见文本连字符均为 ASCII `-`。
-- [ ] [BODY-A64] 可见文本范围连接线均为 ASCII `-`。
-- [ ] [BODY-A65] 可见文本缺项标记均为 ASCII `-`。
-- [ ] [BODY-A66] 可见文本没有 U+2013 残留。
-- [ ] [BODY-A67] 公式范围语义正确。
-- [ ] [BODY-A68] 公式减号语义正确。
-- [ ] [BODY-A69] 每幅图已对照原文核对。
-- [ ] [BODY-A70] 每个表已对照原文核对。
-- [ ] [BODY-A71] 每个公式已对照原文核对。
-- [ ] [BODY-A72] 每幅最终嵌入图与[裁剪视觉验收](../literature-fulltext-extract/references/figure-crop.md)记录一致。
-- [ ] [BODY-A73] 图片位于对应题注上方。
-- [ ] [BODY-A74] 图片题注紧接图片下一行。
-- [ ] [BODY-A75] 正文脚注调用的 `<sup>` 格式正确。
-- [ ] [BODY-A76] 正文脚注注文的引用块格式正确。
-- [ ] [BODY-A77] 正文脚注编号配对正确。
-- [ ] [BODY-A78] 正文脚注链接目标正确。
-- [ ] [BODY-A79] 正文脚注上标渲染正确。
-- [ ] [BODY-A80] 正文脚注引用块渲染边界正确。
-- [ ] [BODY-A81] 数学上标未被脚注处理改动。
-- [ ] [BODY-A82] 型号未被脚注处理改动。
-- [ ] [BODY-A83] 每个 Rich Table 数据块按实际外包裹形式成功解析 YAML/JSON。
-- [ ] [BODY-A84] v2 单表或 v3 每张工作表的 locked 均为 true。
-- [ ] [BODY-A85] v2 单表或 v3 每张工作表的 theme 均为 grid。
-- [ ] [BODY-A86] 每张工作表的 columns 非空。
-- [ ] [BODY-A87] 每张工作表的 rows 非空。
-- [ ] [BODY-A88] 每张表的表注内容完整。
-- [ ] [BODY-A111] 已有 `footer` 的值是 YAML 字符串。
-- [ ] [BODY-A89] 每张表的表注仅位于所属表的 footer。
-- [ ] [BODY-A90] 正文没有重复表注。
-- [ ] [BODY-A91] 每张表的数据行数与源表一致。
-- [ ] [BODY-A92] 每张表的题注链接已核对。
-- [ ] [BODY-A93] 每张表的表注链接已核对。
-- [ ] [BODY-A94] 每张表的列名链接已核对。
-- [ ] [BODY-A95] 每张表的单元格链接已核对。
-- [ ] [BODY-A96] 全部工作表的表尾显示已用 Rich Table 插件核对。
-- [ ] [BODY-A97] 表格相邻块的显示已核对。
-- [ ] [BODY-A98] 每张表所需插件已核对。
-- [ ] [BODY-A99] 每张表的实际行数已有记录；v3 逐工作表记录。
-- [ ] [BODY-A100] 每张表的源表行数已有记录；v3 逐工作表记录。
-- [ ] [BODY-A101] 整个表格数据块的闭合围栏与表锚之间零空行。
-- [ ] [BODY-A102] 每个表锚顶格书写。
-- [ ] [BODY-A103] 每个表锚独占一行。
-- [ ] [BODY-A104] 表锚后有内容时恰留一空行。
-- [ ] [BODY-A105] 表格缺锚已修复；可交第 9 步完成修复。
-- [ ] [BODY-A112] 所有表格缺锚修复均已在提交前复验。
-- [ ] [BODY-A106] 表锚错绑已修复；可交第 9 步完成修复。
-- [ ] [BODY-A113] 所有表锚错绑修复均已在提交前复验。
-- [ ] [BODY-A107] 重复表锚 ID 已修复；可交第 9 步完成修复。
-- [ ] [BODY-A114] 所有重复表锚 ID 修复均已在提交前复验。
-- [ ] [BODY-A108] 既有调用已保留或完成已授权的迁移。
-- [ ] [BODY-A109] 离屏渲染验收有独立记录。
-- [ ] [BODY-A110] 实际界面验收有独立记录。
-- [ ] [BODY-A115] 每个图内数据表均有独立 Rich Table 副本。
-- [ ] [BODY-A116] 每个图内数据表副本的数据行数与来源一致。
-- [ ] [BODY-A117] 每个图内数据表副本的列数与来源一致。
-- [ ] [BODY-A118] 每个图内数据表副本的类别代号与来源一致。
-- [ ] [BODY-A119] 每个图内数据表副本的数值与来源一致。
-- [ ] [BODY-A120] 每个新建 DOI 解析链接均使用规定的规范目标。
-- [ ] [BODY-A121] 每个可辨认的可见邮箱均有正确的 mailto 目标。
-- [ ] [BODY-A122] 每个时长量值已整体置于数学环境。
-- [ ] [BODY-A123] 每个量值范围已整体置于数学环境。
-- [ ] [BODY-A124] 每个百分数量值已整体置于数学环境。
-- [ ] [BODY-A125] 离线候选中的每个表格均已完成 Rich Table 源码构建。
-- [ ] [BODY-A126] 每个可见 DOI 标识符均有对应的解析链接。
-- [ ] [BODY-A127] 每个源合并范围均有对应的 `merges` 项。
-- [ ] [BODY-A128] 每个合并范围的左上端点与来源一致。
-- [ ] [BODY-A129] 每个合并范围的右下端点与来源一致。
-- [ ] [BODY-A130] 每个合并范围的被覆盖单元格为空或省略。
-- [ ] [BODY-A131] 经过模板处理的既有合并范围未被改动。
-- [ ] [BODY-A132] 每项已通过的物理合并显示检查均有插件界面证据。
-- [ ] [BODY-A133] 相邻父子标题之间恰有一空行。
-- [ ] [BODY-A134] 来源裸网址的链接显示文字与来源一致。
+- [ ] [BODY-A01] 文本变化均有来源依据。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A02] 数字变化均有来源依据。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A03] 对象数量变化均有来源依据。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A04] 书目数量变化均有来源依据。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A05] 原文有摘要时，源码恰有一处 `## 摘要`。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A07] 摘要首段紧接标题下一行。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A08] 摘要段首没有旧摘要标签残留。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A09] 摘要内容完整。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A10] 摘要分段完整。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A11] 原文无摘要时，候选稿没有摘要节。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A12] H1 内容为原题。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A13] 正文首个编号 H2 为 `1`。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A14] 参与编号的标题逐级连续。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A15] 普通内容紧接标题下一行。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A16] 标题后首块为显示公式时留一空行。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A17] 受保护的语法块保持完整。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A18] 主文书目标题源码符合 `## N 参考文献`。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A19] 补充书目标题源码符合 `### M.K 参考文献`。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A21] 书目节序号在同级连续。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A22] 首条书目紧接标题。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A23] 书目标题没有附加文字。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A24] 受影响的章节链接已按第 9 步核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A25] 补充材料位于主文全部内容之后，包括主文参考文献。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A26] 最后一个 H2 为「Zotero原条目」链接标题，按[篇内链接验收](../literature-internal-links/SKILL.md#验收标准)核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A27] 已按检查表复核源码差异。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A28] 转义处理经复跑保持幂等。 <!-- check-type: execution_process -->
+- [ ] [BODY-A29] 受影响的解析结构已核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A35] 外链的源码目标已核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A37] 各项检查均有证据记录。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A38] 各项检查均有实际覆盖范围记录。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A40] 待验检查均注明位置。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A41] 每个数值均已对照输入核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A42] 每个单位均已对照输入核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A43] 每个幂次均已对照输入核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A44] 每个数学符号均已对照输入核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A45] 每个数值范围均已对照输入核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A46] 没有遗漏的裸单位。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A47] 带单位的量没有被拆入不同数学环境。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A48] 单行显示公式源码已逐块检查。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A49] 多行显示公式源码已逐块检查。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A50] 显示公式前恰有一空行。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A51] 已有公式锚紧接闭合 `$$`。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A52] 显示公式块后有内容时恰有一空行。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A53] 公式锚点范围已按[篇内链接验收](../literature-internal-links/SKILL.md#验收标准)核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A54] 有编号显示公式末尾没有冗余字符。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A55] 无编号显示公式末尾没有冗余字符。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A56] 多行显示公式末尾没有冗余字符。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A57] 公式数学含义已对照差异核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A58] 公式编号已对照差异核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A59] 公式锚点已对照差异核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A62] 公式未决项已记录。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A63] 可见文本连字符均为 ASCII `-`。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A64] 可见文本范围连接线均为 ASCII `-`。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A65] 可见文本缺项标记均为 ASCII `-`。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A66] 可见文本没有 U+2013 残留。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A67] 公式范围语义正确。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A68] 公式减号语义正确。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A69] 每幅图已对照原文核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A70] 每个表已对照原文核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A71] 每个公式已对照原文核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A72] 每幅最终嵌入图与[裁剪视觉验收](../literature-fulltext-extract/references/figure-crop.md)记录一致。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A73] 图片位于对应题注上方。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A74] 图片题注紧接图片下一行。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A75] 正文脚注调用的 `<sup>` 格式正确。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A76] 正文脚注注文的引用块格式正确。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A77] 正文脚注编号配对正确。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A78] 正文脚注链接目标正确。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A81] 数学上标未被脚注处理改动。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A82] 型号未被脚注处理改动。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A83] 每个 Rich Table 数据块按实际外包裹形式成功解析 YAML/JSON。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A84] v2 单表或 v3 每张工作表的 locked 均为 true。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A85] v2 单表或 v3 每张工作表的 theme 均为 grid。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A86] 每张工作表的 columns 非空。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A87] 每张工作表的 rows 非空。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A88] 每张表的表注内容完整。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A111] 已有 `footer` 的值是 YAML 字符串。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A89] 每张表的表注仅位于所属表的 footer。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A90] 正文没有重复表注。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A91] 每张表的数据行数与源表一致。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A92] 每张表的题注链接已核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A93] 每张表的表注链接已核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A94] 每张表的列名链接已核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A95] 每张表的单元格链接已核对。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A99] 每张表的实际行数已有记录；v3 逐工作表记录。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A100] 每张表的源表行数已有记录；v3 逐工作表记录。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A101] 整个表格数据块的闭合围栏与表锚之间零空行。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A102] 每个表锚顶格书写。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A103] 每个表锚独占一行。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A104] 表锚后有内容时恰留一空行。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A105] 表格缺锚已修复；可交第 9 步完成修复。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A112] 所有表格缺锚修复均已在提交前复验。 <!-- check-type: execution_process -->
+- [ ] [BODY-A106] 表锚错绑已修复；可交第 9 步完成修复。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A113] 所有表锚错绑修复均已在提交前复验。 <!-- check-type: execution_process -->
+- [ ] [BODY-A107] 重复表锚 ID 已修复；可交第 9 步完成修复。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A114] 所有重复表锚 ID 修复均已在提交前复验。 <!-- check-type: execution_process -->
+- [ ] [BODY-A108] 既有调用已保留或完成已授权的迁移。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A115] 每个图内数据表均有独立 Rich Table 副本。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A116] 每个图内数据表副本的数据行数与来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A117] 每个图内数据表副本的列数与来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A118] 每个图内数据表副本的类别代号与来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A119] 每个图内数据表副本的数值与来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A120] 每个新建 DOI 解析链接均使用规定的规范目标。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A121] 每个可辨认的可见邮箱均有正确的 mailto 目标。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A122] 每个时长量值已整体置于数学环境。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A123] 每个量值范围已整体置于数学环境。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A124] 每个百分数量值已整体置于数学环境。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A125] 离线候选中的每个表格均已完成 Rich Table 源码构建。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A126] 每个可见 DOI 标识符均有对应的解析链接。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A127] 每个源合并范围均有对应的 `merges` 项。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A128] 每个合并范围的左上端点与来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A129] 每个合并范围的右下端点与来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A130] 每个合并范围的被覆盖单元格为空或省略。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A131] 经过模板处理的既有合并范围未被改动。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A133] 相邻父子标题之间恰有一空行。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A134] 来源裸网址的链接显示文字与来源一致。 <!-- check-type: offline_outcome -->

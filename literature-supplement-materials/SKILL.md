@@ -57,7 +57,7 @@ description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、�
 - [SI-C30] 逐个探测视频分辨率。
 - [SI-C31] 逐个探测视频音轨。
 - [SI-C32] Obsidian 视频嵌入仅使用 `.mkv`、`.mov`、`.mp4`、`.ogv` 或 `.webm`。
-- [SI-C33] 其他格式或目标端无法解码的视频自动转为 H.264 MP4。
+- [SI-C33] 其他格式或文件解码失败的视频自动转为 H.264 MP4。
 - [SI-C34] 转码时保留视频原件。
 - [SI-C35] 转码时保留已有音轨。
 - [SI-C36] 记录视频原件哈希。
@@ -116,7 +116,7 @@ description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、�
 - [SI-C87] 沿用已有视频调用。
 - [SI-C88] 视频仅远程可用或转码失败时登记实际状态。
 - [SI-C89] 视频仅远程可用或转码失败时记录原来源。
-- [SI-C90] 正文 SI 调用保留显示文字。
+- [SI-C90] 正文 SI 调用的显示号遵循对应对象的显示号规则。
 - [SI-C91] 正文 SI 调用交第 9 步绑定现有目标。
 - [SI-C92] SI 缺页按项目配置判级。
 - [SI-C93] SI 缺图按项目配置判级。
@@ -134,6 +134,53 @@ description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、�
 - [SI-C108] SI 题头不新增 H1。
 - [SI-C109] SI 中可辨认的无编号显示公式须完整交付。
 - [SI-C110] SI 中独立存在的书目须完整交付。
+- [SI-C111] 每个补充图的显示号单独记录为 `display_number`。
+
+### 原号、显示号与既有链接
+
+在每个 SI 图或表的来源映射单元中分别保存 `original_number` 与 `display_number`。`original_number` 是源可见编号的原样字符串，保留字母、前缀和编号标点；它不是源对象 ID，也不是从资源名或锚点中拆出的数字。`display_number` 是本次 Markdown 使用的非空显示号。书目仍使用其独立列表的原号记录，不从图号推断。
+
+补充图有原号但没有 S 前缀时，仅在原号前加 S；已有 S 前缀时逐字保留，不再追加 S。题注中按 SI-C100 保留原号说明。新建的正文补充图调用采用同一显示号；显示文字的调整不重命名已核实锚点，也不改变既有链接目标。
+
+以下都是虚构例子。实际来源位置与文件引用沿用本次来源映射：
+
+```json
+[
+  {
+    "id": "supplement-a-figure-window",
+    "source": "supplement-a",
+    "kind": "figure",
+    "original_number": "7c",
+    "display_number": "S7c",
+    "display_number_origin": "normalized_source",
+    "anchor_id": "fig-existing-window",
+    "evidence": [{"page": 4, "basis": "visual", "quote": "Figure 7c. Response of the prism."}]
+  },
+  {
+    "id": "supplement-a-figure-lens",
+    "source": "supplement-a",
+    "kind": "figure",
+    "original_number": "S8b",
+    "display_number": "S8b",
+    "display_number_origin": "source_literal",
+    "anchor_id": "fig-existing-lens",
+    "evidence": [{"page": 5, "basis": "visual", "quote": "Figure S8b. Layout of the lens."}]
+  },
+  {
+    "id": "supplement-a-figure-unnumbered",
+    "source": "supplement-a",
+    "kind": "figure",
+    "original_number": null,
+    "original_number_reason": "此来源题注没有可见编号；所给页图位置只显示图题。",
+    "display_number": "Saux-a",
+    "display_number_origin": "generated_navigation",
+    "anchor_id": "fig-existing-aux",
+    "evidence": [{"page": 6, "basis": "visual", "quote": "Assembly of the shutter."}]
+  }
+]
+```
+
+第一条可显示为“图S7c（原图7c）”。第二条显示为“图S8b”。第三条的显示文字明确为“补充图 Saux-a（导航标识，原文未编号）”；`Saux-a` 只是新建导航示例，有已核实显示映射时继续使用该映射。无可见原号时使用 `null` 与 `original_number_reason`，不把生成导航号写回 `original_number`。没有原号的表同样不补造来源号。
 
 ## 产物
 
@@ -143,56 +190,57 @@ description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、�
 
 每项验收按其 ID 单独记录判定结果。
 
-- [ ] [SI-A01] 每一页均有覆盖决定。
-- [ ] [SI-A02] 每幅图均有覆盖决定。
-- [ ] [SI-A03] 每个表均有覆盖决定。
-- [ ] [SI-A04] 每个视频均有覆盖决定。
-- [ ] [SI-A05] 每个应译文本块均有对应译块或未决定位。
-- [ ] [SI-A06] 每项本地资源符合附件三级目录规则。
-- [ ] [SI-A07] 每项本地资源使用库根引用。
-- [ ] [SI-A08] 每项本地资源的最终路径已核对。
-- [ ] [SI-A09] 每项本地资源的哈希已核对。
-- [ ] [SI-A10] 每项本地资源已确认可由 Obsidian 解析。
-- [ ] [SI-A11] 每幅补充图已通过[裁剪视觉验收](../literature-fulltext-extract/references/figure-crop.md)。
-- [ ] [SI-A12] 每个视频使用原生嵌入。
-- [ ] [SI-A13] 每个视频的实际容器已核对。
-- [ ] [SI-A14] 每个视频的编解码器已核对。
-- [ ] [SI-A15] 每个视频的首帧解码已核对。
-- [ ] [SI-A16] 每个视频所属 `^mov-s…` 落点已核对。
-- [ ] [SI-A17] 视频转码件的视频编码为 H.264。
-- [ ] [SI-A45] 视频转码件的容器为 MP4。
-- [ ] [SI-A18] 视频转码件时长已核对。
-- [ ] [SI-A19] 视频转码件分辨率已核对。
-- [ ] [SI-A20] 视频转码件音轨已核对。
-- [ ] [SI-A21] 视频检查范围已记录。
-- [ ] [SI-A22] 视频未通过项已记录。
-- [ ] [SI-A23] SI 内容块 ID 全篇唯一。
-- [ ] [SI-A24] SI 图锚全篇唯一。
-- [ ] [SI-A25] SI 表锚全篇唯一。
-- [ ] [SI-A26] SI 公式锚全篇唯一。
-- [ ] [SI-A27] SI 视频锚全篇唯一。
-- [ ] [SI-A28] SI 书目锚全篇唯一。
-- [ ] [SI-A29] 每个 SI 对象的来源记录与实际对象一致。
-- [ ] [SI-A30] 同号不同 SI 的对象没有混配。
-- [ ] [SI-A31] 新增来源没有破坏已有调用。
-- [ ] [SI-A32] 新建书目锚点采用插件支持的前缀。
-- [ ] [SI-A33] 既有书目 ID 已保留。
-- [ ] [SI-A34] 既有书目调用已保留。
-- [ ] [SI-A35] 既有书目来源映射已保留。
-- [ ] [SI-A36] 插件不兼容的旧书目 ID 已登记警告。
-- [ ] [SI-A37] 数字后缀与当前序号不同的旧书目 ID 已登记警告。
-- [ ] [SI-A38] 旧书目 ID 未因新增、减少或重排 SI 而重命名。
-- [ ] [SI-A39] 主稿仅有一个「补充材料」章节。
-- [ ] [SI-A40] 补充材料整章位于主文全部内容之后。
-- [ ] [SI-A41] 补充材料整章位于「Zotero原条目」之前。
-- [ ] [SI-A42] 补充书目仍位于补充材料章内。
-- [ ] [SI-A43] 补充材料最终章号已交第 8 步核对。
-- [ ] [SI-A44] 补充材料小节序号已交第 8 步核对。
-- [ ] [SI-A46] 每份 SI 的完整原题与自身来源一致。
-- [ ] [SI-A47] 每份 SI 的作者姓名与自身来源一致。
-- [ ] [SI-A48] 每份 SI 的单位名称与自身来源一致。
-- [ ] [SI-A49] 每份 SI 的作者单位映射与自身来源一致。
-- [ ] [SI-A50] 每个补充图显示号均可回溯到来源原号。
-- [ ] [SI-A51] 原文未编号的 SI 文本小节没有被标为原有 S 编号。
-- [ ] [SI-A52] 每个可辨认的 SI 显示公式均已交付。
-- [ ] [SI-A53] 每份 SI 的书目条目均已交付。
+- [ ] [SI-A01] 每一页均有覆盖决定。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A02] 每幅图均有覆盖决定。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A03] 每个表均有覆盖决定。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A04] 每个视频均有覆盖决定。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A05] 每个应译文本块均有对应译块或未决定位。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A06] 每项本地资源符合附件三级目录规则。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A07] 每项本地资源使用库根引用。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A08] 每项本地资源的最终路径已核对。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A09] 每项本地资源的哈希已核对。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A10] SI 资源引用能从候选资源根解析到可读文件。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A11] 每幅补充图已通过[裁剪视觉验收](../literature-fulltext-extract/references/figure-crop.md)。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A12] 每个视频使用原生嵌入。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A13] 每个视频的实际容器已核对。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A14] 每个视频的编解码器已核对。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A15] 每个视频的首帧解码已核对。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A16] 每个视频所属 `^mov-s…` 落点已核对。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A17] 视频转码件的视频编码为 H.264。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A45] 视频转码件的容器为 MP4。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A18] 视频转码件时长已核对。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A19] 视频转码件分辨率已核对。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A20] 视频转码件音轨已核对。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A21] 视频检查范围已记录。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A22] 视频未通过项已记录。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A23] SI 内容块 ID 全篇唯一。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A24] SI 图锚全篇唯一。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A25] SI 表锚全篇唯一。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A26] SI 公式锚全篇唯一。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A27] SI 视频锚全篇唯一。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A28] SI 书目锚全篇唯一。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A29] 每个 SI 对象的来源记录与实际对象一致。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A30] 同号不同 SI 的对象没有混配。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A31] 新增来源没有破坏已有调用。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A32] 新建书目锚点采用插件支持的前缀。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A33] 既有书目 ID 已保留。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A34] 既有书目调用已保留。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A35] 既有书目来源映射已保留。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A36] 插件不兼容的旧书目 ID 已登记警告。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A37] 数字后缀与当前序号不同的旧书目 ID 已登记警告。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A38] 旧书目 ID 未因新增、减少或重排 SI 而重命名。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A39] 主稿仅有一个「补充材料」章节。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A40] 补充材料整章位于主文全部内容之后。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A41] 补充材料整章位于「Zotero原条目」之前。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A42] 补充书目仍位于补充材料章内。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A43] 补充材料最终章号已交第 8 步核对。 <!-- check-type: execution_process -->
+- [ ] [SI-A44] 补充材料小节序号已交第 8 步核对。 <!-- check-type: execution_process -->
+- [ ] [SI-A46] 每份 SI 的完整原题与自身来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A47] 每份 SI 的作者姓名与自身来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A48] 每份 SI 的单位名称与自身来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A49] 每份 SI 的作者单位映射与自身来源一致。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A50] 每个补充图显示号均可回溯到来源原号。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A51] 原文未编号的 SI 文本小节没有被标为原有 S 编号。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A52] 每个可辨认的 SI 显示公式均已交付。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A53] 每份 SI 的书目条目均已交付。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A54] 有原号的补充图显示号符合 S 前缀规则。 <!-- check-type: offline_outcome -->

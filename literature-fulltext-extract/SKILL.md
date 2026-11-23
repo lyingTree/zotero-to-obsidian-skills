@@ -115,6 +115,81 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 
 图像文件引用与来源定位分开表示。例如 `{"asset":{"path":"assets/figure.png","sha256":"实际哈希"},"source":{"id":"main","page":2,"bbox":[40,80,300,400]}}` 中，`asset` 是最小文件引用对象，`source` 是定位记录。来源页渲染记录的 DPI、像素哈希和宽高属于诊断证据，不属于交接稿中的图像文件引用对象。不得因最小文件引用规则删除裁剪或对源证据。
 
+PDF 图像先使用 `prepare_sources(...)` 生成的 `image_index` 选择实际原图对象，再由 `export_image_object(...)` 导出；出现显示效果限制时使用 `render_page_region(...)`。完整调用及逐边核对见[原图对象索引与导出](references/figure-crop.md#原图对象索引与导出)。原图对象不自动等同于整幅 figure，最终图片仍须与源页文件核对。
+
+### 来源映射记录示例
+
+文字层与页图冲突直接写入对应来源单元的 `text_visual_conflicts`；报告可引用该位置，但不能替代映射记录。下例仅为虚构字段示例，路径、哈希与定位须换成本次实际值。`basis: visual` 只说明证据类型，本身没有记录冲突的两个读法。
+
+```json
+{
+  "id": "source-a-affiliation-b",
+  "source": "source-a",
+  "kind": "metadata",
+  "field": "affiliation",
+  "value": "Reid Laboratory",
+  "text_visual_conflicts": [
+    {
+      "id": "conflict-lab-name",
+      "text_layer": {
+        "file": {"path": "work/page-text.txt", "sha256": "实际文本文件SHA256"},
+        "locator": {"kind": "lines", "start": 9, "end": 9},
+        "text": "Reed Laboratory"
+      },
+      "visible_page": {
+        "file": {"path": "work/page-render.png", "sha256": "实际页图文件SHA256"},
+        "page": 2,
+        "bbox": [60, 90, 280, 112],
+        "text": "Reid Laboratory"
+      },
+      "decision": {
+        "status": "resolved",
+        "selected_text": "Reid Laboratory",
+        "reason": "实际查看所定位的页图后，该字母可辨为i。"
+      }
+    }
+  ],
+  "evidence": [{"page": 2, "basis": "visual", "bbox": [60, 90, 280, 112]}]
+}
+```
+
+尚未查看页图时，冲突决定保持 `pending`；实际字形仍不可辨时保留候选读法与未决原因。不要为了填满示例伪造可见文字或查看记录。
+
+作者单元使用 `affiliation_numbers` 保存可见单位编号，用 `affiliation_units` 保存对应的单位单元 ID。两个数组按同一顺序对应；各单位单元属于同一实际来源。整行作者框与作者姓名不能代替这一关系。下例中的人名和单位均为虚构：
+
+```json
+[
+  {
+    "id": "source-a-author-mira",
+    "source": "source-a",
+    "kind": "metadata",
+    "field": "author",
+    "value": "Mira Vale",
+    "affiliation_numbers": ["B", "D"],
+    "affiliation_units": ["source-a-affiliation-b", "source-a-affiliation-d"],
+    "evidence": [{"page": 2, "basis": "visual", "quote": "Mira Valeᴮ,ᴰ"}]
+  },
+  {
+    "id": "source-a-affiliation-b",
+    "source": "source-a",
+    "kind": "metadata",
+    "field": "affiliation",
+    "value": "Reid Laboratory",
+    "evidence": [{"page": 2, "basis": "visual", "quote": "B Reid Laboratory"}]
+  },
+  {
+    "id": "source-a-affiliation-d",
+    "source": "source-a",
+    "kind": "metadata",
+    "field": "affiliation",
+    "value": "Aster Institute",
+    "evidence": [{"page": 2, "basis": "visual", "quote": "D Aster Institute"}]
+  }
+]
+```
+
+来源没有编号但关系可由源页明确判定时，对应编号用 `null`，在 `affiliation_reason` 写出来源依据。无法判定作者所属单位时，两数组留空，填写 `affiliation_reason`，保留源页定位；不从姓名、作者排序或另一份来源推断。主文与每份 SI 各自建立关系。
+
 ## 产物
 
 - source.raw.jsonl、source.md、source-map.json、assets/。
@@ -123,32 +198,32 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 
 每项验收按其 ID 单独记录判定结果。
 
-- [ ] [EXT-A01] 每页或章节均有覆盖记录。
-- [ ] [EXT-A02] 每项排除均有来源定位。
-- [ ] [EXT-A03] 每项排除均有原因。
-- [ ] [EXT-A04] 每项提取失败均有来源定位。
-- [ ] [EXT-A05] 每项提取失败均有原因。
-- [ ] [EXT-A06] 每处漏页均已处理或列为未决。
-- [ ] [EXT-A07] 每处重复段均已处理或列为未决。
-- [ ] [EXT-A08] 每处串栏均已处理或列为未决。
-- [ ] [EXT-A09] 每个图可回溯至源文。
-- [ ] [EXT-A10] 每个表可回溯至源文。
-- [ ] [EXT-A11] 每个公式可回溯至源文。
-- [ ] [EXT-A12] 每个脚注可回溯至源文。
-- [ ] [EXT-A13] 每个书目条目可回溯至源文。
-- [ ] [EXT-A14] 每幅 PDF 图像已通过[裁剪视觉验收](references/figure-crop.md)。
-- [ ] [EXT-A15] 每幅 PDF 图像均有源页记录。
-- [ ] [EXT-A16] 每幅 PDF 图像均有裁剪范围记录。
-- [ ] [EXT-A17] 每幅 PDF 图像均有裁剪验收证据。
-- [ ] [EXT-A18] 正文语言与原判断冲突时已反馈第 1 步。
-- [ ] [EXT-A19] 关键内容不可辨时已保留工作稿。
-- [ ] [EXT-A20] 关键内容不可辨时已标记阻断。
-- [ ] [EXT-A21] 每份 PDF 的题头页均有实际查看页图的记录。
-- [ ] [EXT-A22] 每处文字层与页图的冲突均有裁决依据。
-- [ ] [EXT-A23] 每个图内数据表均有独立对象记录。
-- [ ] [EXT-A24] 每个可辨认的显示公式均有提取结果。
-- [ ] [EXT-A25] 每个表格类别代号与页图一致。
-- [ ] [EXT-A26] 每个表格数值与页图一致。
-- [ ] [EXT-A27] 每个公式的分母范围与页图一致。
-- [ ] [EXT-A28] 每个公式的根号范围与页图一致。
-- [ ] [EXT-A29] 每个公式的指数范围与页图一致。
+- [ ] [EXT-A01] 每页或章节均有覆盖记录。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A02] 每项排除均有来源定位。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A03] 每项排除均有原因。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A04] 每项提取失败均有来源定位。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A05] 每项提取失败均有原因。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A06] 每处漏页均已处理或列为未决。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A07] 每处重复段均已处理或列为未决。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A08] 每处串栏均已处理或列为未决。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A09] 每个图可回溯至源文。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A10] 每个表可回溯至源文。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A11] 每个公式可回溯至源文。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A12] 每个脚注可回溯至源文。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A13] 每个书目条目可回溯至源文。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A14] 每幅 PDF 图像已通过[裁剪视觉验收](references/figure-crop.md)。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A15] 每幅 PDF 图像均有源页记录。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A16] 每幅 PDF 图像均有裁剪范围记录。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A17] 每幅 PDF 图像均有裁剪验收证据。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A18] 正文语言与原判断冲突时已反馈第 1 步。 <!-- check-type: execution_process -->
+- [ ] [EXT-A19] 关键内容不可辨时已保留工作稿。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A20] 关键内容不可辨时已标记阻断。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A21] 每份 PDF 的题头页均有实际查看页图的记录。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A22] 每处文字层与页图的冲突均有裁决依据。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A23] 每个图内数据表均有独立对象记录。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A24] 每个可辨认的显示公式均有提取结果。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A25] 每个表格类别代号与页图一致。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A26] 每个表格数值与页图一致。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A27] 每个公式的分母范围与页图一致。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A28] 每个公式的根号范围与页图一致。 <!-- check-type: offline_outcome -->
+- [ ] [EXT-A29] 每个公式的指数范围与页图一致。 <!-- check-type: offline_outcome -->

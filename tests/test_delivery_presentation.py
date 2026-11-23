@@ -194,6 +194,43 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(self.codes("`示例\n[图1a](#^fig-1)、[图1b](#^fig-1)`"), set())
         self.assertIn("QUANTITY_OUTSIDE_MATH", self.codes("`示例\n隐藏`十二年"))
 
+    def test_unit_after_closed_math_is_still_part_of_the_quantity(self):
+        text = r"近$18$年与$6\text{-}9$年；每$8$小时；距离$2$km。"
+        prompts = [item.excerpt for item in lint_presentation(text) if item.code == "QUANTITY_SPLIT_MATH"]
+        self.assertEqual(prompts, [r"$18$年", r"$6\text{-}9$年", "$8$小时", "$2$km"])
+
+    def test_split_quantity_exempts_dates_and_ignores_invisible_syntax(self):
+        text = r"$2018$年；$2001\text{-}2024$年；$18\,\text{年}$；`$18$年`；[标签](https://example.org/$18$年)"
+        self.assertNotIn("QUANTITY_SPLIT_MATH", self.codes(text))
+
+    def test_every_rich_table_sheet_checks_split_quantities_and_titles(self):
+        table = {"version": 3, "sheets": [
+            {"title": "**图8内表格。**", "columns": [], "rows": []},
+            {"title": "**图S2内表。**", "columns": [{"name": "时长"}],
+             "rows": [{"cells": {"c1": "$12$年"}}]},
+        ]}
+        text = "```rich-table\n---\n" + yaml.safe_dump(table, allow_unicode=True) + "---\n```\n"
+        self.assertEqual(self.codes(text), {"EMBEDDED_TABLE_TITLE", "QUANTITY_SPLIT_MATH"})
+
+    def test_each_header_metadata_item_occupies_its_own_line(self):
+        merged = "> Received: 3 May 2020；Accepted: 7 June 2020；Published online: 19 June 2020"
+        self.assertIn("HEADER_ITEMS_SAME_LINE", self.codes(merged))
+        self.assertNotIn("HEADER_ITEMS_SAME_LINE", self.codes(merged.replace("；", "\n> ")))
+        self.assertIn("HEADER_ITEMS_SAME_LINE", self.codes("> 接收日期：2020年5月3日；接受日期：2020年6月7日"))
+
+    def test_header_check_ignores_plain_prose_and_code(self):
+        text = "Received: A; Accepted: B\n\n```text\n> Received: A; Accepted: B\n```"
+        self.assertNotIn("HEADER_ITEMS_SAME_LINE", self.codes(text))
+
+    def test_duplicate_paragraph_blank_lines_are_actionable(self):
+        prompts = [item for item in lint_presentation("首段。\n\n\n第二段。") if item.code == "PARAGRAPH_GAP_EXTRA"]
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(prompts[0].line, 2)
+
+    def test_paragraph_spacing_does_not_inspect_code_or_file_edges(self):
+        text = "\n\n首段。\n\n第二段。\n\n```text\n第一行\n\n\n第四行\n```\n\n\n"
+        self.assertNotIn("PARAGRAPH_GAP_EXTRA", self.codes(text))
+
 
 if __name__ == "__main__":
     unittest.main()

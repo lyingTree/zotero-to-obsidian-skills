@@ -9,11 +9,13 @@ decisions from the rendered pages before constructing a delivery manifest.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 from contextlib import ExitStack
 from pathlib import Path
 import re
+import sys
 from typing import Callable, Mapping, Sequence
 
 import fitz
@@ -80,6 +82,22 @@ def progress_bar(done: int, total: int, label: str) -> None:
     print(f"[{'#' * filled}{'.' * (width - filled)}] {done}/{total} {label}", flush=True)
 
 
+def _image_tools():
+    """Load this snapshot's helper only when PDF image indexing is requested."""
+    path = Path(__file__).resolve().parent.joinpath("pdf_image_objects.py")
+    suffix = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
+    name = f"literature_pdf_image_objects_{suffix}"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def prepare_sources(
     source_pdfs: Mapping[str, Path],
     work_directory: Path,
@@ -89,12 +107,15 @@ def prepare_sources(
     dpi: int = RENDER_DPI,
     progress: Progress | None = progress_bar,
 ) -> Path:
-    """Render every PDF page and record every nonempty text-layer block.
+    """Render pages, record text blocks, and index actual image-object calls.
 
     Source IDs are stable task-local names, not bibliography anchor prefixes.
     Existing inventories are never overwritten. Use a new work directory for
     another extraction, so a delivery cannot silently acquire different input.
     The text layer is diagnostic evidence; it is not the visible-page truth.
+    Each page's ``image_index`` records actual xrefs, full object bounds, and
+    transforms. Each source's ``image_objects`` stores unique raw extractions
+    and SMask evidence. Neither identifies complete figures automatically.
     """
     if not source_pdfs:
         raise ValueError("Provide at least one source PDF")
@@ -120,13 +141,16 @@ def prepare_sources(
                 raise ValueError(f"{key}: an accessible PDF is required")
             page_counts[key] = len(document)
     total = sum(page_counts.values())
+    image_tools = _image_tools()
     done = 0
     sources = []
     for key, path in resolved.items():
         directory = work_directory.joinpath("source-evidence", key)
         directory.mkdir(parents=True, exist_ok=True)
         pages = []
-        with fitz.open(path) as document:
+        with fitz.open(path) as document, image_tools.ImageObjectIndexer(
+            path, document, directory.joinpath("image-objects"), progress=progress,
+        ) as image_indexer:
             for index, page in enumerate(document):
                 page_number = index + 1
                 text_path = directory.joinpath(f"page-{page_number:04d}.txt")
@@ -148,6 +172,7 @@ def prepare_sources(
                                "pixel_sha256": hashlib.sha256(pixels.samples).hexdigest()},
                     "text": file_record(text_path),
                     "blocks": blocks,
+                    "image_index": image_indexer.index_page(page_number),
                 })
                 done += 1
                 if progress:
@@ -155,6 +180,7 @@ def prepare_sources(
         sources.append({
             "id": key, "role": (source_roles or {}).get(key, "pending"),
             **file_record(path), "page_count": page_counts[key], "pages": pages,
+            "image_objects": list(image_indexer.objects.values()),
             "header_fields": {
                 field: {"status": "pending"}
                 for field in ("title", "authors", "affiliations", "publication_date")

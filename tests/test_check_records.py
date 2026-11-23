@@ -130,7 +130,204 @@ class CheckRecordsTests(unittest.TestCase):
         self.assertEqual(report.findings, [])
         self.assertTrue(report.structurally_consistent)
         self.assertFalse(report.recorded_checks_complete)
+        self.assertFalse(report.offline_records_ready)
         self.assertEqual(set(report.pending_ids), self.ids)
+
+    def test_offline_completion_is_separate_from_record_shape(self):
+        evidence = self.bind()
+        offline = [entry for entry in self.ledger["checks"] if entry["requirement_type"] == "offline_outcome"]
+        for entry in offline:
+            self.resolve(entry["id"], evidence=[evidence])
+        report = self.report()
+        self.assertTrue(report.structurally_consistent)
+        self.assertTrue(report.offline_records_ready)
+        self.assertFalse(report.recorded_checks_complete)
+        self.assertEqual(report.process_unverified_ids, ["EX-A01"])
+        self.assertEqual(set(report.live_unverified_ids), {"EX-A02", "EX-A03"})
+        self.assertEqual(report.source_fidelity, "not_assessed")
+
+    def test_each_unresolved_offline_status_blocks_readiness(self):
+        evidence = self.bind()
+        for entry in self.ledger["checks"]:
+            if entry["requirement_type"] == "offline_outcome":
+                self.resolve(entry["id"], evidence=[evidence])
+        for status in ("not_verified", "blocked", "failed"):
+            with self.subTest(status=status):
+                self.record("FMT-A01").update(status=status, reason="A concrete unresolved synthetic cell.")
+                report = self.report()
+                self.assertTrue(report.structurally_consistent)
+                self.assertFalse(report.offline_records_ready)
+                self.assertEqual(report.offline_unresolved_ids, ["FMT-A01"])
+                self.assertEqual(report.offline_failed_ids, ["FMT-A01"] if status == "failed" else [])
+
+    def test_unclassified_pending_record_cannot_escape_offline_readiness(self):
+        evidence = self.bind()
+        for entry in self.ledger["checks"]:
+            if entry["requirement_type"] == "offline_outcome":
+                self.resolve(entry["id"], evidence=[evidence])
+        self.record("FMT-A01").update(requirement_type="unclassified", status="not_verified", evidence=[],
+                                     reason="Its boundary has not been decided.")
+        report = self.report()
+        self.assertTrue(report.structurally_consistent)
+        self.assertEqual(report.offline_unresolved_ids, [])
+        self.assertFalse(report.offline_records_ready)
+
+    def test_explicit_scopes_keep_each_table_source_and_target_separate(self):
+        with fitz.open(self.pdf) as document:
+            document.new_page(width=240, height=320).insert_text((25, 75), "A second table: 8.")
+            document.saveIncr()
+        self.candidate.write_text(
+            "# Candidate\n\nFirst table. ^tbl-1\n\nSecond table. ^tbl-2\n", encoding="utf-8")
+        inventory = {"sources": [{"id": "source-a", "page_count": 2}], "units": [
+            {"id": "table-one", "source": "source-a", "evidence": [{"page": 1, "quote": "A single-cell table: 7."}]},
+            {"id": "table-two", "source": "source-a", "evidence": [{"page": 2, "quote": "A second table: 8."}]},
+        ]}
+        self.inventory.write_text(json.dumps(inventory), encoding="utf-8")
+        deliveries = [{"unit": "table-one", "target": {"anchor": "tbl-1"}},
+                      {"unit": "table-two", "target": {"anchor": "tbl-2"}}]
+        scopes = checker.scopes_from_deliveries(self.inventory, self.candidate, deliveries,
+                                                unit_ids=["table-two", "table-one"])
+        self.assertEqual([row["object_id"] for row in scopes], ["table-two", "table-one"])
+        self.assertEqual([row["locator"]["source_locations"][0]["page"] for row in scopes], [2, 1])
+        self.assertEqual([row["locator"]["candidate_target"]["anchor"] for row in scopes], ["tbl-2", "tbl-1"])
+        self.assertTrue(all("status" not in row and "evidence" not in row for row in scopes))
+        with self.assertRaisesRegex(ValueError, "lack source units"):
+            checker.scopes_from_deliveries(self.inventory, self.candidate, deliveries, unit_ids=["missing"])
+        with self.assertRaisesRegex(ValueError, "explicit source unit IDs"):
+            checker.scopes_from_deliveries(self.inventory, self.candidate, deliveries, unit_ids=[])
+        with self.assertRaisesRegex(ValueError, "unique nonempty"):
+            checker.scopes_from_deliveries(self.inventory, self.candidate, deliveries + deliveries, unit_ids=["table-one"])
+
+    def scope_fixture(self):
+        self.candidate.write_text("# Candidate\n\nA source paragraph. ^present\n", encoding="utf-8")
+        inventory = {"sources": [{"id": "source-a", "page_count": 1}], "units": [
+            {"id": "paragraph", "source": "source-a",
+             "evidence": [{"page": 1, "quote": "A small synthetic source paragraph."}]},
+        ]}
+        return inventory, [{"unit": "paragraph", "target": {"anchor": "present"}}]
+
+    def selected_scope(self, inventory, deliveries):
+        self.inventory.write_text(json.dumps(inventory), encoding="utf-8")
+        return checker.scopes_from_deliveries(self.inventory, self.candidate, deliveries, unit_ids=["paragraph"])
+
+    def test_scopes_reject_missing_hidden_or_duplicate_candidate_anchor(self):
+        inventory, deliveries = self.scope_fixture()
+        candidates = [
+            "# Candidate\n\nNo definition.\n",
+            "---\nvalue: text ^present\n---\n\nBody.\n",
+            "# Candidate\n\n```markdown\nCode ^present\n```\n",
+            "# Candidate\n\n```rich-table\ntext: ^present\n```\n",
+            "# Candidate\n\n    Code ^present\n",
+            "# Candidate\n\n<!--\nComment ^present\n-->\n",
+            "# Candidate\n\n%%\nComment ^present\n%%\n",
+            "# Candidate\n\n`Multiline code\ntext ^present\n`\n",
+            "# Candidate\n\n$$\nx ^present\n$$\n",
+            "# Candidate\n\nEscaped \\^present\n",
+            "# Candidate\n\nFirst ^present\n\nSecond ^present\n",
+        ]
+        for text in candidates:
+            with self.subTest(candidate=text):
+                self.candidate.write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "one visible block definition"):
+                    self.selected_scope(inventory, deliveries)
+        self.candidate.write_text("```markdown\nFake ^present\n```\n\nActual content. ^present\n", encoding="utf-8")
+        self.assertEqual(self.selected_scope(inventory, deliveries)[0]["object_id"], "paragraph")
+
+    def test_scopes_require_bounded_candidate_lines_and_their_actual_hash(self):
+        inventory, deliveries = self.scope_fixture()
+        for bounds in ([999, 999], [0, 1], [3, 2], [True, 2], [1]):
+            with self.subTest(bounds=bounds):
+                deliveries[0]["target"] = {"lines": bounds}
+                with self.assertRaisesRegex(ValueError, "one-based inclusive range"):
+                    self.selected_scope(inventory, deliveries)
+        deliveries[0]["target"] = {"lines": [3, 3], "sha256": "0" * 64}
+        with self.assertRaisesRegex(ValueError, "line-range sha256"):
+            self.selected_scope(inventory, deliveries)
+        text = self.candidate.read_text(encoding="utf-8").splitlines(keepends=True)[2]
+        deliveries[0]["target"]["sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        self.assertEqual(self.selected_scope(inventory, deliveries)[0]["locator"]["candidate_target"],
+                         deliveries[0]["target"])
+
+    def test_scopes_reject_unknown_or_ambiguous_candidate_selector(self):
+        inventory, deliveries = self.scope_fixture()
+        for target in ({"phantom": "missing"}, {}, None, {"anchor": "present", "quote": "A source paragraph."}):
+            with self.subTest(target=target):
+                deliveries[0]["target"] = target
+                with self.assertRaisesRegex(ValueError, "exactly one candidate target"):
+                    self.selected_scope(inventory, deliveries)
+
+    def test_scope_quote_and_line_hash_use_delivery_bom_and_newline_normalization(self):
+        inventory, deliveries = self.scope_fixture()
+        normalized = "# Candidate\n\nA source paragraph. ^present\n"
+        self.candidate.write_bytes(("\ufeff" + normalized.replace("\n", "\r\n")).encode("utf-8"))
+        targets = [
+            {"quote": "# Candidate\n\nA source paragraph."},
+            {"lines": [1, 3], "sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest()},
+        ]
+        for target in targets:
+            with self.subTest(target=target):
+                deliveries[0]["target"] = target
+                self.assertEqual(self.selected_scope(inventory, deliveries)[0]["locator"]["candidate_target"], target)
+
+    def test_scopes_reject_source_pages_outside_the_inventory(self):
+        inventory, deliveries = self.scope_fixture()
+        location = inventory["units"][0]["evidence"][0]
+        for page in (999, 0, True, "1"):
+            with self.subTest(page=page):
+                location["page"] = page
+                with self.assertRaisesRegex(ValueError, "within inventory page_count"):
+                    self.selected_scope(inventory, deliveries)
+
+    def test_scopes_require_finite_nonempty_source_bbox(self):
+        inventory, deliveries = self.scope_fixture()
+        location = inventory["units"][0]["evidence"][0]
+        del location["quote"]
+        for box in ([], None, [0, 0, 0, 1], [1, 0, 0, 1], [0, 0, 1, float("inf")],
+                    [0, float("nan"), 1, 1], [False, 0, 1, 1], [0, 0, "1", 1]):
+            with self.subTest(bbox=box):
+                location["bbox"] = box
+                with self.assertRaisesRegex(ValueError, "finite nonempty rectangle"):
+                    self.selected_scope(inventory, deliveries)
+        location["bbox"] = [0, 0, 120, 80]
+        self.assertEqual(self.selected_scope(inventory, deliveries)[0]["locator"]["source_locations"][0], location)
+
+    def test_scopes_require_nonempty_unique_candidate_quote(self):
+        inventory, deliveries = self.scope_fixture()
+        for quote in (None, "", " ", "absent", "a"):
+            with self.subTest(quote=quote):
+                deliveries[0]["target"] = {"quote": quote}
+                with self.assertRaisesRegex(ValueError, "nonempty and unique"):
+                    self.selected_scope(inventory, deliveries)
+        deliveries[0]["target"] = {"quote": "A source paragraph."}
+        self.assertEqual(self.selected_scope(inventory, deliveries)[0]["object_id"], "paragraph")
+        self.candidate.write_text("aaaa\n", encoding="utf-8")
+        deliveries[0]["target"] = {"quote": "aaa"}
+        with self.assertRaisesRegex(ValueError, "nonempty and unique"):
+            self.selected_scope(inventory, deliveries)
+
+    def test_scopes_validate_declared_page_count_quote_and_image_xref(self):
+        inventory, deliveries = self.scope_fixture()
+        source = inventory["sources"][0]
+        for page_count in (None, 0, True, "1"):
+            with self.subTest(page_count=page_count):
+                source["page_count"] = page_count
+                with self.assertRaisesRegex(ValueError, "positive inventory page_count"):
+                    self.selected_scope(inventory, deliveries)
+        source["page_count"] = 1
+        location = inventory["units"][0]["evidence"][0]
+        for quote in (None, "", " ", 3):
+            with self.subTest(quote=quote):
+                location["quote"] = quote
+                with self.assertRaisesRegex(ValueError, "source quote"):
+                    self.selected_scope(inventory, deliveries)
+        del location["quote"]
+        for xref in (None, 0, -1, True, "4"):
+            with self.subTest(xref=xref):
+                location["image_xref"] = xref
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    self.selected_scope(inventory, deliveries)
+        location["image_xref"] = 4
+        self.assertEqual(self.selected_scope(inventory, deliveries)[0]["locator"]["source_locations"][0], location)
 
     def test_default_checks_include_all_acceptance_ids_and_catalog_keeps_constraints(self):
         self.path.unlink()
