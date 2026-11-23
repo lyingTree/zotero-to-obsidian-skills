@@ -60,10 +60,10 @@ $$
 1. Example, 2025. ^ref-1
 
 ## 3 补充材料
-补充引文[1](<#^ref-s1>)。
+补充引文[1](<#^sref-1>)。
 
 ### 3.1 参考文献
-1. Supplement, 2024. ^ref-s1
+1. Supplement, 2024. ^sref-1
 
 ---
 
@@ -235,8 +235,8 @@ class ValidateNoteTests(unittest.TestCase):
         self.assertEqual(validator.validate_note(text), [])
 
     def test_main_and_si_cannot_reuse_ref_1(self):
-        codes = self.codes(NOTE.replace("ref-s1", "ref-1"))
-        self.assertTrue({"DUPLICATE_ANCHOR", "BIBLIOGRAPHY_NAMESPACE"} <= codes)
+        findings = validator.validate_note(NOTE.replace("sref-1", "ref-1"))
+        self.assertTrue(any(item.code == "DUPLICATE_ANCHOR" and item.level == "error" for item in findings))
 
     def test_multiple_si_sources_keep_their_own_numbering(self):
         text = (
@@ -249,14 +249,53 @@ class ValidateNoteTests(unittest.TestCase):
 
     def test_legacy_si_namespace_can_coexist_with_new_source(self):
         text = (
-            "## 3 补充材料\n### 3.1 参考文献\n1. A ^ref-s1\n\n"
-            "### 3.2 参考文献\n1. B ^ref-sabc123-1\n"
+            "## 3 补充材料\n[A](#^ref-s1) [B](#^sref-src0123456789ab-1)\n\n"
+            "### 3.1 参考文献\n1. A ^ref-s1\n\n"
+            "### 3.2 参考文献\n1. B ^sref-src0123456789ab-1\n"
+        )
+        findings = validator.validate_note(text)
+        self.assertEqual([item.code for item in findings], ["BIBLIOGRAPHY_PLUGIN_COMPAT"])
+        self.assertEqual(findings[0].level, "warning")
+
+    def test_plugin_130_anchor_matrix(self):
+        # Expected values were checked against the actual 1.3.0 referenceAnchor
+        # and parseReferences functions, commit 165503f647590b7d9379e8b1ba72a2b9b61de049.
+        cases = {
+            "ref-1": True, "sref-1": True, "ref1": True, "sref1": True,
+            "SREF-1": True, "sref-a-1": True, "ref-appendix-a2-1": True,
+            "sref-src0123456789ab-1": True, "ref-sab12cd34ef56-1": True,
+            "ref-s1": False, "sref-0123456789ab-1": False,
+            "sref-0": False, "sref-01": False, "sref-1000000000": False,
+        }
+        for anchor, supported in cases.items():
+            with self.subTest(anchor=anchor):
+                text = f"## 3 补充材料\n[文献](#^{anchor})\n\n### 3.1 参考文献\n1. Entry ^{anchor}\n"
+                findings = validator.validate_note(text)
+                self.assertEqual(any(item.code == "BIBLIOGRAPHY_PLUGIN_COMPAT" for item in findings), not supported)
+                self.assertFalse(any(item.level == "error" for item in findings))
+
+    def test_new_si_sources_have_plugin_compatible_prefixes(self):
+        text = (
+            "## 3 补充材料\n[A](#^sref-src0123456789ab-1) [B](#^sref-srcabc123def456-1)\n\n"
+            "### 3.1 参考文献\n1. A ^sref-src0123456789ab-1\n\n"
+            "### 3.2 参考文献\n1. B ^sref-srcabc123def456-1\n"
         )
         self.assertEqual(validator.validate_note(text), [])
 
+    def test_existing_number_mismatch_is_a_warning_and_file_stays_unchanged(self):
+        text = "[原链接](#^sref-12) [旧格式](#^ref-s1)\n\n## 3 补充材料\n### 3.1 参考文献\n1. A ^sref-12\n2. B ^ref-s1\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).joinpath("existing.md")
+            original = text.encode("utf-8")
+            path.write_bytes(original)
+            findings = validator.validate_file(path)
+            self.assertEqual({item.code for item in findings}, {"BIBLIOGRAPHY_NUMBER", "BIBLIOGRAPHY_PLUGIN_COMPAT"})
+            self.assertTrue(all(item.level == "warning" for item in findings))
+            self.assertEqual(path.read_bytes(), original)
+
     def test_missing_and_mismatched_bibliography_anchors(self):
         self.assertIn("BIBLIOGRAPHY_ANCHOR", self.codes("## 2 参考文献\n1. No anchor\n"))
-        self.assertIn("BIBLIOGRAPHY_NAMESPACE", self.codes("## 2 参考文献\n1. Wrong ^ref-2\n"))
+        self.assertIn("BIBLIOGRAPHY_NUMBER", self.codes("## 2 参考文献\n1. Existing ^ref-2\n"))
         self.assertIn("BIBLIOGRAPHY_ANCHOR", self.codes("## 2 参考文献\n1. Early ^ref-1\n   more text\n"))
 
     def test_multiline_reference_can_have_anchor_on_its_last_line(self):

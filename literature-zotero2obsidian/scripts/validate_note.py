@@ -63,6 +63,14 @@ _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _ENTRY = re.compile(r"^ {0,3}([1-9][0-9]*)\.[ \t]+")
 _BIBLIOGRAPHY = re.compile(r"^(?:[0-9]+(?:\.[0-9]+)*[ \t]+)?参考文献$")
 _SUPPLEMENT = re.compile(r"^(?:[0-9]+[ \t]+)?补充材料$")
+# Match Citation Preview 1.3.0 referenceAnchor(), not an invented ID grammar.
+# Source: lyingTree/citation-preview @ 165503f647590b7d9379e8b1ba72a2b9b61de049
+# src/bibliography.ts. Prefix segments must start with an ASCII letter.
+_CITATION_ANCHOR_COMPACT = re.compile(r"(s?ref)-?([1-9][0-9]{0,8})", re.IGNORECASE | re.ASCII)
+_CITATION_ANCHOR_NAMESPACED = re.compile(
+    r"((?:s?ref)(?:-[A-Za-z][A-Za-z0-9]*)+)-([1-9][0-9]{0,8})",
+    re.IGNORECASE | re.ASCII,
+)
 _LOCAL_MARKDOWN = re.compile(
     r"\[(?:\\.|[^\[\]\\\n])*\]\([ \t]*"
     r"(?:<#\^(?P<angle>[A-Za-z0-9-]+)>|#\^(?P<bare>[A-Za-z0-9-]+))"
@@ -248,26 +256,27 @@ def _strings(value: Any, seen: set[int] | None = None):
         yield from _strings(child, seen)
 
 
-def _rich_table(content: list[str], start: int, findings: list[Finding],
-                links: list[tuple[str, int]]) -> None:
-    data = _load_yaml("\n".join(content), start + 1, "TABLE_YAML", findings)
-    if data is _YAML_ERROR:
-        return
-    if not isinstance(data, dict):
-        findings.append(Finding("error", "TABLE_TYPE", start, "Rich Table 必须是 YAML 映射。"))
-        return
-    if type(data.get("version")) is not int or data["version"] != 2:
-        findings.append(Finding("error", "TABLE_VERSION", start, "Rich Table version 必须为整数 2。"))
-    if data.get("locked") is not True:
-        findings.append(Finding("error", "TABLE_UNLOCKED", start, "Rich Table locked 必须为 true。"))
-    if data.get("theme") != "grid":
-        findings.append(Finding("error", "TABLE_THEME", start, "Rich Table theme 必须为 grid。"))
-    for key in ("columns", "rows"):
-        if not isinstance(data.get(key), list) or not data[key]:
-            findings.append(Finding("error", "TABLE_STRUCTURE", start,
-                                    f"Rich Table {key} 必须为非空列表。"))
-    # These fields contain the table's visible text. IDs and unrelated metadata
-    # are intentionally excluded; a plugin can interpret its own fields.
+def _rich_table_payload(content: list[str]) -> str:
+    """Accept the templates' outer --- pair without accepting multiple documents.
+
+    Replacing only the closing wrapper preserves source offsets. Indented ---
+    inside a YAML block scalar is data and must not be stripped.
+    """
+    nonempty = [index for index, line in enumerate(content) if line.strip()]
+    if len(nonempty) < 2:
+        return "\n".join(content)
+    marker = re.compile(r"^---[ \t]*(?:#.*)?$")
+    first, last = nonempty[0], nonempty[-1]
+    if not marker.fullmatch(content[first]) or not marker.fullmatch(content[last]):
+        return "\n".join(content)
+    payload = content.copy()
+    payload[last] = ""
+    return "\n".join(payload)
+
+
+def _table_visible_links(data: dict, start: int, context: str,
+                         links: list[tuple[str, int, str]]) -> None:
+    # IDs, xlsx paths and arbitrary plugin metadata are not Markdown text.
     fields: list[Any] = [data.get("title"), data.get("footer")]
     for column in data.get("columns", []) if isinstance(data.get("columns"), list) else []:
         if isinstance(column, dict):
@@ -277,9 +286,73 @@ def _rich_table(content: list[str], start: int, findings: list[Finding],
             fields.append(row.get("cells"))
     for field in fields:
         for value in _strings(field):
-            # Decoded YAML values need not share their physical source lines.
-            # The fence line identifies the owning table, not a guessed cell line.
-            links.extend((target, start) for target, _ in _links(value, 1))
+            # YAML values may be folded, escaped or on a single JSON line.
+            # Locate the sheet, not a guessed source line for a decoded cell.
+            links.extend((target, start, context) for target, _ in _links(value, 1))
+
+
+def _rich_table_sheet(data: dict, start: int, context: str,
+                      findings: list[Finding], links: list[tuple[str, int, str]]) -> None:
+    if data.get("locked") is not True:
+        findings.append(Finding("error", "TABLE_UNLOCKED", start, f"{context}：locked 必须为 true。"))
+    if data.get("theme") != "grid":
+        findings.append(Finding("error", "TABLE_THEME", start, f"{context}：theme 必须为 grid。"))
+    for key in ("columns", "rows"):
+        if not isinstance(data.get(key), list) or not data[key]:
+            findings.append(Finding("error", "TABLE_STRUCTURE", start,
+                                    f"{context}：{key} 必须为非空列表。"))
+    _table_visible_links(data, start, context, links)
+
+
+def _sheet_source_lines(payload: str, start: int) -> list[int]:
+    """Return real sheet-node locations after the payload has passed YAML checks."""
+    root = yaml.compose(payload, Loader=yaml.SafeLoader)
+    if not isinstance(root, yaml.MappingNode):
+        return []
+    for key, value in root.value:
+        if key.value != "sheets" or not isinstance(value, yaml.SequenceNode):
+            continue
+        return [start + 1 + sheet.start_mark.line for sheet in value.value]
+    # A YAML merge may provide sheets indirectly. The owning fence remains an
+    # honest fallback location; the message still identifies the sheet.
+    return []
+
+
+def _rich_table(content: list[str], start: int, findings: list[Finding],
+                links: list[tuple[str, int, str]]) -> None:
+    payload = _rich_table_payload(content)
+    data = _load_yaml(payload, start + 1, "TABLE_YAML", findings)
+    if data is _YAML_ERROR:
+        return
+    if not isinstance(data, dict):
+        findings.append(Finding("error", "TABLE_TYPE", start, "Rich Table 必须是 YAML 映射。"))
+        return
+    version = data.get("version")
+    if type(version) is not int or version not in (2, 3):
+        findings.append(Finding("error", "TABLE_VERSION", start,
+                                "Rich Table version 必须为整数 2（单表）或 3（多工作表）。"))
+    if version != 3 or type(version) is not int:
+        _rich_table_sheet(data, start, "Rich Table", findings, links)
+        return
+    sheets = data.get("sheets")
+    if not isinstance(sheets, list) or not sheets:
+        findings.append(Finding("error", "TABLE_STRUCTURE", start,
+                                "Rich Table v3 的 sheets 必须为非空列表。"))
+        return
+    _table_visible_links(data, start, "Rich Table 工作簿", links)
+    locations = _sheet_source_lines(payload, start)
+    for index, sheet in enumerate(sheets):
+        location = locations[index] if index < len(locations) else start
+        context = f"Rich Table 工作表 {index + 1}"
+        if not isinstance(sheet, dict):
+            findings.append(Finding("error", "TABLE_SHEET_TYPE", location,
+                                    f"{context}必须是 YAML 映射。"))
+            continue
+        labels = [f"{key}={sheet[key]}" for key in ("name", "id")
+                  if isinstance(sheet.get(key), str) and sheet[key]]
+        if labels:
+            context += "（" + "，".join(labels) + "）"
+        _rich_table_sheet(sheet, location, context, findings, links)
 
 
 def _object_anchor(lines: list[str], closing: int, prefix: str,
@@ -299,6 +372,13 @@ def _object_anchor(lines: list[str], closing: int, prefix: str,
     if following + 1 < len(lines) and lines[following + 1].strip():
         findings.append(Finding("error", "ANCHOR_SPACING", following + 1,
                                 "对象锚点与后续内容之间须留一空行。"))
+
+
+def _citation_preview_anchor(anchor: str) -> tuple[str, int] | None:
+    match = _CITATION_ANCHOR_COMPACT.fullmatch(anchor) or _CITATION_ANCHOR_NAMESPACED.fullmatch(anchor)
+    if match is None:
+        return None
+    return match[1].lower(), int(match[2])
 
 
 def _bibliography(lines: list[str], findings: list[Finding]) -> None:
@@ -321,12 +401,23 @@ def _bibliography(lines: list[str], findings: list[Finding]) -> None:
             findings.append(Finding("error", "BIBLIOGRAPHY_ANCHOR", first,
                                     "参考文献块 ID 须放在该书目条目的末尾。"))
             return
-        expected = rf"ref-s(?:[A-Za-z0-9]+-)?{number}" if in_si else rf"ref-{number}"
-        if re.fullmatch(expected, anchors[0]):
+        anchor = anchors[0]
+        parsed = _citation_preview_anchor(anchor)
+        if parsed is None:
+            recommended = "sref-N 或 sref-src<source_token>-N" if in_si else "ref-N"
+            findings.append(Finding(
+                "warning", "BIBLIOGRAPHY_PLUGIN_COMPAT", first,
+                f"块 ID ^{anchor} 保留，但 Citation Preview 1.3.0 不识别此形式。"
+                f"新建书目采用 {recommended}；不要据此重命名已有锚点或改写链接。",
+            ))
             return
-        namespace = "ref-sN 或 ref-s<source_token>-N" if in_si else "ref-N"
-        findings.append(Finding("error", "BIBLIOGRAPHY_NAMESPACE", first,
-                                f"书目 {number} 的锚点应使用 {namespace}，N 对应本书目序号。"))
+        if parsed[1] == number:
+            return
+        findings.append(Finding(
+            "warning", "BIBLIOGRAPHY_NUMBER", first,
+            f"书目显示序号 {number} 与已有锚点 ^{anchor} 的数字不同；保留 ID 和链接，"
+            "按书目身份及原有映射核对，不自动重编号。",
+        ))
 
     for index, line in enumerate(lines):
         if re.fullmatch(r" {0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]*", line):
@@ -364,7 +455,7 @@ def validate_note(text: str) -> list[Finding]:
     findings: list[Finding] = []
     first = _frontmatter(lines, findings)
     visible = [""] * len(lines)
-    links: list[tuple[str, int]] = []
+    links: list[tuple[str, int, str]] = []
     fence: tuple[str, int, str, int] | None = None
     fence_content: list[str] = []
     equation: int | None = None
@@ -462,10 +553,12 @@ def validate_note(text: str) -> list[Finding]:
             ):
                 findings.append(Finding("error", "TABLE_ANCHOR", index + 1,
                                         "表锚须顶格独占 Rich Table 闭合围栏的下一行。"))
-        links.extend(_links(line, index + 1))
-    for target, line in links:
+        links.extend((target, location, "") for target, location in _links(line, index + 1))
+    for target, line, context in links:
         if target not in anchors:
-            findings.append(Finding("error", "MISSING_ANCHOR", line, f"本篇链接目标 ^{target} 未定义。"))
+            prefix = f"{context}：" if context else ""
+            findings.append(Finding("error", "MISSING_ANCHOR", line,
+                                    f"{prefix}本篇链接目标 ^{target} 未定义。"))
     _bibliography(visible, findings)
     return sorted(findings, key=lambda item: (item.line, item.code, item.message))
 

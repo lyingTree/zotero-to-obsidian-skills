@@ -63,15 +63,15 @@ Python 依赖在发布技能目录前安装。pip 失败会返回失败，不显
 
 ## 检查与维护
 
-- **候选笔记检查**：在 [validate_note.py](literature-zotero2obsidian/scripts/validate_note.py) 中设置 `NOTE_PATH` 后运行。只读检查 YAML、块 ID、本篇断链、Rich Table 和公式锚间距，结果附行号；完整范围见[自动检查说明](literature-zotero2obsidian/references/automated-validation.md)。
-- **仓库检查**：在编辑器运行 [scripts/run_checks.py](scripts/run_checks.py)，检查 12 个技能的元数据、相对引用、依赖锁定，并运行隔离回归测试。验证依赖见 [requirements-dev.txt](requirements-dev.txt)。
-- **持续集成**：[GitHub Actions](.github/workflows/validate.yml) 在 Windows/Linux、Python 3.10/3.13 上运行上述检查，并检查安装包装脚本的语法。
+- **候选笔记检查**：在 [validate_note.py](literature-zotero2obsidian/scripts/validate_note.py) 中设置 `NOTE_PATH` 后运行。只读检查 YAML、块 ID、本篇断链、Citation Preview 1.3.0 锚点兼容性、Rich Table 和公式锚间距。支持模板的 `---` 外包裹、v2 单表、v3 全部工作表；逐表检查锁定、主题及表内链接，结果附行号和工作表信息。完整范围见[自动检查说明](literature-zotero2obsidian/references/automated-validation.md)。
+- **仓库检查**：在编辑器运行 [scripts/run_checks.py](scripts/run_checks.py)，检查 12 个技能的元数据、相对引用、依赖锁定，并运行隔离回归测试。Python 验证依赖见 [requirements-dev.txt](requirements-dev.txt)；完整回归另需 Node.js 24 执行四份真实 Templater 模板，无 npm 依赖。模板回归使用内存中的应用/API 替身，不连接真实文献库；仅运行候选笔记校验器不需要 Node.js。
+- **持续集成**：[GitHub Actions](.github/workflows/validate.yml) 在 Windows/Linux、Python 3.10/3.13、Node.js 24 上运行上述检查，并检查安装包装脚本的语法。
 
 静态检查不能证明全文提取、翻译、图片裁剪或 Obsidian 渲染正确。`run.json`、来源映射、候选链和回执仍按[交接约定](literature-zotero2obsidian/references/pipeline-contract.md)由执行 Agent 维护；本仓库没有把这些约定冒充成已实现的自动流水线。
 
 ## 说明
 
 - 项目根、vault 与文献根在运行时确认后写入 `run.json`。
-- 主文与补充材料分别使用书目作用域；多个 SI 来源保留可见原号，用稳定来源标记消除机器 ID 冲突。
+- 新建主文锚点用 `^ref-N`，单份 SI 用 `^sref-N`，多份 SI 用 `^sref-src<source_token>-N`，其中来源标记按[交接约定](literature-zotero2obsidian/references/pipeline-contract.md#补充材料与书目命名空间)固定，保留可见原号。既有 ID 与链接不因新规则而改写；旧 `^ref-sN` 仅提示插件兼容 warning，真实缺锚、重复和断链仍报告错误。
 - 附件采用年份、作者和题名哈希目录；身份或版本冲突时稳定消歧，禁止以同名覆盖不同内容。
 - 两个外部依赖按各自上游许可分发，安装时随目录保留各自的 `LICENSE`。
