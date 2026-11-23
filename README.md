@@ -1,5 +1,7 @@
 # zotero-to-obsidian-skills
 
+版本：**v1.0.0**
+
 将 Zotero 文献全文处理为 Obsidian 中文文献笔记的 Agent 技能包，由 12 个 `literature-*` 技能加 2 个依赖技能组成。适用于支持 Agent Skills（`SKILL.md`）的宿主。
 
 ## 组成
