@@ -176,7 +176,7 @@ class CheckRecordsTests(unittest.TestCase):
     def test_inventory_writeback_does_not_create_an_inventory_hash_cycle(self):
         self.prepare(inventory_path=self.inventory)
         updated = json.loads(self.inventory.read_text(encoding="utf-8"))
-        self.assertEqual(updated["checks_path"], str(self.path))
+        self.assertEqual(Path(updated["checks_path"]).resolve(), self.path.resolve())
         self.assertNotIn(str(self.inventory), json.dumps(self.ledger))
         updated["later_annotation"] = "Mutable inventory may be completed later."
         self.inventory.write_text(json.dumps(updated), encoding="utf-8")

@@ -365,7 +365,7 @@ class FigureReviewTests(unittest.TestCase):
         records.prepare_check_records(skills, checks_path, sources={"main": self.pdf}, candidate_path=self.note,
                                       inventory_path=self.inventory_path)
         self.inventory = json.loads(self.inventory_path.read_text(encoding="utf-8"))
-        self.assertEqual(self.inventory["checks_path"], str(checks_path))
+        self.assertEqual(Path(self.inventory["checks_path"]).resolve(), checks_path.resolve())
         codes = self.codes()
         self.assertFalse({code for code in codes if code.startswith("FIG_REVIEW_")}, codes)
         self.assertNotIn("FILE_HASH_MISMATCH", codes)
