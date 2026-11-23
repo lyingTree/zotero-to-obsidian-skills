@@ -16,6 +16,7 @@ from contextlib import ExitStack
 from pathlib import Path
 import re
 import sys
+from time import monotonic
 from typing import Callable, Mapping, Sequence
 
 import fitz
@@ -27,6 +28,7 @@ WORK_DIRECTORY: Path | None = None
 GLOSSARY_PATH: Path | None = None
 RENDER_DPI = 144
 Progress = Callable[[int, int, str], None]
+_LAST_PROGRESS_TIME = 0.0
 PDF_BBOX_COORDINATES = {
     "space": "pdf_page", "unit": "pt", "origin": "top_left",
     "x_axis": "right", "y_axis": "down", "rotation": "unrotated",
@@ -77,9 +79,16 @@ def file_record(path: Path) -> dict:
 
 
 def progress_bar(done: int, total: int, label: str) -> None:
+    """Show ongoing work without printing one line for every small check."""
+    global _LAST_PROGRESS_TIME
+    now = monotonic()
+    if done not in (1, total) and now - _LAST_PROGRESS_TIME < 0.25:
+        return
+    _LAST_PROGRESS_TIME = now
     width = 24
     filled = width * done // max(total, 1)
-    print(f"[{'#' * filled}{'.' * (width - filled)}] {done}/{total} {label}", flush=True)
+    print(f"\r[{'#' * filled}{'.' * (width - filled)}] {done}/{total} {label}",
+          end="\n" if done == total else "", flush=True)
 
 
 def _image_tools():

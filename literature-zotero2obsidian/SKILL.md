@@ -9,7 +9,7 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，不审查应用界面，不要求点击交互、阅读视图、插件显示或原生缓存检查。
 
-完整生成任务先读[分阶段执行路线](references/execution-plan.md)。每次只推进一个阶段；阶段清单用于定位工作，具体内容规则仍以对应子技能为准。
+完整生成任务先读[完整候选的开始与收尾](references/complete-workflow.md)，用 `initialize_workflow()` 建立实际来源材料与全量待核清单；结束前用 `inspect_workflow()` 列出剩余目标。再沿[分阶段执行路线](references/execution-plan.md)逐阶段处理，具体内容规则仍以对应子技能为准。
 
 ## 范围与约束
 
@@ -64,6 +64,8 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 - [PIPE-C49] 完整生成任务在结束前逐页核对来源覆盖。
 - [PIPE-C50] 完整生成任务在结束前逐对象核对来源内容。
 - [PIPE-C51] 只生成离线候选时按[离线候选模式](references/project-profile.md#离线候选模式)规划路径。
+- [PIPE-C52] 完整 PDF 生成任务使用[完整流程入口](references/complete-workflow.md)初始化工作记录。
+- [PIPE-C53] 完整 PDF 候选交付前运行 `inspect_workflow()`。
 
 ## 十一个子 skill
 
@@ -123,3 +125,4 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 - [ ] [PIPE-A24] 排版提示均有逐条处置记录。 <!-- check-type: offline_outcome -->
 - [ ] [PIPE-A25] 每页来源均有覆盖核对记录。 <!-- check-type: offline_outcome -->
 - [ ] [PIPE-A26] 每个来源对象均有内容核对记录。 <!-- check-type: offline_outcome -->
+- [ ] [PIPE-A27] 完整流程报告没有未解决的文件记录缺项。 <!-- check-type: offline_outcome -->

@@ -155,6 +155,24 @@ PDF 图像先使用 `prepare_sources(...)` 生成的 `image_index` 选择实际�
 
 尚未查看页图时，冲突决定保持 `pending`；实际字形仍不可辨时保留候选读法与未决原因。不要为了填满示例伪造可见文字或查看记录。
 
+**连字符与排印差异的对源处理。** 文字层出现软连字符 U+00AD、可见连字符或相邻排印符号时，先定位原始文字片段及对应页图区域，再辨明是版面断词、原词连字符、数学负号还是范围连接线。保留原始解析文件；以可见页为依据确定转写，并把原文字层、页图读法和裁决原因登记到该来源单元。原刊自身可辨的拼写或排印疑点保留原样；字形不清时保留未决，不靠词典、另一篇书目或全局替换补正。
+
+软连字符与可见连字符同处一个片段时，把整个待核片段一次替换为已核定的读法。不能先把软连字符转换成 `-`，再叠加一个可见连字符。原页有两个可见字符也不能机械去重。涉及跨行断词时，证据区域覆盖词的两部分，裁决原因写明为何保留或去掉该处连字符；不将这一处裁决扩散到全文同形片段。
+
+[format_helpers.py](../literature-zotero2obsidian/scripts/format_helpers.py) 的 `apply_visible_text_edits(...)` 只应用调用方已经指定的修订。每条 `resolved_edits` 记录包含 `id`、原始文本的 Unicode 码点区间 `start` / `end`（右端不含）、`expected_text`、`visible_page` 和 `decision`。`visible_page` 保存实际页图的最小文件引用、页码、`bbox`、坐标系及核定转写 `text`；`decision` 保存 `status="resolved"`、相同的 `selected_text`、原因、查看人和该查看人提供的 `observed` 声明。调用方负责真实查看行为与读法正确性，函数不认证这两项。
+
+```python
+from format_helpers import apply_visible_text_edits
+
+result = apply_visible_text_edits(
+    text_file=raw_text_file_record, edits=resolved_edits,
+)
+source_unit.setdefault("text_visual_conflicts", []).extend(result["text_visual_conflicts"])
+candidate_text = result["text"]
+```
+
+函数核对证据文件哈希、原片段及区间不重叠，再基于同一原始快照一次组装结果；它不写回原始文件，不按词典生成修订，也不自动删除软连字符。缺少页图证据、待决读法或未声明实际查看时不应用修改，保留来源映射中的待核记录。以上帮助复用 EXT-C30–C33、EXT-C65–C66、EXT-C77–C80 与 EXT-A22 的逐项验收。
+
 作者单元使用 `affiliation_numbers` 保存可见单位编号，用 `affiliation_units` 保存对应的单位单元 ID。两个数组按同一顺序对应；各单位单元属于同一实际来源。整行作者框与作者姓名不能代替这一关系。下例中的人名和单位均为虚构：
 
 ```json

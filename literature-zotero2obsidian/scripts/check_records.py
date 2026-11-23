@@ -931,11 +931,11 @@ def validate_check_records(path: Path, *, progress: Progress | None = None) -> C
                 report.findings.append(CheckFinding("CHECK_EVIDENCE_UNKNOWN", identity, f"Unknown evidence ID: {ref}"))
             elif ref not in valid_evidence:
                 report.findings.append(CheckFinding("CHECK_EVIDENCE_UNUSABLE", identity, f"Evidence has no valid current file/location binding: {ref}"))
-        if isinstance(status, str) and status in {"passed", "failed"}:
+        if isinstance(status, str) and status in {"passed", "failed", "not_applicable"}:
             actual_refs = [evidence[ref] for ref in refs if ref in valid_evidence]
             if not actual_refs:
-                report.findings.append(CheckFinding("CHECK_RESULT_EVIDENCE_MISSING", identity, "Passed/failed results require an existing, hash-bound evidence location."))
-            if isinstance(requirement_type, str) and requirement_type in {"execution_process", "live_environment"} and not any(
+                report.findings.append(CheckFinding("CHECK_RESULT_EVIDENCE_MISSING", identity, "Passed, failed and inapplicable results require an existing, hash-bound evidence location."))
+            if status != "not_applicable" and isinstance(requirement_type, str) and requirement_type in {"execution_process", "live_environment"} and not any(
                     _observation_valid(entry, requirement_type, environment_kind) for entry in actual_refs):
                 code = ("CHECK_PROCESS_NOT_OBSERVED" if requirement_type == "execution_process"
                         else "CHECK_UI_NOT_OBSERVED" if environment_kind == "actual_ui" else "CHECK_ENVIRONMENT_NOT_OBSERVED")

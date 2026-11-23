@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 import hashlib
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -31,6 +32,22 @@ OCCURRENCE_KINDS = (
     "modifiers", "strength", "numbers", "units", "symbols", "formulas",
     "citation_labels", "citation_claims", "table_cells",
 )
+OCCURRENCE_FIELDS = {
+    "claims": ("source_claim", "candidate_claim"),
+    "directions": ("source_relation", "candidate_relation"),
+    "negations": ("source_scope", "candidate_scope"),
+    "conditions": ("source_condition", "candidate_condition"),
+    "antecedents": ("source_candidates", "candidate_candidates"),
+    "modifiers": ("source_candidates", "candidate_candidates"),
+    "strength": ("source_strength", "candidate_strength"),
+    "numbers": ("source_expression", "candidate_expression", "difference_type"),
+    "units": ("source_expression", "candidate_expression", "source_quantity", "candidate_quantity"),
+    "symbols": ("source_expression", "candidate_expression", "source_definition", "candidate_definition"),
+    "formulas": ("source_expression", "candidate_expression", "source_structure", "candidate_structure"),
+    "citation_labels": ("source_label", "candidate_label", "source_target", "candidate_target"),
+    "citation_claims": ("source_claim", "candidate_claim", "source_target", "candidate_target"),
+    "table_cells": ("source_cell", "candidate_cell"),
+}
 
 
 def progress_bar(done: int, total: int, label: str) -> None:
@@ -56,6 +73,37 @@ def _pending() -> dict:
     return {"status": "pending", "reason": None, "evidence": []}
 
 
+def bind_review_file(path: Path) -> dict:
+    """Return the actual path/SHA-256 pair; do not assign a review status."""
+    return _file_record(path)
+
+
+def bind_review_evidence(path: Path, locator: Mapping) -> dict:
+    """Bind real file bytes to an explicitly supplied location, without judging it.
+
+    The validator checks that the location resolves. A binding does not establish
+    that the content was read, supports a claim, or warrants a passed status.
+    """
+    if not isinstance(locator, Mapping) or not locator:
+        raise ValueError("Supply a structured evidence locator")
+    return {**_file_record(path), "locator": deepcopy(dict(locator))}
+
+
+def new_occurrence(occurrence_id: str, kind: str, *, source_span: Mapping) -> dict:
+    """Prepare one explicitly identified occurrence; all judgments stay pending."""
+    if not isinstance(occurrence_id, str) or not occurrence_id.strip():
+        raise ValueError("Supply a nonempty occurrence ID")
+    if kind not in OCCURRENCE_KINDS:
+        raise ValueError(f"Unknown occurrence kind: {kind}")
+    if not isinstance(source_span, Mapping) or not source_span:
+        raise ValueError("Supply the actual source span")
+    return {
+        "id": occurrence_id,
+        "source_span": deepcopy(dict(source_span)), "candidate_span": None,
+        **{name: None for name in OCCURRENCE_FIELDS[kind]}, **_pending(),
+    }
+
+
 def _index(rows: object, label: str) -> dict:
     if not isinstance(rows, list):
         raise ValueError(f"{label} must be a list")
@@ -68,6 +116,88 @@ def _index(rows: object, label: str) -> dict:
             raise ValueError(f"{label} requires unique nonempty IDs")
         result[identity] = row
     return result
+
+
+def _valid_box(box: object) -> bool:
+    return (isinstance(box, list) and len(box) == 4
+            and all(type(value) in (int, float) and math.isfinite(value) for value in box)
+            and box[0] < box[2] and box[1] < box[3])
+
+
+def expand_source_locations(unit: Mapping, source: Mapping) -> list[dict]:
+    """Resolve actual inventory block IDs without changing scope or source bytes.
+
+    Preserve page/basis/blocks. For block references, add exact block_locations;
+    where a span has no bbox/quote, derive them solely from those named blocks.
+    This does not infer reading order beyond the supplied ID order, paragraph
+    completeness, applicability or meaning. The caller must bind the inventory
+    and source files; prepare_translation_review does so using actual SHA-256.
+    """
+    if not isinstance(unit, Mapping) or not isinstance(source, Mapping):
+        raise ValueError("Supply inventory unit and source objects")
+    identity = unit.get("id")
+    if not isinstance(unit.get("source"), str) or unit["source"] != source.get("id"):
+        raise ValueError(f"{identity}: unit must belong to the supplied source")
+    locations = unit.get("evidence")
+    if not isinstance(locations, list) or not locations:
+        raise ValueError(f"{identity}: source locations are required")
+    pages = None
+    expanded = []
+    for location in locations:
+        if not isinstance(location, dict) or not location:
+            raise ValueError(f"{identity}: source locations must be objects")
+        page = location.get("page")
+        if type(page) is not int or page < 1:
+            raise ValueError(f"{identity}: each source location needs a positive PDF page")
+        result = deepcopy(location)
+        if "blocks" in location:
+            ids = location["blocks"]
+            if ids == [] and (_valid_box(location.get("bbox"))
+                              or isinstance(location.get("quote"), str) and location["quote"].strip()):
+                expanded.append(result)
+                continue  # A directly located image/visual span need not name text blocks.
+            if (not isinstance(ids, list) or not ids
+                    or any(not isinstance(key, str) or not key.strip() for key in ids)
+                    or len(ids) != len(set(ids))):
+                raise ValueError(f"{identity}: block IDs must be a unique nonempty string list")
+            if pages is None:
+                raw_pages = source.get("pages")
+                if not isinstance(raw_pages, list):
+                    raise ValueError(f"{identity}: source.pages is required to resolve block IDs")
+                pages = {}
+                for row in raw_pages:
+                    if not isinstance(row, dict) or type(row.get("page")) is not int or row["page"] < 1 or row["page"] in pages:
+                        raise ValueError(f"{identity}: source page records require unique positive page numbers")
+                    pages[row["page"]] = row
+            if page not in pages:
+                raise ValueError(f"{identity}: page {page} has no source block index")
+            indexed = _index(pages[page].get("blocks"), f"{identity}: page {page} blocks")
+            unknown = set(ids) - indexed.keys()
+            if unknown:
+                raise ValueError(f"{identity}: unknown blocks on page {page}: {sorted(unknown)}")
+            block_locations = []
+            for block_id in ids:
+                block = indexed[block_id]
+                if not _valid_box(block.get("bbox")):
+                    raise ValueError(f"{identity}: block {block_id} has no valid original bbox")
+                item = {"block_id": block_id, "page": page, "bbox": deepcopy(block["bbox"])}
+                if isinstance(block.get("text"), str) and block["text"].strip():
+                    item["quote"] = block["text"]
+                block_locations.append(item)
+            result["block_locations"] = block_locations
+            if not _valid_box(result.get("bbox")):
+                boxes = [row["bbox"] for row in block_locations]
+                result["bbox"] = [min(box[0] for box in boxes), min(box[1] for box in boxes),
+                                  max(box[2] for box in boxes), max(box[3] for box in boxes)]
+            if not isinstance(result.get("quote"), str) or not result["quote"].strip():
+                quotes = [row["quote"] for row in block_locations if "quote" in row]
+                if quotes:
+                    result["quote"] = "\n".join(quotes)
+        has_quote = isinstance(result.get("quote"), str) and bool(result["quote"].strip())
+        if not _valid_box(result.get("bbox")) and not has_quote:
+            raise ValueError(f"{identity}: each source location needs a valid bbox, nonempty quote, or resolvable blocks")
+        expanded.append(result)
+    return expanded
 
 
 def new_term_candidate(
@@ -149,19 +279,7 @@ def prepare_translation_review(
         source_id = unit.get("source")
         if not isinstance(source_id, str) or source_id not in sources:
             raise ValueError(f"{identity}: source identity is missing")
-        locations = unit.get("evidence")
-        if not isinstance(locations, list) or not locations or any(not isinstance(x, dict) or not x for x in locations):
-            raise ValueError(f"{identity}: source locations are required")
-        for location in locations:
-            if type(location.get("page")) is not int or location["page"] < 1:
-                raise ValueError(f"{identity}: each source location needs a positive PDF page")
-            box = location.get("bbox")
-            has_box = (isinstance(box, list) and len(box) == 4
-                       and all(type(value) in (int, float) for value in box)
-                       and box[0] < box[2] and box[1] < box[3])
-            has_quote = isinstance(location.get("quote"), str) and bool(location["quote"].strip())
-            if not has_box and not has_quote:
-                raise ValueError(f"{identity}: each source location needs a valid bbox or nonempty quote")
+        locations = expand_source_locations(unit, sources[source_id])
         if source_id not in source_bindings:
             source = sources[source_id]
             if not isinstance(source.get("path"), str) or not source.get("sha256"):

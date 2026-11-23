@@ -172,7 +172,8 @@ class DeliveryReport:
     evidence_boundary: str = (
         "File provenance, inventory accounting and candidate targets are checked. "
         "The completeness of human classifications, visual reading, translation, "
-        "scientific meaning and live Obsidian behavior require independent review."
+        "and scientific meaning require comparison against the original files. "
+        "This index validator alone does not check complete-workflow record presence."
     )
 
     @property

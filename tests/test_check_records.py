@@ -456,6 +456,10 @@ class CheckRecordsTests(unittest.TestCase):
         self.record("AC-A01").update(status="not_applicable", reason="", applicability_condition="")
         self.assertTrue({"CHECK_NA_CONDITION_MISSING", "CHECK_REASON_MISSING"} <= self.codes())
         self.record("AC-A01").update(reason="The source contains no video.", applicability_condition="This rule only applies to a delivered video; none is in the declared source scope.")
+        self.assertIn("CHECK_RESULT_EVIDENCE_MISSING", self.codes())
+        self.record("AC-A01")["evidence"] = [self.bind(
+            "source-page", path=self.pdf, locator={"kind": "pdf_pages", "start": 1, "end": 1},
+            evidence_type="source_location")]
         self.assertTrue(self.report().structurally_consistent)
 
     def test_evidence_can_be_shared_without_collapsing_atomic_records(self):

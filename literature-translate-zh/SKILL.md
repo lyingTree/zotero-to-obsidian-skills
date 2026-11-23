@@ -20,7 +20,8 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 5. 按[逐段操作顺序](references/translation-review.md#逐段操作顺序)逐项回查完整来源段。
 6. 将每个专业术语的检索与取舍记录写入对应来源块。
 7. 将术语采用决定汇入 `terminology.json`。
-8. 按[验收证据位置](references/translation-review.md#验收证据位置)填写各 ID 的实际结果。
+8. 运行[记录检查函数](scripts/validate_translation_review.py)，按每条诊断补齐本次实际记录。
+9. 按[验收证据位置](references/translation-review.md#验收证据位置)填写各 ID 的实际结果。
 
 ## 约束
 
@@ -139,6 +140,10 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 ### 翻译复核记录
 
 使用[准备函数](scripts/prepare_translation_review.py)生成来源块骨架，或按同一结构手工记录。骨架不自动选择应译范围，不自动提取术语，不填写语义通过。完整操作、逐表达式定位、状态条件及各验收 ID 的 JSON 位置见[逐段翻译复核操作](references/translation-review.md)。
+
+每次只填一个来源块的一项目标。准备函数会把清单内合法的 `page/basis/blocks` 定位展开为同一页真实 block 的原始文字和边界框，保留原 ID；它不判断这些 block 是否覆盖完整段落。完成填写后调用 `validate_translation_review(path, inventory_path=None, candidate_path=None)`，依次处理其 `findings` 中的具体单元与目标。`records_ready` 仅检查记录是否齐备且无尚未处理的申报状态，`source_fidelity` 始终为 `not_assessed`。不要把检查器无发现改写为译义通过，也不要用它生成不适用理由。
+
+需要填写范例时读取[单事实脚本示例](references/fill_review_example.py)。示例只为两句虚构文本记录一个已核方位关系；其余项目保持待核。同一事实可以被多个明确单目标 ID 引用，每个 ID 仍分别写范围、理由和结果。
 
 ## 产物
 

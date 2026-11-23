@@ -159,6 +159,24 @@ description: 为文献正文中的图、表、公式和引文建立指向本篇�
 - [LINK-C132] 图内数据表的独立副本须有独立表锚。
 - [LINK-C133] 全新图内数据表锚使用 `^tbl-fig-<来源token>-<图原编号token>`。
 
+### 图内表新建锚帮助
+
+[format_helpers.py](../literature-zotero2obsidian/scripts/format_helpers.py) 中的 `new_figure_table_anchor(...)` 只生成 LINK-C133 的全新锚。来源 token 和图原编号 token 均由调用方按已有来源登记提供；函数接受 ASCII 字母数字 token，不猜来源身份，不从规范化后的显示号反推原号。
+
+```python
+from format_helpers import new_figure_table_anchor
+
+table_anchor = verified_existing_anchor
+if table_anchor is None:
+    table_anchor = new_figure_table_anchor(
+        source_token=registered_source_token,
+        figure_number_token=registered_original_number_token,
+        occupied_ids=registered_block_ids,
+    )
+```
+
+返回值严格为 `^tbl-fig-<来源token>-<图原编号token>`。新 ID 已被占用时函数报错，不自动加后缀、不改动旧 ID 或调用。已有有效表锚由调用方直接复用；新建函数不承担迁移。生成后仍按 LINK-C76–C84 核对完整表块范围和锚点位置。
+
 ## 产物
 
 - drafts/09-internal.md、link-map.json 的 anchors、internal_links 及本步 unresolved。

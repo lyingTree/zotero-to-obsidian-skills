@@ -23,7 +23,7 @@
 |---|---|
 | `not_verified` | 默认状态；写明尚未核验的原因。未观察到的执行过程保持此状态。 |
 | `blocked` | 写明实际阻断原因，例如本次必需的来源文件无法读取。 |
-| `not_applicable` | 写明实际 `applicability_condition` 和理由，不能按关键词自动判定。 |
+| `not_applicable` | 写明实际 `applicability_condition` 和理由，并引用据以判定该条件的任务范围或来源证据；不能按关键词自动判定。 |
 | `passed` / `failed` | 引用至少一处已存在、哈希匹配、位置有效的实际证据；记录者仍须对该单项结论负责。 |
 
 本流程的 `requirement_type` 使用 `execution_process` 或 `offline_outcome`。未分类时保留 `unclassified`，不得填已决结论。分类来自调用脚本逐 ID 的明确映射，或规则行末的 `check-type` 声明；脚本不根据规则关键词替人判断。

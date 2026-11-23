@@ -17,7 +17,7 @@
 
 ## 逐项台账贯穿各阶段
 
-开始时调用 [`check_records.prepare_check_records(...)`](../scripts/check_records.py)，从实际技能文件生成全量 `catalog` 与待填 `checks`。默认待填集合覆盖各技能及 references 中全部 `A` 编号验收；追踪约束时使用 `additional_ids` 明确加入，或选择 `rule_selection="all"`。每个验收 ID 从 `not_verified` 开始，不因阶段结束而整体转为通过。
+完整 PDF 任务先调用[完整流程入口](complete-workflow.md)的 `initialize_workflow()`，它保存逐页材料并调用 [`check_records.prepare_check_records(...)`](../scripts/check_records.py)，从实际技能文件生成全量 `catalog` 与待填 `checks`。默认待填集合覆盖各技能及 references 中全部 `A` 编号验收；追踪约束时使用 `additional_ids` 明确加入，或选择 `rule_selection="all"`。每个验收 ID 从 `not_verified` 开始，不因阶段结束而整体转为通过。初始化已经生成的逐页材料直接复用，不重复调用 `prepare_sources()` 覆盖。
 
 来源文件从准备时绑定实际哈希。最初没有候选时可暂不传候选路径；在阶段 6 前，把已存在的最终候选用 `bind_file()` 得到的路径和哈希填入 `bindings.candidates`。缺少候选绑定时校验会诊断，但这不禁止继续生成候选。每次候选变化都重新核验受影响记录，不通过更新哈希掩盖旧证据失效。已有台账默认不会被 `prepare_check_records()` 覆盖；需要重新生成时先保留旧版本及其实际结论。
 
@@ -25,7 +25,7 @@
 
 过程与文件结果分别登记。只看到最终文件不能补写“已经执行”的过程结论；没有观察到的过程保持 `not_verified`。文件内容则由当前执行者逐项对源核对。只生成候选时，实际写库步骤按具体条件记为不适用。此流程不安排应用界面审查。
 
-阶段 6 固定稳定的源页、对象记录和检查报告，再引用其哈希。`inventory_path` 可让准备函数回写 `checks_path`；inventory、manifest、台账自身仍可能改写，不能互相作为正在变化的哈希证据造成循环。最终由主交付校验器绑定台账文件。阶段 7 先完成执行者自己的逐项对源核对，再检查 `offline_records_ready`；不能只确认台账格式合法就结束。
+阶段 6 固定稳定的源页、对象记录和检查报告，再引用其哈希。`inventory_path` 可让准备函数回写 `checks_path`；inventory、manifest、台账自身仍可能改写，不能互相作为正在变化的哈希证据造成循环。最终由主交付校验器绑定台账文件。阶段 7 先完成执行者自己的逐项对源核对，再检查 `offline_records_ready`。最后运行 `inspect_workflow()`，使整份台账或交接文件未生成时也能明确报出缺项；不能只确认一个检查器零错误就结束。
 
 ## 阶段约束
 
