@@ -186,7 +186,7 @@ class InstallerTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[:4], [config.python_executable, "-m", "pip", "install"])
         self.assertEqual(command.count("-r"), 2)
-        self.assertEqual(Path(command[5]), self.source.joinpath("literature-zotero2obsidian", "requirements.txt"))
+        self.assertTrue(Path(command[5]).samefile(self.source.joinpath("literature-zotero2obsidian", "requirements.txt")))
 
     def test_mid_publish_failure_rolls_back_every_skill(self) -> None:
         before = self.existing_skills()
