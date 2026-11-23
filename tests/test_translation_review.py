@@ -604,10 +604,14 @@ class TranslationRecordValidationTests(TranslationReviewFixture):
         ledger["bindings"]["candidate"]["sha256"] = digest(self.candidate)
         ledger["units"]["paragraph-b"]["occurrences"]["claims"][0]["candidate_claim"] = "操作员检查了红色快门。"
 
+        candidate_identity = self.candidate.resolve()
+        candidate_sha256 = digest(self.candidate)
+
         def rebind_claimed_evidence(value):
             if isinstance(value, dict):
-                if value.get("path") == str(self.candidate):
-                    value["sha256"] = digest(self.candidate)
+                evidence_path = value.get("path")
+                if isinstance(evidence_path, str) and Path(evidence_path).resolve() == candidate_identity:
+                    value["sha256"] = candidate_sha256
                 for child in value.values():
                     rebind_claimed_evidence(child)
             elif isinstance(value, list):
@@ -616,7 +620,7 @@ class TranslationRecordValidationTests(TranslationReviewFixture):
 
         rebind_claimed_evidence(ledger)
         report = self.validate(ledger)
-        self.assertTrue(report.records_ready)
+        self.assertTrue(report.records_ready, report.to_dict())
         self.assertEqual(report.source_fidelity, "not_assessed")
         self.assertTrue(report.independent_review_required)
 

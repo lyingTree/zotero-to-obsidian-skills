@@ -317,7 +317,7 @@ class CompleteWorkflowIntegrationTests(unittest.TestCase):
 
     def test_candidate_changed_after_binding_is_rejected_without_writing_back(self):
         f = self.fixture
-        f.candidate.write_text(f.candidate.read_text() + "\nA later candidate change.\n", encoding="utf-8")
+        f.candidate.write_text(f.candidate.read_text(encoding="utf-8") + "\nA later candidate change.\n", encoding="utf-8")
         before = f.current_file_hashes()
         self.assert_rejected(f.inspect())
         self.assertEqual(before, f.current_file_hashes())
