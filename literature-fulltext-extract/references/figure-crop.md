@@ -86,3 +86,47 @@
 - [ ] [FIG-A23] 最终图片哈希已登记。
 - [ ] [FIG-A24] 视觉证据位置已登记。
 - [ ] [FIG-A25] 最终嵌入图片与已验资源哈希一致。
+
+## 可执行的逐图核对台账
+
+- [FIG-C47] 新生成流程建立 `figure-reviews.json`。
+- [FIG-C48] 新核对条目的初始状态为 `pending`。
+- [FIG-C49] 不适用条目登记具体适用条件。
+- [FIG-C50] 最终图片文件引用只含 `path` 与 `sha256`。
+- [FIG-C51] 来源定位保存在独立的 `source_locations` 字段。
+- [FIG-C52] 交付清单绑定核对台账的最终哈希。
+- [FIG-C53] 未决核对条目阻断对应提交。
+- [FIG-C54] 不把自填结果视为独立视觉核验。
+- [FIG-C55] 每幅图的每个 FIG-A 目标只登记一次。
+- [FIG-C56] 台账中的图身份对应实际清单图单元。
+- [FIG-C57] 每条核对结果登记理由。
+- [FIG-C58] 每条核对结果登记证据引用。
+- [FIG-C59] 图台账绑定独立的库存快照。
+- [FIG-C60] 已有库存快照不得覆盖。
+- [FIG-C61] 图台账登记当前库存文件的身份。
+- [FIG-C62] 当前库存的非工具指针内容与快照一致。
+
+完整调用见[交付检查中的逐图视觉核对记录](../../literature-zotero2obsidian/references/delivery-checks.md#逐图视觉核对记录)。`prepare_figure_reviews(...)` 从本次 `source-inventory.json` 的 `kind: figure` 单元与最终资产映射生成台账；每幅图保留 FIG-A01 至 FIG-A28 的独立条目。生成器不会替模型填写通过结果，也不会自动删除它猜测不适用的项目。
+
+图框坐标采用 PyMuPDF 的未旋转页面空间。单位为 PDF 点，原点是页面左上角，x 轴向右，y 轴向下。图单元的每个 bbox 记录以下完整声明：
+
+```json
+{
+  "space": "pdf_page",
+  "unit": "pt",
+  "origin": "top_left",
+  "x_axis": "right",
+  "y_axis": "down",
+  "rotation": "unrotated"
+}
+```
+
+该声明放在 `coordinate_system`，bbox 顺序为 `[x0, y0, x1, y1]`。渲染图片的像素坐标不能直接填入 bbox；从像素定位时先处理实际 DPI 和页面旋转，再保存为上述页面坐标。检查器会拒绝像素单位、缺失声明及越出源页的框，但坐标声明本身不能证明图框选得正确。直接定位 PDF 原图对象时可记录同页实际 `image_xref`；未使用 bbox 的条目可将 FIG-A22 标为 `not_applicable`，并说明具体条件。
+
+台账将来源 PDF、源页 PNG、最终图片分别绑定到实际文件。最终图片的引用保持最小 `{path, sha256}` 结构；来源页码、bbox、坐标系和原图对象位置保存在来源定位记录。跨页图按来源顺序保留多个定位。
+
+生成器另写不可覆盖的 `figure-inventory-snapshot.json`。台账的 `inventory` 是该快照的最小文件引用，`inventory_path` 单独记录当前实际库存路径。校验时，当前库存与快照除顶层 `terminology_path`、`figure_reviews_path`、`checks_path` 三条工具指针外，内容须严格一致。这三条指针由各自清单绑定校验，因此随后创建其他工具台账不会使图台账误报；来源、单元、嵌套字段或其他内容变化仍会报错。
+
+模型查看源页和最终图件后逐条填写 `status`、`reason`、`evidence`。图中没有面板号、轴线或色标等对象时，用 `not_applicable` 并填写 `applicability_condition`，说明该源图为什么不触发该目标。`pending`、`blocked`、`not_tested`、`ambiguous` 仍是未决状态；`fail` 仍是失败状态。图件修复或替换后重新查看受影响的最终文件，再绑定台账哈希。
+
+结构校验能发现记录缺项和文件变化。即使所有条目被填写为 `pass`，它也不能证明模型实际完成了视觉查看。

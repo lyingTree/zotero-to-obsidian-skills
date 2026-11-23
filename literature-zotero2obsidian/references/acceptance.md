@@ -4,6 +4,59 @@
 
 每个检查 ID 单独记录一个结果。结果取 `passed`、`failed`、`blocked`、`not_verified` 或 `not_applicable`。
 
+使用 [`check_records.py`](../scripts/check_records.py) 保存 `checks.json`。脚本从实际 `skills_root` 下各子技能的 `SKILL.md` 和 `references/*.md` 提取声明；代码示例、注释和行内引用不算新规则。台账中两个集合用途不同：
+
+- `catalog` 保存全部原子约束和验收 ID，以及规则正文、文件位置和实际哈希。
+- `checks` 默认包含所有 `A` 编号验收 ID，包括 references 中的验收项。`rule_selection="all"` 可追踪全部约束与验收；`additional_ids` 可在默认验收集合上加入明确的约束 ID。这两种方式都不能删除默认验收项。
+
+同一 ID 只有一条记录。一个记录的 `scope` 可以列出多页、多段、多张表或多个单元格，但不能把多个 ID 合成一个结果。可按 `skill` 分组填写，或让明确列出的 ID 复用同一证据文件；没有“整项技能通过”操作。执行台账不替代独立评审对全部适用约束和验收规则的核对。
+
+### 单项记录
+
+每条 `checks` 记录包含 `scope`、`status`、`evidence`、`reason`。`scope` 是实际覆盖对象的列表，每个对象写 `object_id` 和 `locator`；例如某来源的第几页、候选的哪个段落或某表的哪些单元格。未分配的范围保留空列表，校验会报告缺项，不用“全文已验”占位。
+
+`evidence` 引用共享证据注册表中的 ID。每个证据项绑定已存在文件的 `path`、实际 `sha256`、`evidence_type` 和 `locator`。支持的定位方式是文本行区间、PDF 页区间、JSON Pointer、图像像素区域或完整文件；脚本检查位置确实存在。多个检查可以引用同一份稳定报告的不同位置，无须复制其正文。
+
+| 状态 | 记录要求 |
+|---|---|
+| `not_verified` | 默认状态；写明尚未核验的原因。未观察到的执行过程保持此状态。 |
+| `blocked` | 写明实际阻断原因，例如真实应用环境不可用。 |
+| `not_applicable` | 写明实际 `applicability_condition` 和理由，不能按关键词自动判定。 |
+| `passed` / `failed` | 引用至少一处已存在、哈希匹配、位置有效的实际证据；记录者仍须对该单项结论负责。 |
+
+`requirement_type` 明确区分 `execution_process`、`offline_outcome` 和 `live_environment`。未分类时保留 `unclassified`，不得填已决结论。分类来自调用脚本逐 ID 的明确映射，或规则行末的 `check-type` 声明；脚本不根据规则关键词替人判断。
+
+过程结论需要 `execution_trace`，其 `observation` 包含 `observed: true`、`basis: direct_event`、观察者及带时区的实际时间。真实环境结论需要 `environment_observation`，并写环境身份。`environment_kind` 明确选择 `actual_ui`、`native_cache` 或 `actual_cli`，证据的 `basis` 必须一致。阅读视图或交互项目使用 `actual_ui`；原生缓存、CLI、静态文件和离屏结果不能替它通过。观察元数据只是可追查的声明，脚本不能认证观察确实发生。
+
+每个界面验收 ID 都保留自己的记录。没有实际界面时，逐 ID 写 `blocked` 或 `not_verified` 及原因；一句“界面待验”只能作为报告摘要。有范围和原因的待验记录是合法记录，不因缺少界面环境阻止完成离线候选。
+
+### 调用与版本绑定
+
+在工作目录的 Python 调用脚本中设置路径和明确的映射，调用公共函数；不需要命令行参数：
+
+```python
+from pathlib import Path
+from check_records import prepare_check_records, validate_check_records
+
+CHECKS_PATH = prepare_check_records(
+    SKILLS_ROOT,
+    WORK_DIR.joinpath("checks.json"),
+    sources=SOURCE_FILES,
+    candidate_path=CANDIDATE_PATH,
+    scopes=SCOPES_BY_ID,
+    requirement_types=TYPES_BY_ID,
+    environment_kinds=ENVIRONMENT_KINDS_BY_ID,
+    inventory_path=WORK_DIR.joinpath("source-inventory.json"),
+)
+report = validate_check_records(CHECKS_PATH)
+```
+
+`SOURCE_FILES` 是来源 ID 到实际 `Path` 的映射；多个候选可使用 `candidates` 映射代替 `candidate_path`。`scopes`、类型和环境映射可分阶段填写；没有提供的范围不会自动补全，也没有任何检查被自动置为通过。可选的 `progress(current, total, stage)` 回调可接入进度条。`inventory_path` 只回写 `checks_path` 指针，不把仍在改写的 inventory 自身哈希写入台账。主交付校验器通过该指针绑定台账文件并核对来源、候选版本。
+
+`bind_file(path)` 返回实际路径与哈希；`bind_evidence(path, locator, evidence_type=..., observation=...)` 创建可复用的证据项，均不改变检查状态。不要把仍在改写的 inventory、manifest 或 `checks.json` 自身用作哈希绑定证据；引用稳定的源页、对象记录或已固定的检查报告。来源、候选或规则改变后保留旧版本记录，重新核验受影响项；不得仅刷新哈希而沿用旧通过结论。
+
+`validate_check_records(path)` 返回带 `findings` 的报告对象，支持 `to_dict()`。缺 ID、重复或未知 ID、空范围、无效位置、文件变化、缺证据结论和缺原因均逐项诊断。`structurally_consistent` 只表示这些结构与绑定检查无错误；`recorded_checks_complete` 只表示记录已填写为已决状态。两者都不证明内容、过程或界面真实通过。报告始终保留 `source_fidelity`、`execution_truth`、`live_behavior` 为 `not_assessed`，仍须独立对源和观察真实环境。
+
 - [AC-C01] 为每个检查 ID 记录适用范围。
 - [AC-C02] 为每个检查 ID 记录证据位置。
 - [AC-C03] 对未执行的检查记录原因。
@@ -150,7 +203,7 @@
 - [ ] [AC-A89] Rich Table 每张工作表的锁定状态实际生效。
 - [ ] [AC-A90] Rich Table 每张工作表的主题实际生效。
 - [ ] [AC-A91] Rich Table 每张工作表中的链接实际可用。
-- [ ] [AC-A92] 本次未核验的界面项目已逐项登记。
+- [ ] [AC-A92] 本次未核验的界面项目已按各自验收 ID 登记待验记录。
 
 ## 结论
 

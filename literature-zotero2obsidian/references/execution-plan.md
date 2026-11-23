@@ -6,14 +6,26 @@
 
 | 阶段 | 当前任务 | 留存产物 | 下一阶段入口 |
 |---|---|---|---|
-| 0 范围 | 确认实际输入与输出范围 | run.json | [项目配置](project-profile.md) |
+| 0 范围 | 确认实际输入与输出范围 | run.json、checks.json 待填骨架 | [项目配置](project-profile.md) |
 | 1 来源 | 建立所有来源的逐页材料 | source-inventory.json、页图、原始文字 | [来源索引说明](delivery-checks.md) |
 | 2 盘点 | 登记来源中的内容单元 | source-map.json、si-map.json | [全文提取](../../literature-fulltext-extract/SKILL.md) |
 | 3 译文 | 按来源块完成中文译稿 | translated.md、si.md | [翻译](../../literature-translate-zh/SKILL.md) |
 | 4 结构 | 组装题头与正文对象 | drafts/06 至 08 | [正文排版](../../literature-body-format/SKILL.md) |
 | 5 链接 | 按来源作用域连接对象 | drafts/09、link-map.json | [篇内链接](../../literature-internal-links/SKILL.md) |
-| 6 交付 | 固定最终候选与资源路径 | final.md、delivery-manifest.json | [自动检查](automated-validation.md) |
-| 7 对源 | 逐页核对最终候选 | 单项检查记录 | [逐篇验收](acceptance.md) |
+| 6 交付 | 固定最终候选与资源路径 | final.md、delivery-manifest.json、台账文件绑定 | [自动检查](automated-validation.md) |
+| 7 对源 | 逐页核对最终候选 | checks.json 逐验收 ID 的实际结论与证据 | [逐篇验收](acceptance.md) |
+
+## 逐项台账贯穿各阶段
+
+开始时调用 [`check_records.prepare_check_records(...)`](../scripts/check_records.py)，从实际技能文件生成全量 `catalog` 与待填 `checks`。默认待填集合覆盖各技能及 references 中全部 `A` 编号验收；追踪约束时使用 `additional_ids` 明确加入，或选择 `rule_selection="all"`。每个验收 ID 从 `not_verified` 开始，不因阶段结束而整体转为通过。
+
+来源文件从准备时绑定实际哈希。最初没有候选时可暂不传候选路径；在阶段 6 前，把已存在的最终候选用 `bind_file()` 得到的路径和哈希填入 `bindings.candidates`。缺少候选绑定时校验会诊断，但这不禁止继续生成候选。每次候选变化都重新核验受影响记录，不通过更新哈希掩盖旧证据失效。已有台账默认不会被 `prepare_check_records()` 覆盖；需要重新生成时先保留旧版本及其实际结论。
+
+执行中把每项的实际对象写入 `scope`，把稳定证据文件与精确 `locator` 登入共享证据表，再由对应检查引用证据 ID。相同证据文件可被多个明确 ID 使用；每个 ID 的适用范围、状态与理由仍分别填写。范围包含多页、多对象时列出这些实际对象，不能把某子技能整体通过当作逐项记录。详见[单项台账契约](acceptance.md#单项记录)。
+
+过程、离线结果和真实环境分别登记。只看到最终文件不能补写“已经执行”的过程结论；没有观察到的过程保持 `not_verified`。真实环境不可用时，相关界面 ID 分别写待验或阻断原因，继续完成有来源依据的离线候选。原生缓存、CLI、离屏输出和阅读视图证据各自说明实际边界。
+
+阶段 6 固定稳定的源页、对象记录和检查报告，再引用其哈希。`inventory_path` 可让准备函数回写 `checks_path`；inventory、manifest、台账自身仍可能改写，不能互相作为正在变化的哈希证据造成循环。最终由主交付校验器绑定台账文件；台账结构校验只检查 ID、位置和文件版本，不替代阶段 7 的独立对源核对。
 
 ## 阶段约束
 

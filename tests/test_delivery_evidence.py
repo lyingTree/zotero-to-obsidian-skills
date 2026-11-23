@@ -122,6 +122,224 @@ class DeliveryEvidenceTests(unittest.TestCase):
         self.assertEqual(report.source_fidelity, "not_assessed")
         self.assertTrue(report.independent_review_required)
 
+    def add_checks(self):
+        self.bind()
+        skills = self.base.joinpath("skills")
+        rule_path = skills.joinpath("literature-example", "SKILL.md")
+        rule_path.parent.mkdir(parents=True)
+        rule_path.write_text("- [ ] [DEMO-A01] 候选题名与来源相符。\n", encoding="utf-8")
+        self.checks_path = self.base.joinpath("checks.json")
+        checker._load_sibling("check_records").prepare_check_records(
+            skills, self.checks_path, sources={"main": self.pdf}, candidate_path=self.note,
+            scopes={"DEMO-A01": [{"object_id": "main-title", "locator": "candidate.md title"}]},
+            requirement_types={"DEMO-A01": "offline_outcome"}, inventory_path=self.inventory_path,
+        )
+        self.inventory = json.loads(self.inventory_path.read_text(encoding="utf-8"))
+
+    def test_per_id_ledger_is_bound_without_claiming_pending_checks_passed(self):
+        self.add_checks()
+        self.assertEqual(self.codes(), set())
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["checks"], checker.source_tools.file_record(self.checks_path))
+        result = checker._load_sibling("check_records").validate_check_records(self.checks_path)
+        self.assertFalse(result.recorded_checks_complete)
+
+    def test_per_id_ledger_diagnostics_reach_delivery_report(self):
+        self.add_checks()
+        ledger = json.loads(self.checks_path.read_text(encoding="utf-8"))
+        ledger["checks"].clear()
+        self.checks_path.write_text(json.dumps(ledger), encoding="utf-8")
+        self.assertIn("CHECK_ID_MISSING", self.codes())
+
+    def test_per_id_ledger_cannot_substitute_a_different_source(self):
+        self.add_checks()
+        other = self.base.joinpath("other.pdf")
+        other.write_bytes(self.pdf.read_bytes())
+        ledger = json.loads(self.checks_path.read_text(encoding="utf-8"))
+        ledger["bindings"]["sources"][0]["path"] = str(other)
+        self.checks_path.write_text(json.dumps(ledger), encoding="utf-8")
+        self.assertIn("CHECK_SOURCE_BINDING", self.codes())
+
+    def test_per_id_ledger_cannot_substitute_a_different_candidate(self):
+        self.add_checks()
+        other = self.base.joinpath("other.md")
+        other.write_bytes(self.note.read_bytes())
+        ledger = json.loads(self.checks_path.read_text(encoding="utf-8"))
+        ledger["bindings"]["candidates"][0]["path"] = str(other)
+        self.checks_path.write_text(json.dumps(ledger), encoding="utf-8")
+        self.assertIn("CHECK_CANDIDATE_BINDING", self.codes())
+
+    def test_per_id_ledger_change_after_binding_is_detected(self):
+        self.add_checks()
+        self.bind()
+        self.checks_path.write_text(self.checks_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        self.assertIn("FILE_HASH_MISMATCH", {item.code for item in checker.validate_delivery(self.manifest_path).findings})
+
+    def add_header_note(self, target, rendered):
+        self.units.append({"id": "header-note", "kind": "metadata", "source": "main", "field": "header_note",
+                           "evidence": [{**self.evidence, "quote": "Published 2025-01-01"}]})
+        self.deliveries.append({"unit": "header-note", "target": {"quote": target}})
+        text = self.note.read_text(encoding="utf-8")
+        self.note.write_text(text.replace("## 1 正文", rendered + "\n\n## 1 正文"), encoding="utf-8")
+
+    def test_header_note_target_may_start_inside_its_real_blockquote(self):
+        self.add_header_note("日期说明：来源载明在线日期。", "> 日期说明：来源载明在线日期。")
+        self.assertEqual(self.codes(), set())
+
+    def test_header_note_cannot_be_satisfied_by_an_author_line(self):
+        self.add_header_note("Author One [email](mailto:one@example.org)", "Author One [email](mailto:one@example.org)")
+        self.assertIn("HEADER_NOTE_LAYOUT", self.codes())
+
+    def test_header_note_target_cannot_include_unquoted_following_prose(self):
+        text = "> 来源说明。\n遗漏引用符的下一行。"
+        self.add_header_note(text, text)
+        self.assertIn("HEADER_NOTE_LAYOUT", self.codes())
+
+    def test_header_note_inside_math_is_not_a_blockquote(self):
+        self.add_header_note("通讯说明", "$$\n> 通讯说明\n$$")
+        self.assertIn("HEADER_NOTE_LAYOUT", self.codes())
+
+    def add_external_url(self, source_label, candidate_label, target="https://example.org/Data/"):
+        url = "https://example.org/Data/"
+        self.units.append({"id": "source-url", "kind": "metadata", "source": "main", "field": "external_url",
+                           "value": url, "display_text": source_label, "evidence": [self.evidence]})
+        rendered = f"[{candidate_label}]({target})"
+        self.deliveries.append({"unit": "source-url", "target": {"quote": rendered}})
+        text = self.note.read_text(encoding="utf-8")
+        self.note.write_text(text.replace("## 1 正文", rendered + "\n\n## 1 正文"), encoding="utf-8")
+
+    def test_bare_source_url_keeps_its_visible_text(self):
+        url = "https://example.org/Data/"
+        self.add_external_url(url, url)
+        self.assertEqual(self.codes(), set())
+
+    def test_bare_source_url_cannot_silently_be_renamed(self):
+        self.add_external_url("https://example.org/Data/", "Data archive")
+        self.assertIn("URL_DISPLAY_TEXT", self.codes())
+
+    def test_source_named_url_label_is_preserved(self):
+        self.add_external_url("Source archive", "Source archive")
+        self.assertEqual(self.codes(), set())
+
+    def test_source_url_path_case_is_not_silently_changed(self):
+        url = "https://example.org/Data/"
+        self.add_external_url(url, url, "https://example.org/data/")
+        self.assertIn("URL_LINK", self.codes())
+
+    def test_source_url_label_accepts_visible_markdown_escape(self):
+        self.add_external_url("data_archive", r"data\_archive")
+        self.assertEqual(self.codes(), set())
+
+    def test_source_url_label_accepts_visible_html_entity(self):
+        self.add_external_url("data & archive", "data &amp; archive")
+        self.assertEqual(self.codes(), set())
+
+    def test_source_url_inside_math_is_not_an_actual_link(self):
+        self.add_external_url("Source archive", "Source archive")
+        target = self.deliveries[-1]["target"]["quote"]
+        text = self.note.read_text(encoding="utf-8")
+        self.note.write_text(text.replace(target, "$" + target + "$"), encoding="utf-8")
+        self.assertIn("URL_LINK", self.codes())
+
+    def add_terminology(self):
+        self.glossary = self.base.joinpath("glossary.md")
+        self.glossary.write_text("| source term | 来源术语 |\n", encoding="utf-8")
+        self.terminology_path = self.base.joinpath("terminology.json")
+        self.terminology = {
+            "schema_version": 1,
+            "glossary": checker.source_tools.file_record(self.glossary),
+            "review_status": "reviewed",
+            "covered_units": [unit["id"] for unit in self.units
+                              if unit["kind"] in {"paragraph", "section", "figure", "table"}
+                              or unit.get("field") in {"title", "header_note"}],
+            "adopted": [],
+            "unlisted": [{"original": "Example study", "translation": "示例研究", "context": "来源题名",
+                          "source_units": ["main-title"], "reason": "术语表未收录", "status": "resolved",
+                          "resolution_basis": "已按来源题名含义核对。"}],
+            "no_unlisted_reason": None,
+        }
+        self.inventory["terminology_path"] = str(self.terminology_path)
+        self.save_terminology()
+
+    def save_terminology(self):
+        self.terminology_path.write_text(json.dumps(self.terminology, ensure_ascii=False), encoding="utf-8")
+
+    def test_source_preparation_records_actual_glossary_fingerprint_as_pending(self):
+        self.glossary = self.base.joinpath("glossary.md")
+        self.glossary.write_text("example: 示例\n", encoding="utf-8")
+        inventory_path = checker.source_tools.prepare_sources(
+            {"main": self.pdf}, self.base.joinpath("glossary-work"),
+            source_roles={"main": "main"}, glossary_path=self.glossary, progress=None)
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        ledger = json.loads(Path(inventory["terminology_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(ledger["glossary"], checker.source_tools.file_record(self.glossary))
+        self.assertEqual(ledger["review_status"], "pending")
+
+    def test_completed_terminology_ledger_is_bound_to_actual_file_hash(self):
+        self.add_terminology()
+        self.assertEqual(self.codes(), set())
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["terminology"], checker.source_tools.file_record(self.terminology_path))
+
+    def test_glossary_changes_are_detected_against_the_used_fingerprint(self):
+        self.add_terminology()
+        self.glossary.write_text("Changed after use\n", encoding="utf-8")
+        self.assertIn("FILE_HASH_MISMATCH", self.codes())
+
+    def test_terminology_pending_state_does_not_count_as_reviewed(self):
+        self.add_terminology()
+        self.terminology["review_status"] = "pending"
+        self.save_terminology()
+        self.assertIn("TERMINOLOGY_PENDING", self.codes())
+
+    def test_terminology_requires_its_schema_version(self):
+        self.add_terminology()
+        self.terminology.pop("schema_version")
+        self.save_terminology()
+        self.assertIn("TERMINOLOGY_VERSION", self.codes())
+
+    def test_terminology_rejects_unknown_schema_version(self):
+        self.add_terminology()
+        self.terminology["schema_version"] = 999
+        self.save_terminology()
+        self.assertIn("TERMINOLOGY_VERSION", self.codes())
+
+    def test_terminology_empty_set_reason_must_be_text(self):
+        self.add_terminology()
+        self.terminology.update(unlisted=[], no_unlisted_reason=123)
+        self.save_terminology()
+        self.assertIn("TERMINOLOGY_EMPTY_REASON", self.codes())
+
+    def test_terminology_coverage_must_include_the_source_table(self):
+        self.add_terminology()
+        self.terminology["covered_units"].remove("table")
+        self.save_terminology()
+        self.assertIn("TERMINOLOGY_COVERAGE", self.codes())
+
+    def test_unlisted_term_requires_its_own_review_reason(self):
+        self.add_terminology()
+        self.terminology["unlisted"][0]["reason"] = ""
+        self.save_terminology()
+        self.assertIn("TERM_REASON", self.codes())
+
+    def test_unresolved_term_is_kept_as_an_unresolved_finding(self):
+        self.add_terminology()
+        self.terminology["unlisted"][0]["status"] = "unresolved"
+        self.save_terminology()
+        self.assertIn("TERM_UNRESOLVED", self.codes())
+
+    def test_terminology_cannot_point_to_a_nonexistent_source_unit(self):
+        self.add_terminology()
+        self.terminology["unlisted"][0]["source_units"] = ["invented-unit"]
+        self.save_terminology()
+        self.assertIn("TERM_SOURCE_UNITS", self.codes())
+
+    def test_empty_unlisted_terms_need_an_actual_applicability_explanation(self):
+        self.add_terminology()
+        self.terminology["unlisted"] = []
+        self.save_terminology()
+        self.assertIn("TERMINOLOGY_EMPTY_REASON", self.codes())
+
     def test_unmapped_source_object_is_not_a_static_zero_error_pass(self):
         self.deliveries = [item for item in self.deliveries if item["unit"] != "formula"]
         self.assertIn("UNIT_NOT_DELIVERED", self.codes())

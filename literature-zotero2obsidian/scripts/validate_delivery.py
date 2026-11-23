@@ -196,6 +196,12 @@ def _normal(text: str) -> str:
     return " ".join(text.split())
 
 
+def _visible_link_label(text: str) -> str:
+    """Decode Markdown punctuation escapes and HTML entities in a link label."""
+    unescaped = re.sub(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])", r"\1", text)
+    return _normal(unescape(unescaped))
+
+
 def _visible(text: str, *, keep_tables: bool = True, keep_table_fences: bool = False) -> str:
     """Mask examples/comments while retaining offsets and actual Rich Table data."""
     lines = text.splitlines(keepends=True)
@@ -257,6 +263,28 @@ def write_delivery_manifest(
         "resource_root": str(root),
         "deliveries": copied,
     }
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    if inventory.get("terminology_path"):
+        terminology_path = Path(inventory["terminology_path"])
+        if not terminology_path.is_absolute():
+            terminology_path = inventory_path.parent.joinpath(terminology_path)
+        manifest["terminology"] = source_tools.file_record(terminology_path)
+    if "figure_reviews_path" in inventory:
+        review_name = inventory["figure_reviews_path"]
+        if not isinstance(review_name, str) or not review_name.strip():
+            raise ValueError("figure_reviews_path must name the actual figure-review ledger")
+        review_path = Path(review_name)
+        if not review_path.is_absolute():
+            review_path = inventory_path.parent.joinpath(review_path)
+        manifest["figure_reviews"] = source_tools.file_record(review_path)
+    if "checks_path" in inventory:
+        checks_name = inventory["checks_path"]
+        if not isinstance(checks_name, str) or not checks_name.strip():
+            raise ValueError("checks_path must name the actual per-ID acceptance ledger")
+        checks_path = Path(checks_name)
+        if not checks_path.is_absolute():
+            checks_path = inventory_path.parent.joinpath(checks_path)
+        manifest["checks"] = source_tools.file_record(checks_path)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest_path
@@ -271,6 +299,9 @@ class _Audit:
         self.sources: dict[str, dict] = {}
         self.pages: dict[tuple[str, int], dict] = {}
         self.rects: dict[tuple[str, int], fitz.Rect] = {}
+        self.figure_rects: dict[tuple[str, int], fitz.Rect] = {}
+        self.image_xrefs: dict[tuple[str, int], set[int]] = {}
+        self.figure_reviews_requested = False
         self.blocks: dict[str, tuple[str, int, dict]] = {}
         self.used_blocks: set[str] = set()
         self.used_pages: set[tuple[str, int]] = set()
@@ -280,6 +311,8 @@ class _Audit:
         self.text = ""
         self.visible = ""
         self.prose_visible = ""
+        self.metadata_visible = ""
+        self.metadata_prose = ""
         self.table_visible = ""
         self.candidate_path = manifest_path
         self.resource_root = manifest_path.parent
@@ -375,8 +408,11 @@ class _Audit:
                     key = (identity, number)
                     page = document[number - 1]
                     self.pages[key], self.rects[key] = row, page.rect
+                    self.figure_rects[key] = source_tools.pdf_page_rect(page)
+                    if self.figure_reviews_requested:
+                        self.image_xrefs[key] = {image[0] for image in page.get_images(full=True)}
                     text_path = self.record(row.get("text"), base, f"{identity}:page-{number}:text")
-                    if text_path is not None and text_path.read_text(encoding="utf-8") != page.get_text("text", sort=False):
+                    if text_path is not None and text_path.read_bytes().decode("utf-8") != page.get_text("text", sort=False):
                         self.fail("TEXT_PROVENANCE", identity, f"Page {number} text does not match the PDF text layer.")
                     actual_blocks = [{"id": f"{identity}-p{number}-b{block[5]}", "bbox": list(block[:4]), "text": block[4]}
                                      for block in page.get_text("blocks", sort=False)
@@ -429,14 +465,18 @@ class _Audit:
             if visual and basis != "visual":
                 self.fail("VISIBLE_PAGE_REQUIRED", identity, "This field or object requires the visible source page.")
             quote, box = row.get("quote"), row.get("bbox")
-            if not (isinstance(quote, str) and quote.strip()) and box is None:
+            image_xref = row.get("image_xref")
+            native_locator = (self.units.get(identity, {}).get("kind") == "figure" and
+                              type(image_xref) is int and image_xref in self.image_xrefs.get((source, page), set()))
+            if not (isinstance(quote, str) and quote.strip()) and box is None and not native_locator:
                 self.fail("SOURCE_LOCATOR", identity, "Provide a source quote or page-space bounding box.")
             if box is not None:
                 valid = (isinstance(box, list) and len(box) == 4 and
                          all(type(value) in (int, float) and math.isfinite(value) for value in box))
                 if not valid or not fitz.Rect(box).is_valid or fitz.Rect(box).is_empty:
                     self.fail("SOURCE_BBOX", identity, "Use a finite nonempty page-space rectangle.")
-                elif not self.rects[(source, page)].contains(fitz.Rect(box)):
+                elif not (self.figure_rects if row.get("coordinate_system") == source_tools.PDF_BBOX_COORDINATES
+                          else self.rects)[(source, page)].contains(fitz.Rect(box)):
                     self.fail("SOURCE_BBOX", identity, "The evidence rectangle falls outside its source page.")
             if basis == "text" and isinstance(quote, str) and quote.strip():
                 page_text = "\n".join(block["text"] for block in self.pages[(source, page)].get("blocks", []))
@@ -464,7 +504,7 @@ class _Audit:
             if kind not in KINDS:
                 self.fail("UNIT_KIND", identity, f"Choose one unit kind from {sorted(KINDS)}.")
             self.evidence(unit.get("evidence"), source, identity, visual=kind in {"metadata", "figure", "table", "formula"})
-            if kind == "metadata" and unit.get("field") not in {*FIELDS.values(), "doi", "email"}:
+            if kind == "metadata" and unit.get("field") not in {*FIELDS.values(), "doi", "email", "header_note", "external_url"}:
                 self.fail("METADATA_FIELD", identity, "Declare one supported metadata field.")
             if kind == "figure" and type(unit.get("contains_table")) is not bool:
                 self.fail("FIGURE_TABLE_CLASSIFICATION", identity, "Inspect the figure and explicitly classify whether it contains a table.")
@@ -611,6 +651,9 @@ class _Audit:
             self.fail("DELIVERY_WITHOUT_SOURCE", identity, "The delivery does not correspond to a source inventory item.")
         self.visible = _visible(self.text)
         self.prose_visible = _visible(self.text, keep_tables=False)
+        # Mask the complete text before slicing: delimiters may surround a target.
+        self.metadata_visible = note_checks._mask_delimited(self.visible, "$")
+        self.metadata_prose = note_checks._mask_delimited(self.prose_visible, "$")
         self.table_visible = _visible(self.text, keep_table_fences=True)
         self.anchor_matches = {match[1]: match for match in _ANCHOR.finditer(self.prose_visible)}
         self.table_blocks = self.parse_table_blocks()
@@ -630,6 +673,289 @@ class _Audit:
         for anchor in self.anchor_matches:
             if (anchor.startswith(("fig-", "tbl-", "eq-")) or note_checks._citation_preview_anchor(anchor)) and anchor not in mapped_anchors:
                 self.fail("OUTPUT_OBJECT_UNMAPPED", anchor, "This output object lacks a corresponding source inventory unit.")
+
+    def figure_file_reference(self, record: Any, base: Path, identity: str) -> Path | None:
+        if not isinstance(record, dict) or set(record) != {"path", "sha256"}:
+            self.fail("FIG_REVIEW_FILE_REFERENCE", identity, "Keep a file reference as exactly path and sha256; store source locations separately.")
+            return None
+        return self.record(record, base, identity)
+
+    def check_figure_review_locations(self, identity: str, unit: dict, row: dict, base: Path):
+        locations = self.rows(row.get("source_locations"), identity, "source_locations")
+        expected = self.rows(unit.get("evidence"), identity, "figure source evidence")
+        if not locations or len(locations) != len(expected):
+            self.fail("FIG_REVIEW_LOCATION_SET", identity, "Record every inventory figure location once, in its source order.")
+        source = unit.get("source")
+        for index, location in enumerate(locations):
+            label = f"{identity}:source-{index}"
+            number = location.get("page")
+            if not isinstance(source, str) or type(number) is not int or (source, number) not in self.pages:
+                self.fail("FIG_REVIEW_PAGE", label, "Choose an actual page of this figure's own source.")
+                continue
+            key = (source, number)
+            box, xref = location.get("bbox"), location.get("image_xref")
+            if box is None and xref is None:
+                self.fail("FIG_REVIEW_LOCATOR", label, "Record a figure bbox or an original image_xref.")
+            if box is not None:
+                if location.get("coordinate_system") != source_tools.PDF_BBOX_COORDINATES:
+                    self.fail("FIG_REVIEW_COORDINATES", label, "Declare unrotated PDF points, a top-left origin, and right/down axes; pixel boxes are not PDF boxes.")
+                if not source_tools.valid_pdf_bbox(box, self.figure_rects[key]):
+                    self.fail("FIG_REVIEW_BBOX", label, "Use a finite nonempty PDF-point rectangle inside this source page.")
+            if xref is not None and (type(xref) is not int or xref not in self.image_xrefs[key]):
+                self.fail("FIG_REVIEW_XREF", label, "image_xref must be an image belonging to this source page.")
+            if index < len(expected):
+                original = expected[index]
+                fields = ("page", "bbox", "coordinate_system", "image_xref")
+                if any(location.get(field) != original.get(field) for field in fields):
+                    self.fail("FIG_REVIEW_LOCATION_MAPPING", label, "The reviewed source locator differs from its inventory figure evidence.")
+            image = self.figure_file_reference(location.get("page_render"), base, label)
+            original_render = self.pages[key].get("render")
+            if not isinstance(original_render, dict) or not isinstance(original_render.get("path"), str):
+                self.fail("FIG_REVIEW_SOURCE_RENDER", label, "This source page lacks its recorded rendered evidence.")
+                continue
+            original_path = Path(original_render["path"])
+            if not original_path.is_absolute():
+                original_path = self.inventory_base.joinpath(original_path)
+            if image is not None and (image != original_path.resolve() or location["page_render"].get("sha256") != original_render.get("sha256")):
+                self.fail("FIG_REVIEW_SOURCE_RENDER", label, "Use the rendered image bound to this exact source page.")
+
+    def check_figure_review_checks(self, identity: str, row: dict):
+        entries = self.rows(row.get("checks"), identity, "checks")
+        checks = self.index(entries, "id", identity)
+        goals = source_tools.FIGURE_REVIEW_GOALS
+        for missing in sorted(set(goals) - set(checks)):
+            self.fail("FIG_REVIEW_CHECK_MISSING", f"{identity}:{missing}", "Retain one result for this atomic figure-review target.")
+        for unknown in sorted(set(checks) - set(goals)):
+            self.fail("FIG_REVIEW_CHECK_UNKNOWN", f"{identity}:{unknown}", "This is not a FIG-A01 through FIG-A28 target.")
+        locations, assets = row.get("source_locations"), row.get("final_assets")
+        lengths = {"source_page": len(locations) if isinstance(locations, list) else 0,
+                   "final_asset": len(assets) if isinstance(assets, list) else 0}
+        for check_id, check in checks.items():
+            if check_id not in goals:
+                continue
+            label = f"{identity}:{check_id}"
+            if check.get("goal") != goals[check_id]:
+                self.fail("FIG_REVIEW_GOAL", label, "Keep the atomic target text associated with this ID.")
+            status = check.get("status")
+            statuses = {"pending", "pass", "fail", "not_applicable", "blocked", "not_tested", "ambiguous"}
+            if not isinstance(status, str) or status not in statuses:
+                self.fail("FIG_REVIEW_STATUS", label, "Choose one supported review status.")
+                continue
+            if status in {"pending", "blocked", "not_tested", "ambiguous"}:
+                self.fail("FIG_REVIEW_PENDING", label, f"The atomic review remains unresolved ({status}).")
+            if status == "fail":
+                self.fail("FIG_REVIEW_FAILED", label, "Resolve the failed figure target and review the final resource again.")
+            reason = check.get("reason")
+            if not isinstance(reason, str) or status != "pending" and not reason.strip():
+                self.fail("FIG_REVIEW_REASON", label, "Record the source-specific reason for this atomic decision.")
+            if status == "not_applicable":
+                condition = check.get("applicability_condition")
+                if not isinstance(condition, str) or not condition.strip():
+                    self.fail("FIG_REVIEW_APPLICABILITY", label, "Explain the concrete source condition making this target inapplicable.")
+            evidence = self.rows(check.get("evidence"), label, "evidence")
+            if status != "pending" and not evidence:
+                self.fail("FIG_REVIEW_EVIDENCE", label, "Locate the evidence for this atomic decision.")
+            kinds = set()
+            for pointer in evidence:
+                kind, index = pointer.get("kind"), pointer.get("index")
+                if not isinstance(kind, str) or kind not in lengths or type(index) is not int or not 0 <= index < lengths.get(kind, 0):
+                    self.fail("FIG_REVIEW_EVIDENCE_TARGET", label, "Evidence must point to an existing source_page or final_asset by its zero-based index.")
+                    continue
+                observation = pointer.get("observation")
+                if not isinstance(observation, str) or not observation.strip():
+                    self.fail("FIG_REVIEW_OBSERVATION", label, "Record what was inspected at this evidence location.")
+                kinds.add(kind)
+            visual_target = int(check_id[-2:]) <= 18 or int(check_id[-2:]) >= 26
+            if status == "pass" and visual_target and kinds != {"source_page", "final_asset"}:
+                self.fail("FIG_REVIEW_COMPARISON", label, "A recorded visual pass needs both source-page and final-image evidence.")
+
+    def check_figure_reviews(self, inventory: dict, manifest: dict, base: Path):
+        expected = inventory.get("figure_reviews_path")
+        if "figure_reviews_path" not in inventory and "figure_reviews" not in manifest:
+            return  # Older manifests remain supported; no visual acceptance is inferred.
+        if not isinstance(expected, str) or not expected.strip():
+            self.fail("FIG_REVIEW_PATH", "figure_reviews", "Record the figure-review ledger path in this inventory.")
+            return
+        expected_path = Path(expected)
+        if not expected_path.is_absolute():
+            expected_path = base.joinpath(expected_path)
+        path = self.figure_file_reference(manifest.get("figure_reviews"), self.path.parent, "figure_reviews")
+        if path is None:
+            return
+        if path != expected_path.resolve():
+            self.fail("FIG_REVIEW_PATH", "figure_reviews", "Bind the ledger named by this source inventory.")
+        ledger = self.read_json(path, "figure_reviews")
+        if type(ledger.get("schema_version")) is not int or ledger.get("schema_version") != 1:
+            self.fail("FIG_REVIEW_VERSION", "figure_reviews", "Expected figure-review schema_version 1.")
+        current_inventory = self.inventory_base.joinpath(self.inventory_name).resolve()
+        inventory_name = ledger.get("inventory_path")
+        if not isinstance(inventory_name, str) or not inventory_name.strip():
+            self.fail("FIG_REVIEW_INVENTORY_PATH", "figure_reviews", "Record the actual live inventory path separately from its immutable snapshot.")
+        else:
+            recorded_path = Path(inventory_name)
+            if not recorded_path.is_absolute():
+                recorded_path = path.parent.joinpath(recorded_path)
+            if recorded_path.resolve() != current_inventory:
+                self.fail("FIG_REVIEW_INVENTORY_PATH", "figure_reviews", "The live inventory identity must match this delivery's inventory.")
+        snapshot_path = self.figure_file_reference(ledger.get("inventory"), path.parent, "figure_reviews:inventory-snapshot")
+        if snapshot_path is not None:
+            if snapshot_path == current_inventory:
+                self.fail("FIG_REVIEW_INVENTORY_SNAPSHOT", "figure_reviews", "Bind a separate immutable inventory snapshot, not the mutable live inventory.")
+            snapshot = self.read_json(snapshot_path, "figure_reviews:inventory-snapshot")
+            if type(snapshot.get("schema_version")) is not int or snapshot.get("schema_version") != 1:
+                self.fail("FIG_REVIEW_SNAPSHOT_VERSION", "figure_reviews", "Expected source inventory snapshot schema_version 1.")
+            tool_pointers = {"terminology_path", "figure_reviews_path", "checks_path"}
+            current_content = {key: value for key, value in inventory.items() if key not in tool_pointers}
+            snapshot_content = {key: value for key, value in snapshot.items() if key not in tool_pointers}
+            # Canonical JSON preserves scalar types (True is not 1), array order,
+            # and all nested fields while ignoring object-key formatting/order.
+            if json.dumps(current_content, sort_keys=True, allow_nan=False) != json.dumps(snapshot_content, sort_keys=True, allow_nan=False):
+                self.fail("FIG_REVIEW_INVENTORY_CHANGED", "figure_reviews", "Inventory content changed after figure review; only the three top-level tool-pointer fields may differ.")
+        rows = self.rows(ledger.get("figures"), "figure_reviews", "figures")
+        figures = self.index(rows, "unit", "figure_reviews")
+        expected_figures = {identity: unit for identity, unit in self.units.items() if unit.get("kind") == "figure"}
+        for missing in sorted(set(expected_figures) - set(figures)):
+            self.fail("FIG_REVIEW_UNIT_MISSING", missing, "Record this inventory figure's atomic visual reviews.")
+        for unknown in sorted(set(figures) - set(expected_figures)):
+            self.fail("FIG_REVIEW_UNIT_UNKNOWN", unknown, "A figure review must correspond to an actual figure unit.")
+        for identity, row in figures.items():
+            if identity not in expected_figures:
+                continue
+            unit = expected_figures[identity]
+            source = unit.get("source")
+            if not isinstance(source, str) or source not in self.sources:
+                self.fail("FIG_REVIEW_SOURCE", identity, "Choose this figure's own source ID.")
+                continue
+            if row.get("source") != source:
+                self.fail("FIG_REVIEW_SOURCE", identity, "A reviewed figure cannot use another source's identity.")
+            source_path = self.figure_file_reference(row.get("source_file"), path.parent, f"{identity}:source")
+            original = self.sources[source]
+            expected_source_path = self.record(original, base, f"{identity}:inventory-source")
+            if source_path is not None and expected_source_path is not None and source_path != expected_source_path:
+                self.fail("FIG_REVIEW_SOURCE_FILE", identity, "Use the source PDF bound to this figure's inventory unit.")
+            self.check_figure_review_locations(identity, unit, row, path.parent)
+            assets = self.rows(row.get("final_assets"), identity, "final_assets")
+            if not assets:
+                self.fail("FIG_REVIEW_ASSETS_EMPTY", identity, "Record the final image files reviewed for this figure.")
+            recorded_assets = []
+            for index, asset in enumerate(assets):
+                asset_path = self.figure_file_reference(asset, path.parent, f"{identity}:asset-{index}")
+                if asset_path is not None:
+                    recorded_assets.append((asset_path, asset["sha256"]))
+            if len(recorded_assets) != len(set(recorded_assets)):
+                self.fail("FIG_REVIEW_ASSET_DUPLICATE", identity, "Record each final image once.")
+            delivery = self.deliveries.get(identity, {})
+            bound_assets = []
+            for asset in self.rows(delivery.get("assets"), identity, "delivery assets"):
+                asset_path = self.figure_file_reference(asset, self.resource_root, f"{identity}:delivery-asset")
+                if asset_path is not None:
+                    bound_assets.append((asset_path, asset["sha256"]))
+            if recorded_assets != bound_assets:
+                self.fail("FIG_REVIEW_ASSET_MAPPING", identity, "The reviewed final-image paths and hashes must match the delivery assets in order.")
+            self.check_figure_review_checks(identity, row)
+
+    def check_terminology(self, inventory: dict, manifest: dict, base: Path):
+        expected = inventory.get("terminology_path")
+        if expected is None and "terminology" not in manifest:
+            return
+        if not isinstance(expected, str) or not expected.strip():
+            self.fail("TERMINOLOGY_PATH", "terminology", "Record the terminology ledger path in the source inventory.")
+            return
+        expected_path = Path(expected)
+        if not expected_path.is_absolute():
+            expected_path = base.joinpath(expected_path)
+        path = self.record(manifest.get("terminology"), self.path.parent, "terminology")
+        if path is None:
+            return
+        if path.resolve() != expected_path.resolve():
+            self.fail("TERMINOLOGY_PATH", "terminology", "Bind the ledger named by this source inventory.")
+        ledger = self.read_json(path, "terminology")
+        if type(ledger.get("schema_version")) is not int or ledger["schema_version"] != 1:
+            self.fail("TERMINOLOGY_VERSION", "terminology", "Expected terminology schema_version 1.")
+        self.record(ledger.get("glossary"), path.parent, "terminology:glossary")
+        status = ledger.get("review_status")
+        if status == "not_applicable":
+            if not isinstance(ledger.get("reason"), str) or not ledger["reason"].strip():
+                self.fail("TERMINOLOGY_APPLICABILITY", "terminology", "Explain why terminology review does not apply to this task.")
+            return
+        if status != "reviewed":
+            self.fail("TERMINOLOGY_PENDING", "terminology", "Complete the terminology ledger after source review.")
+        expected_units = {identity for identity, unit in self.units.items()
+                          if unit.get("kind") in {"paragraph", "section", "figure", "table"}
+                          or (unit.get("kind") == "metadata" and unit.get("field") in {"title", "header_note"})}
+        covered = ledger.get("covered_units")
+        if (not isinstance(covered, list) or any(not isinstance(value, str) for value in covered)
+                or set(covered) != expected_units or len(covered) != len(set(covered))):
+            self.fail("TERMINOLOGY_COVERAGE", "terminology", "List each applicable source unit once in the terminology review coverage.")
+        for category in ("adopted", "unlisted"):
+            entries = self.rows(ledger.get(category), "terminology", category)
+            empty_reason = ledger.get("no_unlisted_reason")
+            if category == "unlisted" and not entries and (not isinstance(empty_reason, str) or not empty_reason.strip()):
+                self.fail("TERMINOLOGY_EMPTY_REASON", "terminology", "Explain a reviewed empty unlisted-term set; empty does not mean reviewed.")
+            for index, entry in enumerate(entries, 1):
+                identity = f"terminology:{category}:{index}"
+                fields = ["original", "translation", "context"]
+                fields.append("glossary_locator" if category == "adopted" else "reason")
+                for field in fields:
+                    if not isinstance(entry.get(field), str) or not entry[field].strip():
+                        self.fail("TERM_" + field.upper(), identity, f"Record this term's {field}.")
+                source_units = entry.get("source_units")
+                if (not isinstance(source_units, list) or not source_units
+                        or any(not isinstance(value, str) or value not in self.units for value in source_units)):
+                    self.fail("TERM_SOURCE_UNITS", identity, "Point to actual source units containing this term.")
+                if category != "unlisted":
+                    continue
+                if entry.get("status") != "resolved":
+                    self.fail("TERM_UNRESOLVED", identity, "The unlisted term still needs a source-based translation decision.")
+                if not isinstance(entry.get("resolution_basis"), str) or not entry["resolution_basis"].strip():
+                    self.fail("TERM_RESOLUTION_BASIS", identity, "Record the evidence used to resolve the proposed translation.")
+
+    def check_acceptance_records(self, inventory: dict, manifest: dict, base: Path):
+        expected = inventory.get("checks_path")
+        if expected is None and "checks" not in manifest:
+            return
+        if not isinstance(expected, str) or not expected.strip():
+            self.fail("CHECK_LEDGER_PATH", "checks", "Record the actual per-ID ledger path in the source inventory.")
+            return
+        expected_path = Path(expected)
+        if not expected_path.is_absolute():
+            expected_path = base.joinpath(expected_path)
+        path = self.record(manifest.get("checks"), self.path.parent, "checks")
+        if path is None:
+            return
+        if path.resolve() != expected_path.resolve():
+            self.fail("CHECK_LEDGER_PATH", "checks", "Bind the per-ID ledger named by this inventory.")
+        ledger = self.read_json(path, "checks")
+        checker = _load_sibling("check_records")
+        result = checker.validate_check_records(path, progress=self.progress)
+        for item in result.findings:
+            self.report.findings.append(DeliveryFinding(item.code, item.object_id, item.message, item.level))
+        bindings = ledger.get("bindings")
+        if not isinstance(bindings, dict):
+            return  # The ledger checker already diagnoses the missing structure.
+
+        def identities(rows: list[dict], root: Path, *, include_id: bool) -> set[tuple]:
+            values = set()
+            for row in rows:
+                if not isinstance(row.get("path"), str) or not isinstance(row.get("sha256"), str):
+                    continue
+                if include_id and not isinstance(row.get("id"), str):
+                    continue
+                file_path = Path(row["path"])
+                if not file_path.is_absolute():
+                    file_path = root.joinpath(file_path)
+                identity = (str(file_path.resolve()), row["sha256"])
+                values.add((row.get("id"), *identity) if include_id else identity)
+            return values
+
+        source_rows = self.rows(bindings.get("sources"), "checks", "sources")
+        expected_sources = identities(list(self.sources.values()), base, include_id=True)
+        if identities(source_rows, path.parent, include_id=True) != expected_sources:
+            self.fail("CHECK_SOURCE_BINDING", "checks", "The ledger must bind exactly the source PDFs in this inventory.")
+        candidates = self.rows(bindings.get("candidates"), "checks", "candidates")
+        expected_candidate = identities([manifest["candidate"]], self.path.parent, include_id=False)
+        if not expected_candidate.issubset(identities(candidates, path.parent, include_id=False)):
+            self.fail("CHECK_CANDIDATE_BINDING", "checks", "The ledger must include this final candidate with its current hash.")
 
     def check_target_content(self, identity: str, unit: dict, delivery: dict, resolved: tuple[int, int, str]):
         start, end, _ = resolved
@@ -651,8 +977,26 @@ class _Audit:
             self.fail("SECTION_TARGET", identity, "A section unit must resolve to an actual visible Markdown heading.")
         if kind != "metadata":
             return
+        metadata = self.metadata_visible[start:end]
+        if unit.get("field") == "header_note":
+            line_start = self.text.rfind("\n", 0, start) + 1
+            lines = [line for line in self.metadata_prose[line_start:end].splitlines() if line.strip()]
+            if not lines or any(not re.match(r"^ {0,3}>[ \t]?", line) for line in lines):
+                self.fail("HEADER_NOTE_LAYOUT", identity, "Deliver this source header note inside its source-specific metadata blockquote.")
         value = unit.get("value")
-        hrefs = {unquote(link.href).lower() for link in scan_markdown_links(text) if not link.image}
+        if unit.get("field") == "external_url":
+            if not isinstance(value, str) or not re.match(r"https?://\S+$", value, re.IGNORECASE):
+                self.fail("URL_IDENTITY", identity, "Record the full source URL after resolving source line wrapping.")
+            else:
+                matches = [link for link in scan_markdown_links(metadata) if not link.image and link.href == value]
+                if not matches:
+                    self.fail("URL_LINK", identity, "Deliver the recorded source URL with its original target.")
+                display = unit.get("display_text")
+                if not isinstance(display, str) or not display.strip():
+                    self.fail("URL_SOURCE_LABEL", identity, "Record the source's original visible link text.")
+                elif matches and not any(_visible_link_label(link.label) == _normal(display) for link in matches):
+                    self.fail("URL_DISPLAY_TEXT", identity, "Keep the source URL's original visible text instead of substituting a new label.")
+        hrefs = {unquote(link.href).lower() for link in scan_markdown_links(metadata) if not link.image}
         if unit.get("field") == "doi":
             if not isinstance(value, str) or not re.fullmatch(r"10\.\d{4,9}/\S+", value):
                 self.fail("DOI_IDENTITY", identity, "Record the source DOI identifier without a URL prefix.")
@@ -999,6 +1343,8 @@ class _Audit:
         if inventory_path is None or candidate_path is None:
             return self.report
         inventory = self.read_json(inventory_path, "inventory")
+        self.inventory_base, self.inventory_name = inventory_path.parent, inventory_path.name
+        self.figure_reviews_requested = "figure_reviews_path" in inventory or "figure_reviews" in manifest
         if inventory.get("schema_version") != 1:
             self.fail("INVENTORY_VERSION", "inventory", "Expected schema_version 1.")
         self.candidate_path = candidate_path
@@ -1022,7 +1368,10 @@ class _Audit:
             self.report.findings.append(DeliveryFinding("NOTE_" + finding.code, "candidate", finding.message, finding.level, finding.line))
         self.check_sources(inventory, inventory_path.parent)
         self.check_inventory(inventory)
+        self.check_terminology(inventory, manifest, inventory_path.parent)
         self.check_deliveries(manifest)
+        self.check_figure_reviews(inventory, manifest, inventory_path.parent)
+        self.check_acceptance_records(inventory, manifest, inventory_path.parent)
         return self.report
 
 
