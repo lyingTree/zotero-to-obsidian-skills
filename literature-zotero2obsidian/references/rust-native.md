@@ -133,3 +133,11 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 新增原生 `pdf_image_objects.render_pdfcraft_page`、`render_pdfcraft_region`、`extract_pdfcraft_text` 及 `prepare_source_inventory.prepare_pdfcraft_evidence`，对同一份原始字节实施真实页面渲染、区域裁剪、字形坐标与结构 XRef 证据的绑定。坐标采用未旋转 PDF 点；核对 PdfCraft 与既有结构解析器的页数、页尺寸及旋转，再建立变换。拒绝越界、错误 DPI、静默降分辨率、哈希变化及冲突输出。现阶段不把 PdfCraft 字形/行分组伪造为原 PyMuPDF 文本块 ID，不把页面像素或文本结果当作语义和图件验收。PdfCraft renderer 的部分解码/字体诊断可能不会出现在返回 warnings 中，必须通过独立历史差分和视觉回归检查。保留现有 lopdf 0.36 结构定位，后续核对 COS 替换。
 
 此次引入新的 git 依赖，原 Cargo.lock 不再代表完整图谱。候选 CI 单次实际 Cargo 解析生成锁文件，保存日志及 artifact，六平台使用同一份生成的锁文件做 --locked 构建。发布门禁拒绝未提交或与 HEAD 不同的锁文件，版本/tag 发布不允许自动重解析。待真实 lockfile 回收提交后恢复直接 locked 构建。当前不能声明 PdfCraft 的编译、字体覆盖、像素等价和分发许可证审查已通过。
+
+### CPU-first OCR 后端（候选）
+
+直接复用 [ppocr-rs 0.8.5](https://github.com/dariofinardi/df-ppocr-rs/tree/b87550b775206655acf84d7fc421ca5bdf745fd3)，固定 Git revision，`ort = 2.0.0-rc.13` + API 28 + load-dynamic。只有实际 OCR 才加载本地 CPU ONNX Runtime 1.28.x；普通 PDF、DOCX、Markdown 操作不要求 GPU 或 OCR 模型。上游按平台启用了可选 EP API，本实现只注册 CPU，不尝试 CUDA、DirectML 或 CoreML。上游 Clipper C++ FFI 需要构建工具（发布用户无需编译器）。GPU 加速是后续可选扩展，不宣称已实现 GPU→CPU 回退。
+
+新增 `prepare_source_inventory.ocr_hardware_plan`、`inspect_ocr_package`、`recognize_ocr_png`。按总内存和可用内存选择已安装 tiny/small/medium 模型，限制 det/rec 线程、检测输入尺寸和单页像素；layout 按需加载，orientation 单独记录原始方向和逆变换。辅助模型的线程限制、低端 CPU 兼容及内存峰值仍需实测。模型包 schema 1 为 `{"engine":"ppocr-v6","runtime":{"platform":"linux","architecture":"x86_64","version":"1.28.2","file":{"path":"runtime/libonnxruntime.so","sha256":"<actual>"}}, "profiles":{"tiny":{"detector":{...},"recognizer":{...},"dictionary":{...}}},"auxiliary":{"orientation":{...},"layout":{...}},"schema_version":1}`。所有资源记录均为包根目录相对路径+真实 SHA-256，manifest SHA-256 须来自独立可信安装配置。拒绝不匹配平台、目录穿越、链接及修改后的资产；不自动下载、执行或信任未经批准的远程模型。识别字典必须从对应模型的 inference.yml 提取，保留空行和 token 顺序，不可混用通用训练字典。包内 ONNX 应为自包含权重，安装器需验证发行来源和外部数据引用。
+
+输出保留逐行、逐词检测/识别分数、原始图像坐标、方向校正后的坐标、可选版面区域及全部 OCR 候选；未知/越界框和低分候选只能触发复核。分数不是正确概率；不得自动通过验收。MiniCPM-OCR/Jev、表格结构重建、可信资源分发、实际 CPU 推理六平台测试及完整扫描 PDF 工作流均待继续实现/验证。现已回收上轮 PdfCraft 实际依赖锁文件，加入 OCR 后须由 CI 重新解析并提交最终 lockfile。

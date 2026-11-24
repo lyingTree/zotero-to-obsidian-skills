@@ -37,6 +37,13 @@ zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 # Headless PdfCraft core, not the application, GUI or MCP service.
 pdfcraft-render = { git = "https://github.com/storytold/pdfcraft", rev = "6e910675c68dd5092e889065cfe8d0274c1b2742", default-features = false }
 
+# In-process PP-OCRv6, explicitly lazy-loaded CPU ONNX Runtime. No runtime
+# download or linkage to a vendor GPU SDK. Upstream enables optional EP APIs
+# by target, but z2o registers CPU only.
+ppocr-rs = { git = "https://github.com/dariofinardi/df-ppocr-rs", rev = "b87550b775206655acf84d7fc421ca5bdf745fd3", default-features = false, features = ["native", "example-dynamic"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-28"] }
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
+
 # Cargo does not propagate a dependency workspace's patch table. Match the
 # PDF-only patches from the pinned PdfCraft workspace explicitly.
 [patch.crates-io]

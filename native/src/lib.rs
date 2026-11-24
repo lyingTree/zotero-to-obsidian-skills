@@ -35,6 +35,7 @@ pub mod mapping_compare;
 pub mod handoff_conflicts;
 pub mod pdf_structure;
 pub mod pdfcraft_backend;
+pub mod ocr_backend;
 pub mod translation_validate;
 pub mod translation_writer;
 pub mod translation_tasks;
@@ -119,6 +120,9 @@ pub const OPERATIONS: &[&str] = &[
     "pdf_image_objects.render_pdfcraft_page",
     "pdf_image_objects.render_pdfcraft_region",
     "pdf_image_objects.extract_pdfcraft_text",
+    "prepare_source_inventory.ocr_hardware_plan",
+    "prepare_source_inventory.inspect_ocr_package",
+    "prepare_source_inventory.recognize_ocr_png",
     "prepare_source_inventory.prepare_pdfcraft_evidence",
     "prepare_source_inventory.prepare_pdf_structure_evidence",
     "prepare_source_inventory.record_figure_edges",
@@ -265,7 +269,7 @@ pub fn describe() -> Value {
         "schema_version": SCHEMA_VERSION, "engine": "rust-native", "engine_version": ENGINE_VERSION,
         "reference_version": REFERENCE_VERSION, "platform": std::env::consts::OS,
         "architecture": std::env::consts::ARCH, "system_python_required": false,
-        "python_fallback": false, "pdf_backend": {"name":"pdfcraft-render","revision":pdfcraft_backend::PDFCRAFT_REV,"qualification":"candidate"}, "full_workflow_ready": blockers.is_empty(), "operations": OPERATIONS,
+        "python_fallback": false, "pdf_backend": {"name":"pdfcraft-render","revision":pdfcraft_backend::PDFCRAFT_REV,"qualification":"candidate"}, "ocr_backend":{"name":"ppocr-rs","revision":ocr_backend::OCR_REV,"policy":"cpu_first","dynamic_runtime":"1.28.x","gpu_required":false,"qualification":"candidate"}, "full_workflow_ready": blockers.is_empty(), "operations": OPERATIONS,
         "release_target": manifest["release_target"], "module_status": modules,
         "required_targets": manifest["required_targets"], "release_blockers": blockers,
     })
@@ -765,6 +769,22 @@ pub fn invoke(request: Value) -> Result<Value> {
         }
         "mapping_rerun.compare_stable_projections" => {
             let a=c.positional("baseline")?;let b=c.positional("current")?;c.finish()?;mapping_compare::compare(&a,&b)?
+        }
+        "prepare_source_inventory.ocr_hardware_plan" => {
+            let profile=string(&c.option("profile",json!("auto")),"profile")?;c.finish()?;
+            ocr_backend::hardware_plan(&profile)?
+        }
+        "prepare_source_inventory.inspect_ocr_package" | "prepare_source_inventory.recognize_ocr_png" => {
+            let png=if op.ends_with("recognize_ocr_png"){Some(path(&c.positional("image_path")?)?)}else{None};
+            let package=path(&c.required("package_manifest")?)?;
+            let sha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
+            let profile=string(&c.option("profile",json!("auto")),"profile")?;
+            let layout=string(&c.option("layout",json!("auto")),"layout")?;
+            if let Some(png)=png{
+                let expected=c.option("expected_image_sha256",Value::Null);
+                let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_image_sha256")?)};
+                c.finish()?;ocr_backend::recognize_png(&png,&package,&sha,&profile,&layout,expected.as_deref())?
+            }else{c.finish()?;ocr_backend::inspect_package(&package,&sha,&profile,&layout)?}
         }
         "pdf_image_objects.render_pdfcraft_page" | "pdf_image_objects.render_pdfcraft_region" |
         "pdf_image_objects.extract_pdfcraft_text" | "prepare_source_inventory.prepare_pdfcraft_evidence" => {
