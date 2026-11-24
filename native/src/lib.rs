@@ -33,6 +33,8 @@ pub mod delivery_provenance;
 pub mod workflow;
 pub mod mapping_compare;
 pub mod handoff_conflicts;
+pub mod handoff_native;
+pub mod handoff_scan;
 pub mod pdf_structure;
 pub mod pdf_boundary;
 pub mod pdfcraft_backend;
@@ -118,6 +120,9 @@ pub const OPERATIONS: &[&str] = &[
     "validate_delivery.write_delivery_manifest",
     "validate_delivery.check_source_provenance",
     "handoff_maps.make_source_unit",
+    "handoff_maps.write_handoff_maps",
+    "handoff_maps.validate_handoff_maps",
+    "mapping_rerun.record_mapping_rerun",
     "handoff_maps.record_text_visual_conflict",
     "mapping_rerun.compare_stable_projections",
     "mapping_rerun.compare_bound_maps",
@@ -730,6 +735,21 @@ pub fn invoke(request: Value) -> Result<Value> {
         }
         "validate_delivery.scan_markdown_links" => {
             let text=c.positional("text")?;c.finish()?;delivery_prepare::links(text.as_str().context("text must be a string")?)
+        }
+        "handoff_maps.write_handoff_maps" | "handoff_maps.validate_handoff_maps" => {
+            let inv=path(&c.positional("inventory_path")?)?;
+            let candidate=path(&c.positional("candidate_path")?)?;
+            let write=op=="handoff_maps.write_handoff_maps";
+            let deliveries=if write{Some(c.positional("deliveries")?)}else{None};
+            let paths=c.positional("map_paths")?;
+            let expected=c.option("expected_source_bindings",Value::Null);c.finish()?;
+            if let Some(d)=deliveries{handoff_native::write(&inv,&candidate,&d,&paths,&expected,|i,n,label|eprintln!("[{i}/{n}] {label}"))?}
+            else{handoff_native::validate(&inv,&candidate,&paths,&expected,|i,n,label|eprintln!("[{i}/{n}] {label}"))?}
+        }
+        "mapping_rerun.record_mapping_rerun" => {
+            let run=path(&c.positional("run_path")?)?;let deliveries=c.positional("deliveries")?;
+            let dest=path(&c.positional("destination")?)?;c.finish()?;
+            json!(path_text(&mapping_compare::record_mapping_rerun(&run,&deliveries,&dest,|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
         }
         "handoff_maps.make_source_unit" => {
             let id=string(&c.positional("unit_id")?,"unit_id")?;let source=string(&c.positional("source_id")?,"source_id")?;

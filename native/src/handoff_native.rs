@@ -1,0 +1,441 @@
+//! Derive file-bound handoff maps from explicit source-unit registrations
+//! and actual candidate selectors. Never infer semantic correctness.
+use anyhow::{ensure,Context,Result};
+use regex::Regex;
+use serde_json::{json,Map,Value};
+use std::{collections::{BTreeMap,BTreeSet,HashSet},fs,io::Write,path::{Path,PathBuf}};
+use crate::{check_ledger,docx,files,handoff_scan::{Candidate,Span},path,path_text,pdf_structure::Pdf};
+
+pub const BOUNDARY:&str="Bindings and recorded relationships are checked against the supplied inventory and candidate. Source PDFs are not reinterpreted here. Generated views are extracted, pending records; they do not certify observation, semantic correctness, inventory completeness, or real-library matching.";
+const KINDS:&[&str]=&["metadata","paragraph","section","reference","figure","table","formula","equation","video","citation","cross_reference"];
+const OBJECTS:&[&str]=&["figure","table","formula","equation","video"];
+const CALLS:&[&str]=&["citation","cross_reference"];
+const LINKS:&[&str]=&["internal_links","library_matches","external_links","resource_links"];
+fn nonempty(v:&Value)->bool{v.as_str().is_some_and(|s|!s.trim().is_empty())}
+fn text<'a>(v:&'a Value,label:&str)->Result<&'a str>{v.as_str().filter(|s|!s.trim().is_empty()).with_context(||format!("MAP_ID_REQUIRED: {label}"))}
+fn rows<'a>(v:&'a Value,key:&str)->Result<Vec<&'a Value>>{
+    if let Some(a)=v.as_array(){ensure!(a.iter().all(Value::is_object),"MAP_COLLECTION_ELEMENT: {key}");return Ok(a.iter().collect());}
+    let m=v.as_object().with_context(||format!("MAP_COLLECTION: {key}"))?;
+    for(id,row)in m{ensure!(row.is_object()&&row[key]==id.as_str(),"MAP_COLLECTION_KEY: {id}");}Ok(m.values().collect())
+}
+fn index<'a>(v:&'a Value,key:&str)->Result<BTreeMap<String,&'a Value>>{
+    let mut out=BTreeMap::new();
+    for row in rows(v,key)?{let id=text(&row[key],key)?.to_owned();ensure!(out.insert(id.clone(),row).is_none(),"MAP_DUPLICATE_ID: {id}");}Ok(out)
+}
+fn bbox(v:&Value)->bool{
+    let Some(a)=v.as_array().filter(|a|a.len()==4)else{return false;};
+    let n:Option<Vec<_>>=a.iter().map(Value::as_f64).collect();
+    n.is_some_and(|b|b.iter().all(|n|n.is_finite())&&b[0]<b[2]&&b[1]<b[3])
+}
+fn hash_ok(v:&Value)->bool{v.as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)))}
+pub(crate) struct Bindings{files:BTreeMap<PathBuf,Value>}
+impl Bindings{
+    pub fn new()->Self{Self{files:BTreeMap::new()}}
+    pub fn capture(&mut self,p:&Path)->Result<Value>{
+        let p=files::canonical(p)?;
+        if let Some(b)=self.files.get(&p){return Ok(b.clone());}
+        let b=check_ledger::bind_file(&p)?;self.files.insert(p,b.clone());Ok(b)
+    }
+    fn recorded(&mut self,v:&Value,base:&Path)->Result<Value>{
+        ensure!(hash_ok(&v["sha256"]),"MAP_FILE_BINDING: actual lowercase SHA-256 required");
+        let b=self.capture(&base.join(path(&v["path"])?))?;
+        ensure!(b["sha256"]==v["sha256"],"MAP_BINDING_HASH: {}",b["path"]);Ok(b)
+    }
+    fn read(&mut self,p:&Path,max:u64)->Result<(Vec<u8>,Value)>{
+        let b=self.capture(p)?;let p=path(&b["path"])?;
+        ensure!(fs::metadata(&p)?.len()<=max,"Mapping input exceeds byte budget");
+        let(raw,actual)=files::read_bound(&p)?;
+        ensure!(actual==b&&raw.len() as u64<=max,"MAP_INPUT_CHANGED: {}",p.display());Ok((raw,b))
+    }
+    pub fn json(&mut self,p:&Path)->Result<(Value,Value)>{
+        let(raw,b)=self.read(p,128*1024*1024)?;
+        let v=crate::parse_json(std::str::from_utf8(&raw)?.trim_start_matches('\u{feff}'))?;
+        ensure!(v.is_object()&&v["schema_version"].as_u64()==Some(1),"MAP_SCHEMA_VERSION");Ok((v,b))
+    }
+    pub fn verify(&self)->Result<()>{for(p,b)in &self.files{ensure!(check_ledger::bind_file(p)?==*b,"MAP_INPUT_CHANGED: {}",p.display());}Ok(())}
+}
+struct Block{source:String,page:Option<u64>,record:Value,order:usize}
+impl Block{
+    fn locator(&self)->Value{if self.page.is_none(){json!({"native_locator":self.record["locator"]})}else{json!({"page":self.page,"bbox":self.record["bbox"]})}}
+}
+struct Ctx{
+    bindings:Bindings,sources:BTreeMap<String,Value>,source_bindings:BTreeMap<String,Value>,units:BTreeMap<String,Value>,
+    blocks:BTreeMap<String,Block>,block_order:Vec<String>,block_units:BTreeMap<String,BTreeSet<String>>,unit_blocks:BTreeMap<String,BTreeSet<String>>,
+    excluded:BTreeMap<String,String>,candidate:Candidate,candidate_path:PathBuf,common:Value,
+}
+impl Ctx{
+    fn block(&mut self,source:&str,page:Option<u64>,record:&Value,order:usize)->Result<()>{
+        let id=text(&record["id"],"block id")?.to_owned();
+        ensure!(self.blocks.len()<500_000&&record["text"].is_string(),"MAP_BLOCK_RECORD");
+        if page.is_some(){ensure!(bbox(&record["bbox"]),"MAP_BLOCK_RECORD: invalid PDF bbox");}
+        else{ensure!(docx::valid_locator(&record["locator"]),"MAP_NATIVE_BLOCK_RECORD");}
+        ensure!(self.blocks.insert(id.clone(),Block{source:source.into(),page,record:record.clone(),order}).is_none(),"MAP_BLOCK_ID: {id}");
+        self.block_order.push(id);Ok(())
+    }
+    fn load(inventory:&Path,candidate:&Path,expected:&Value,resolved:bool,progress:&mut impl FnMut(usize,usize,&str))->Result<Self>{
+        let mut bindings=Bindings::new();let (inv,ib)=bindings.json(inventory)?;
+        let (raw,cb)=bindings.read(candidate,32*1024*1024)?;
+        let inv_path=path(&ib["path"])?;let cp=path(&cb["path"])?;
+        ensure!(inv_path!=cp,"Candidate and inventory must differ");
+        let base=inv_path.parent().context("Inventory parent")?;
+        let mut c=Self{bindings,sources:BTreeMap::new(),source_bindings:BTreeMap::new(),units:BTreeMap::new(),blocks:BTreeMap::new(),
+            block_order:vec![],block_units:BTreeMap::new(),unit_blocks:BTreeMap::new(),excluded:BTreeMap::new(),
+            candidate:Candidate::new(&raw)?,candidate_path:cp,common:Value::Null};
+        let ss=index(&inv["sources"],"id")?;ensure!(!ss.is_empty(),"MAP_SOURCES_EMPTY");
+        let mut pdfs=BTreeMap::<String,Pdf>::new();let mut pages=BTreeMap::<String,BTreeSet<u64>>::new();
+        for(i,(id,s))in ss.iter().enumerate(){
+            ensure!(matches!(s["role"].as_str(),Some("main"|"supplement")),"MAP_SOURCE_ROLE: {id}");
+            let b=c.bindings.recorded(s,base)?;let p=path(&b["path"])?;
+            ensure!(p!=inv_path&&p!=c.candidate_path,"Source aliases candidate/inventory");
+            c.source_bindings.insert(id.clone(),b);c.sources.insert(id.clone(),(*s).clone());
+            if s["format"]=="docx"{
+                for(order,block)in rows(&s["native_blocks"],"id")?.into_iter().enumerate(){c.block(id,None,block,order)?;}
+            }else{
+                let pdf=Pdf::open(&p)?;let mut seen=BTreeSet::new();let mut order=0;
+                for row in rows(&s["pages"],"page")?{
+                    let page=row["page"].as_u64().filter(|n|*n>0&&*n<=pdf.len() as u64).context("MAP_PAGE_ID")?;
+                    ensure!(seen.insert(page),"MAP_PAGE_ID: duplicate physical page");
+                    if s["inventory_backend"]==crate::pdf_inventory::BACKEND{
+                        crate::pdf_inventory::verify_page_files(row)?;
+                        for key in ["render","text"]{c.bindings.recorded(&row[key],base)?;}
+                        for key in ["glyphs","image_structure"]{c.bindings.recorded(&row["pdf_evidence"][key],base)?;}
+                        if let Some(r)=row["pdf_evidence"]["ocr"].get("record"){c.bindings.recorded(r,base)?;}
+                    }
+                    for block in rows(&row["blocks"],"id")?{c.block(id,Some(page),block,order)?;order+=1;}
+                }
+                pages.insert(id.clone(),seen);pdfs.insert(id.clone(),pdf);
+            }
+            progress(i+1,ss.len(),"actual source bindings and block inventory");
+        }
+        if !expected.is_null(){
+            let exp:BTreeMap<String,&Value>=if let Some(m)=expected.as_object(){m.iter().map(|(k,v)|(k.clone(),v)).collect()}else{index(expected,"id")?};
+            ensure!(exp.keys().eq(c.sources.keys()),"MAP_SOURCE_SET");
+            for(id,v)in exp{
+                ensure!(c.bindings.recorded(v,base)?==c.source_bindings[&id],"MAP_BINDING_TARGET: {id}");
+                ensure!(v.get("role").is_none()||v["role"]==c.sources[&id]["role"],"MAP_SOURCE_ROLE: {id}");
+            }
+        }
+        let us=index(&inv["units"],"id")?;
+        for(i,(id,u))in us.iter().enumerate(){
+            let sid=text(&u["source"],"unit source")?;let s=c.sources.get(sid).context("MAP_UNIT_SOURCE")?;
+            let kind=text(&u["kind"],"unit kind")?;ensure!(KINDS.contains(&kind),"MAP_UNIT_KIND: {id}");
+            let locs=rows(&u["evidence"],"id")?;ensure!(!locs.is_empty(),"MAP_UNIT_EVIDENCE: {id}");
+            let mut refs=BTreeSet::new();
+            for loc in locs{
+                let r=if s["format"]=="docx"{
+                    let errors=docx::evidence_errors(s,loc);ensure!(errors.is_empty(),"MAP_NATIVE_LOCATOR: {}",errors.join(" "));
+                    loc["blocks"].as_array().unwrap().clone()
+                }else{
+                    let page=loc["page"].as_u64().filter(|n|pages[sid].contains(n)).context("MAP_UNIT_PAGE")?;
+                    ensure!(bbox(&loc["bbox"])||nonempty(&loc["quote"]),"MAP_UNIT_LOCATOR");
+                    if let Some(b)=loc.get("bbox").filter(|v|!v.is_null()){ensure!(pdfs[sid].contains_bbox(page,b)?,"MAP_UNIT_LOCATOR: outside page");}
+                    if let Some(x)=loc.get("image_xref").filter(|v|!v.is_null()){
+                        let x=u32::try_from(x.as_u64().context("MAP_UNIT_XREF")?)?;
+                        ensure!(pdfs[sid].resource_image_xrefs(page)?.contains(&x),"MAP_UNIT_XREF: not a page image resource");
+                    }
+                    loc.get("blocks").map(|v|v.as_array().context("MAP_BLOCK_REFERENCE").cloned()).transpose()?.unwrap_or_default()
+                };
+                for b in r{
+                    let bid=text(&b,"source block")?;
+                    let block=c.blocks.get(bid).context("MAP_BLOCK_REFERENCE: unknown block")?;
+                    ensure!(block.source==sid&&block.page==loc["page"].as_u64(),"MAP_BLOCK_REFERENCE: wrong source/page");
+                    refs.insert(bid.to_owned());c.block_units.entry(bid.to_owned()).or_default().insert(id.clone());
+                }
+            }
+            if let Some(r)=u.get("text_visual_conflicts"){
+                ensure!(s["format"]!="docx","MAP_CONFLICT_PAGE");
+                let checked=crate::handoff_conflicts::validate_records(u,s,&c.source_bindings[sid],base,&pdfs[sid],r,resolved)?;
+                for b in checked{c.bindings.recorded(&b,base)?;}
+            }
+            c.unit_blocks.insert(id.clone(),refs);c.units.insert(id.clone(),(*u).clone());progress(i+1,us.len(),"registered source units");
+        }
+        c.relationships()?;
+        if let Some(v)=inv.get("excluded_blocks"){
+            for r in rows(v,"block")?{
+                let b=text(&r["block"],"excluded block")?;let reason=text(&r["reason"],"exclusion reason")?;
+                ensure!(c.blocks.contains_key(b)&&!c.block_units.contains_key(b)&&!c.excluded.contains_key(b),"MAP_EXCLUSION_CONFLICT: {b}");
+                c.excluded.insert(b.into(),reason.into());
+            }
+        }
+        if let Some(v)=inv.get("excluded_pages"){
+            for r in rows(v,"page")?{
+                let sid=text(&r["source"],"excluded source")?;let p=r["page"].as_u64().context("MAP_EXCLUSION")?;
+                ensure!(pages.get(sid).is_some_and(|v|v.contains(&p)),"MAP_EXCLUSION: unknown page");
+                let reason=text(&r["reason"],"exclusion reason")?;
+                for(id,b)in &c.blocks{if b.source==sid&&b.page==Some(p){
+                    ensure!(!c.block_units.contains_key(id),"MAP_EXCLUSION_CONFLICT: {id}");c.excluded.entry(id.clone()).or_insert_with(||reason.to_owned());
+                }}
+            }
+        }
+        for b in c.blocks.keys(){ensure!(c.block_units.contains_key(b)||c.excluded.contains_key(b),"MAP_BLOCK_UNACCOUNTED: {b}");}
+        c.common=json!({"source_inventory":ib,"candidate":cb,"sources":c.source_bindings});c.bindings.verify()?;Ok(c)
+    }
+    fn relationships(&self)->Result<()>{
+        for(id,u)in &self.units{
+            let kind=u["kind"].as_str().unwrap();let sid=u["source"].as_str().unwrap();
+            match kind{
+                "metadata"=>ensure!(nonempty(&u["field"]),"MAP_SOURCE_FIELD_MISSING: {id}.field"),
+                "reference"=>ensure!(nonempty(&u["bibliography_id"])&&nonempty(&u["original_text"])&&u.get("number").is_some(),"MAP_REFERENCE_FIELD: {id}"),
+                "citation"=>{
+                    ensure!(nonempty(&u["display_text"]),"MAP_SOURCE_FIELD_MISSING: {id}.display_text");
+                    let a=u["references"].as_array().filter(|a|!a.is_empty()).context("MAP_CITATION_REFERENCES")?;
+                    let mut seen=HashSet::new();
+                    for r in a{
+                        let r=text(r,"reference unit")?;
+                        ensure!(seen.insert(r),"MAP_DUPLICATE_REFERENCE");
+                        let t=self.units.get(r).context("MAP_REFERENCE_UNKNOWN")?;
+                        ensure!(t["kind"]=="reference","MAP_REFERENCE_UNKNOWN");
+                        ensure!(t["source"]==sid||nonempty(&u["cross_source_reason"]),"MAP_CROSS_SOURCE_REASON");
+                    }
+                },
+                "cross_reference"=>ensure!(nonempty(&u["display_text"])&&u["target_unit"].as_str().is_some_and(|s|self.units.contains_key(s)),"MAP_TARGET_UNIT_UNKNOWN"),
+                k if OBJECTS.contains(&k)=>ensure!(u.get("original_number").is_some(),"MAP_SOURCE_FIELD_MISSING: {id}.original_number"),
+                _=>{},
+            }
+            if let Some(p)=u.get("parent_id").filter(|v|!v.is_null()){
+                ensure!(p.as_str().and_then(|v|self.units.get(v)).is_some_and(|v|v["source"]==sid),"MAP_PARENT_UNIT");
+            }
+            if kind=="metadata"&&u["field"]=="author"&&u.get("affiliation_units").is_some(){
+                let a=u["affiliation_units"].as_array().context("MAP_AFFILIATION_REFERENCE")?;
+                ensure!(u["affiliation_numbers"].as_array().is_some_and(|b|a.len()==b.len()),"MAP_AFFILIATION_REFERENCE");
+                for v in a{ensure!(v.as_str().and_then(|v|self.units.get(v)).is_some_and(|x|x["source"]==sid&&x["kind"]=="metadata"&&x["field"]=="affiliation"),"MAP_AFFILIATION_REFERENCE");}
+            }
+        }
+        for(sid,s)in &self.sources{
+            if let Some(h)=s.get("header_fields"){
+                for(name,v)in h.as_object().context("MAP_HEADER_REFERENCE")?{
+                    if let Some(ids)=v.get("units"){
+                        let field=match name.as_str(){"title"=>"title","authors"=>"author","affiliations"=>"affiliation","publication_date"=>"publication_date",_=>anyhow::bail!("MAP_HEADER_REFERENCE")};
+                        for id in ids.as_array().context("MAP_HEADER_REFERENCE")?{
+                            ensure!(id.as_str().and_then(|x|self.units.get(x)).is_some_and(|u|u["source"]==sid.as_str()&&u["kind"]=="metadata"&&u["field"]==field),"MAP_HEADER_REFERENCE");
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    fn names(&self)->BTreeSet<String>{
+        let mut out=BTreeSet::from(["source_map".to_owned(),"link_map".to_owned()]);
+        if self.sources.values().any(|s|s["role"]=="supplement"){out.insert("si_map".into());}out
+    }
+    fn derive(&mut self,deliveries:&Value,progress:&mut impl FnMut(usize,usize,&str))->Result<Value>{
+        let ds=index(deliveries,"unit")?;ensure!(ds.keys().eq(self.units.keys()),"MAP_DELIVERY_SET: every unit needs exactly one delivery");
+        let mut targets=BTreeMap::<String,Span>::new();let mut mapped=BTreeMap::<String,Value>::new();
+        for(i,(id,d))in ds.iter().enumerate(){
+            let u=&self.units[id];let sid=u["source"].as_str().unwrap();
+            let span=self.candidate.resolve(&d["target"],u["kind"].as_str().unwrap()).with_context(||format!("{id}: target"))?;
+            targets.insert(id.clone(),span);
+            let mut row=u.clone();row.as_object_mut().unwrap().extend(json!({"unit":id,"source_id":sid,"source_role":self.sources[sid]["role"],
+                "source_attachment":self.source_bindings[sid],"source_locator":u["evidence"],"registered_unit":u,"target":d["target"],"delivery":d,
+                "candidate_locator":self.candidate.locator(span)?,"status":"extracted","review_status":"pending"}).as_object().unwrap().clone());
+            if let Some(v)=u["original_text"].as_str(){row["original_sha256"]=json!(files::digest(v.as_bytes()));}
+            if let Some(assets)=d.get("assets"){
+                let root=if let Some(r)=d.get("resource_root"){files::canonical(&path(r)?)?}else{self.candidate_path.parent().unwrap().to_owned()};
+                ensure!(root.is_dir(),"MAP_RESOURCE_ROOT");let mut resources=vec![];
+                for a in rows(assets,"path")?{
+                    let b=self.bindings.capture(&root.join(path(&a["path"])?))?;
+                    ensure!(a.get("sha256").is_none()||a["sha256"]==b["sha256"],"MAP_RESOURCE_HASH");resources.push(b);
+                }
+                row["resources"]=json!(resources);
+            }
+            mapped.insert(id.clone(),row);progress(i+1,ds.len(),"explicit delivery targets");
+        }
+        let mut out=Map::new();
+        for(name,role)in [("source_map","main"),("si_map","supplement")]{
+            if !self.names().contains(name){continue;}
+            let sources:Vec<_>=self.sources.iter().filter(|(_,s)|s["role"]==role).map(|(id,_)|{
+                let b=&self.source_bindings[id];json!({"id":id,"role":role,"path":b["path"],"sha256":b["sha256"]})
+            }).collect();
+            let units:Vec<_>=mapped.values().filter(|u|u["source_role"]==role).cloned().collect();
+            let mut blocks=vec![];
+            for id in &self.block_order{
+                let b=&self.blocks[id];if self.sources[&b.source]["role"]!=role{continue;}
+                let refs:Vec<_>=self.block_units.get(id).into_iter().flatten().cloned().collect();
+                let kinds:BTreeSet<_>=refs.iter().map(|r|self.units[r]["kind"].as_str().unwrap()).collect();
+                let kind=if kinds.len()==1{*kinds.iter().next().unwrap()}else if refs.is_empty(){"excluded"}else{"mixed"};
+                let exclusion=self.excluded.get(id);
+                let mut r=json!({"block_id":id,"source_id":b.source,"source_blocks":[id],"source_attachment":self.source_bindings[&b.source],
+                    "source_locator":b.locator(),"order":b.order,"kind":kind,"original_text":b.record["text"],
+                    "original_sha256":files::digest(b.record["text"].as_str().unwrap().as_bytes()),
+                    "decision":if exclusion.is_some(){"exclude"}else{"keep"},"target_units":refs,
+                    "reason":exclusion.map(String::as_str).unwrap_or("Accounted for by explicit inventory units and delivery targets; semantic review remains pending."),
+                    "status":"extracted","review_status":"pending"});
+                if refs.len()==1{r["target_unit"]=json!(refs[0]);}blocks.push(r);
+            }
+            out.insert(name.into(),json!({"schema_version":1,"bindings":self.common,"status":"extracted","review_status":"pending",
+                "source_fidelity":"not_assessed","boundary":BOUNDARY,"sources":sources,"blocks":blocks,"units":units,
+                "metadata":units.iter().filter(|u|u["kind"]=="metadata").collect::<Vec<_>>(),
+                "objects":units.iter().filter(|u|OBJECTS.contains(&u["kind"].as_str().unwrap())).collect::<Vec<_>>(),
+                "references":units.iter().filter(|u|u["kind"]=="reference").collect::<Vec<_>>(),
+                "citations":units.iter().filter(|u|CALLS.contains(&u["kind"].as_str().unwrap())).collect::<Vec<_>>()}));
+        }
+        out.insert("link_map".into(),self.links(&ds,&targets,progress)?);self.bindings.verify()?;Ok(Value::Object(out))
+    }
+    fn links(&self,ds:&BTreeMap<String,&Value>,targets:&BTreeMap<String,Span>,progress:&mut impl FnMut(usize,usize,&str))->Result<Value>{
+        let mut owners=BTreeMap::new();let mut anchors=vec![];
+        for(id,span)in &self.candidate.anchors{
+            let u=owner(targets,*span).with_context(||format!("MAP_ANCHOR_DELIVERY_MISSING: {id}"))?;
+            owners.insert(id.clone(),u.to_owned());
+            anchors.push(json!({"id":id,"target_id":id,"target_unit":u,"source_id":self.units[u]["source"],
+                "candidate_locator":self.candidate.locator(*span)?,"status":"extracted","review_status":"pending"}));
+        }
+        let actual:BTreeSet<_>=self.candidate.links.iter().map(|o|o.locator.to_string()).collect();
+        let mut overrides=BTreeMap::<String,(&str,&Value)>::new();
+        for(id,d)in ds{if let Some(v)=d.get("link_bindings"){
+            for r in rows(v,"id")?{
+                let key=r["candidate_locator"].to_string();
+                ensure!(actual.contains(&key)&&overrides.insert(key,(id.as_str(),r)).is_none(),"MAP_LINK_OVERRIDE");
+            }
+        }}
+        let scheme=Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:")?;
+        let mut out:BTreeMap<&str,Vec<Value>>=LINKS.iter().map(|s|(*s,vec![])).collect();
+        let mut unresolved=vec![];let mut calls=BTreeMap::<String,BTreeSet<String>>::new();
+        for(i,o)in self.candidate.links.iter().enumerate(){
+            let key=o.locator.to_string();let id=format!("link-{}",files::digest(key.as_bytes()));
+            let explicit=overrides.get(&key);
+            let u=if let Some((u,_))=explicit{*u}else{owner(targets,o.span).with_context(||format!("MAP_LINK_DELIVERY_MISSING: {key}"))?};
+            ensure!(targets[u].contains(o.span),"MAP_LINK_ORIGIN_TARGET: {id}");
+            let over=explicit.map(|(_,r)|*r).unwrap_or(&Value::Null);
+            let unit=&self.units[u];let blocks=&self.unit_blocks[u];
+            let origin=over.get("origin_block").or_else(||ds[u].get("origin_block")).and_then(Value::as_str)
+                .or_else(||if blocks.len()==1{blocks.iter().next().map(String::as_str)}else{None}).context("MAP_LINK_SOURCE_BLOCK_MISSING")?;
+            ensure!(blocks.contains(origin),"MAP_LINK_ORIGIN_BLOCK");
+            let display=over.get("source_display_text").or_else(||unit.get("display_text")).and_then(Value::as_str).context("MAP_LINK_SOURCE_DISPLAY_MISSING")?;
+            ensure!(unit.get("display_text").is_none()||unit["display_text"]==display,"MAP_LINK_SOURCE_DISPLAY");
+            let href=percent_encoding::percent_decode_str(&o.href).decode_utf8_lossy();
+            let fragment=if let Some(f)=href.strip_prefix('#'){Some(f)}
+            else if let Some((p,f))=href.split_once('#'){
+                if files::canonical(&self.candidate_path.parent().unwrap().join(p)).ok().as_ref()==Some(&self.candidate_path){Some(f)}else{None}
+            }else{None};
+            let collection=if o.image{"resource_links"}else if fragment.is_some(){"internal_links"}else if scheme.is_match(&href)||href.starts_with("//"){"external_links"}else{"library_matches"};
+            let mut row=json!({"id":id,"source_id":unit["source"],"origin_unit":u,"origin_block":origin,"candidate_locator":o.locator,
+                "href":o.href,"display_text":o.label,"source_display_text":display,"syntax":o.syntax,"image":o.image,"status":"extracted","review_status":"pending"});
+            if collection=="internal_links"{
+                let f=fragment.unwrap();let (tid,target)=if let Some(a)=f.strip_prefix('^'){
+                    (a,owners.get(a).map(String::as_str).context("MAP_LINK_TARGET: unknown anchor")?)
+                }else{
+                    let spans=self.candidate.headings.get(f).filter(|s|s.len()==1).context("MAP_LINK_TARGET: absent/ambiguous heading")?;
+                    (f,owner(targets,spans[0]).context("MAP_LINK_TARGET_UNIT")?)
+                };
+                if unit["kind"]=="citation"{ensure!(unit["references"].as_array().unwrap().iter().any(|r|r==target),"MAP_CITATION_TARGET");}
+                if unit["kind"]=="cross_reference"{ensure!(unit["target_unit"]==target,"MAP_CROSS_REFERENCE_TARGET");}
+                ensure!(over.get("target_unit").is_none()||over["target_unit"]==target,"MAP_LINK_TARGET_UNIT");
+                if CALLS.contains(&unit["kind"].as_str().unwrap()){calls.entry(u.to_owned()).or_default().insert(target.to_owned());}
+                row["target_id"]=json!(tid);row["target_unit"]=json!(target);
+            }else{row["target_path"]=json!(o.href);}
+            if collection=="library_matches"{
+                let reason="No real-library identity lookup was supplied or performed.";
+                row["status"]=json!("unavailable");row["match_status"]=json!("unavailable");row["reason"]=json!(reason);
+                unresolved.push(json!({"id":format!("unresolved-{id}"),"occurrence_id":id,"unit":u,"source_id":unit["source"],"status":"unavailable","reason":reason}));
+            }
+            out.get_mut(collection).unwrap().push(row);progress(i+1,self.candidate.links.len(),"actual link occurrences");
+        }
+        for(id,u)in &self.units{
+            let wanted:BTreeSet<String>=match u["kind"].as_str().unwrap(){
+                "citation"=>u["references"].as_array().unwrap().iter().map(|r|r.as_str().unwrap().to_owned()).collect(),
+                "cross_reference"=>BTreeSet::from([u["target_unit"].as_str().unwrap().to_owned()]),_=>continue
+            };
+            ensure!(calls.get(id)==Some(&wanted),"MAP_CALL_COVERAGE: {id}");
+        }
+        let mut v=json!({"schema_version":1,"bindings":self.common,"status":"extracted","review_status":"pending","source_fidelity":"not_assessed",
+            "boundary":BOUNDARY,"anchors":anchors,"unresolved":unresolved});
+        for(k,rows)in out{v[k]=json!(rows);}Ok(v)
+    }
+}
+fn owner(targets:&BTreeMap<String,Span>,span:Span)->Option<&str>{
+    let mut result=None;let mut size=usize::MAX;
+    for(id,s)in targets{if !s.contains(span){continue;}if s.len()<size{size=s.len();result=Some(id.as_str());}else if s.len()==size{result=None;}}result
+}
+fn future(p:&Path)->Result<PathBuf>{
+    let p=std::path::absolute(p)?;if p.exists(){return files::canonical(&p);}
+    ensure!(!p.is_symlink(),"MAP_OUTPUT_EXISTS: dangling symlink");
+    Ok(future(p.parent().context("Output parent")?)?.join(p.file_name().context("Output filename")?))
+}
+fn map_paths(v:&Value,names:&BTreeSet<String>,new:bool,bindings:&Bindings)->Result<BTreeMap<String,PathBuf>>{
+    let m=v.as_object().context("MAP_PATHS")?;
+    ensure!(m.keys().cloned().collect::<BTreeSet<_>>()==*names,"MAP_PATHS: exact main/link and applicable supplement maps");
+    let mut used=HashSet::new();let mut out=BTreeMap::new();
+    for(name,v)in m{
+        let p=path(v)?;
+        if new{ensure!(!p.exists()&&!p.is_symlink(),"MAP_OUTPUT_EXISTS: {}",p.display());}
+        let p=if new{future(&p)?}else{files::canonical(&p)?};
+        ensure!(used.insert(p.clone())&&!bindings.files.contains_key(&p),"MAP_PATH_ALIAS: {name}");
+        if new{ensure!(!p.exists()&&!p.is_symlink(),"MAP_OUTPUT_EXISTS");}out.insert(name.clone(),p);
+    }Ok(out)
+}
+pub(crate) fn publish(p:&Path,v:&Value)->Result<Value>{
+    ensure!(!p.exists()&&!p.is_symlink(),"MAP_OUTPUT_EXISTS: {}",p.display());
+    let parent=p.parent().context("Map output parent")?;fs::create_dir_all(parent)?;
+    ensure!(files::canonical(parent)?==parent,"MAP_OUTPUT_PARENT_CHANGED");
+    let mut bytes=serde_json::to_vec_pretty(v)?;bytes.push(b'\n');
+    let mut f=tempfile::NamedTempFile::new_in(parent)?;f.write_all(&bytes)?;f.as_file().sync_all()?;
+    f.persist_noclobber(p).map_err(|e|anyhow::anyhow!("MAP_WRITE_FAILED: {}",e.error))?;
+    let b=check_ledger::bind_file(p)?;
+    ensure!(b["sha256"]==files::digest(&bytes)&&crate::pipeline::read_json(p)?==*v,"MAP_WRITE_READBACK");Ok(b)
+}
+fn finding(e:anyhow::Error)->Value{
+    let msg=format!("{e:#}");let code=msg.split(|c:char|!(c.is_ascii_uppercase()||c=='_'||c.is_ascii_digit())).find(|s|s.starts_with("MAP_")).unwrap_or("MAP_NATIVE_PREPARATION");
+    json!({"code":code,"object_id":"native_handoff","message":msg,"level":"error"})
+}
+fn report(checked:Map<String,Value>,written:Map<String,Value>,findings:Vec<Value>)->Value{
+    json!({"findings":findings,"checked_files":checked,"written_paths":written,"records_ready":findings.is_empty(),
+        "source_fidelity":"not_assessed","boundary":BOUNDARY,"native_generation_candidate":true})
+}
+pub fn write(inventory:&Path,candidate:&Path,deliveries:&Value,paths:&Value,expected:&Value,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    let mut checked=Map::new();let mut written=Map::new();
+    let result=(||->Result<()>{
+        let mut c=Ctx::load(inventory,candidate,expected,false,&mut progress)?;
+        checked.insert("source_inventory".into(),c.common["source_inventory"].clone());checked.insert("candidate".into(),c.common["candidate"].clone());
+        let docs=c.derive(deliveries,&mut progress)?;let dest=map_paths(paths,&c.names(),true,&c.bindings)?;
+        c.bindings.verify()?;
+        for(i,(name,p))in dest.iter().enumerate(){
+            let b=publish(p,&docs[name])?;written.insert(name.clone(),b["path"].clone());checked.insert(name.clone(),b);
+            progress(i+1,dest.len(),"new handoff maps written and read back");
+        }
+        c.bindings.verify()?;Ok(())
+    })();
+    Ok(report(checked,written,result.err().map(finding).into_iter().collect()))
+}
+// Check every generated field against independently re-derived records.
+// Manual merged/compact historical maps are not treated as equivalent.
+fn check_rows(actual:&Value,expected:&Value,key:&str,name:&str)->Result<()>{
+    let a=index(actual,key)?;let b=index(expected,key)?;
+    ensure!(a.keys().eq(b.keys()),"MAP_COLLECTION_COVERAGE: {name}");
+    for(id,want)in b{
+        let got=a[&id];
+        for(k,v)in want.as_object().unwrap(){
+            if matches!(k.as_str(),"status"|"review_status"){ensure!(nonempty(&got[k]),"MAP_RECORD_STATUS: {id}");continue;}
+            ensure!(got.get(k)==Some(v),"MAP_RECORD_MISMATCH: {name}.{id}.{k}");
+        }
+        if let Some(v)=got.get("target_unit"){ensure!(want.get("target_unit")==Some(v),"MAP_BLOCK_TARGET_SET: {id}");}
+    }Ok(())
+}
+pub(crate) struct VerifiedMaps{pub docs:Value,pub checked:Map<String,Value>,pub bindings:Bindings}
+pub(crate) fn validate_full(inventory:&Path,candidate:&Path,paths:&Value,expected:&Value,progress:&mut impl FnMut(usize,usize,&str))->Result<VerifiedMaps>{
+    let mut c=Ctx::load(inventory,candidate,expected,true,progress)?;let dest=map_paths(paths,&c.names(),false,&c.bindings)?;
+    let mut actual=Map::new();let mut checked=Map::new();let mut deliveries=vec![];
+    checked.insert("source_inventory".into(),c.common["source_inventory"].clone());checked.insert("candidate".into(),c.common["candidate"].clone());
+    for(name,p)in &dest{
+        let (v,b)=c.bindings.json(p)?;ensure!(v["bindings"]==c.common,"MAP_BINDINGS: {name}");
+        if name!="link_map"{for row in rows(&v["units"],"unit")?{
+            let d=&row["delivery"];ensure!(d.is_object()&&d["unit"]==row["unit"]&&d["target"]==row["target"],"MAP_DELIVERY_CONFLICT");
+            deliveries.push(d.clone());
+        }}
+        checked.insert(name.clone(),b);actual.insert(name.clone(),v);
+    }
+    let docs=c.derive(&json!(deliveries),progress)?;
+    for name in dest.keys(){
+        let got=&actual[name];let want=&docs[name];
+        ensure!(got["source_fidelity"]=="not_assessed"&&nonempty(&got["status"])&&nonempty(&got["review_status"]),"MAP_RECORD_STATUS: {name}");
+        let groups=if name=="link_map"{vec![("anchors","id"),("internal_links","id"),("library_matches","id"),("external_links","id"),("resource_links","id"),("unresolved","id")]}
+        else{vec![("sources","id"),("blocks","block_id"),("units","unit"),("metadata","unit"),("objects","unit"),("references","unit"),("citations","unit")]};
+        for(group,key)in groups{check_rows(&got[group],&want[group],key,&format!("{name}.{group}"))?;}
+    }
+    c.bindings.verify()?;Ok(VerifiedMaps{docs:Value::Object(actual),checked,bindings:c.bindings})
+}
+pub fn validate(inventory:&Path,candidate:&Path,paths:&Value,expected:&Value,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    match validate_full(inventory,candidate,paths,expected,&mut progress){
+        Ok(v)=>Ok(report(v.checked,Map::new(),vec![])),Err(e)=>Ok(report(Map::new(),Map::new(),vec![finding(e)])),
+    }
+}

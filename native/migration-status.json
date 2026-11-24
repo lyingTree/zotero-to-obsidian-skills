@@ -42,7 +42,7 @@
     },
     "source_delivery_mapping_and_review_ledger": {
       "qualified": false,
-      "blocker": "Actual PDF/DOCX inventory replay and draft evidence binding integrated; full handoff generation, mapping rerun and delivery validation remain"
+      "blocker": "Explicit native handoff generation, rederived validation and actual mapping rerun candidate implemented; compact/merged historical representations, complex locator parity and final delivery validation remain"
     },
     "translation_review_lifecycle": {
       "qualified": false,
@@ -50,7 +50,7 @@
     },
     "native_complete_workflow": {
       "qualified": false,
-      "blocker": "PDF/DOCX mixed-source initialization and draft routing implemented; complete post-draft handoff, mapping rerun and delivery validation remain"
+      "blocker": "Native mixed-source initialization, draft queue, explicit handoff and actual mapping rerun candidate; post-draft complete inspection and final delivery validation remain"
     },
     "native_installation_and_external_integration": {
       "qualified": false,

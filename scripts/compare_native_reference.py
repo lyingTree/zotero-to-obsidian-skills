@@ -1331,5 +1331,38 @@ class NativeTranslationLifecycleComparison(unittest.TestCase):
             fixture.doCleanups()
 
 
+
+class NativeHandoffGenerationComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_generated_main_si_and_actual_rerun(self):
+        import test_handoff_maps as suite
+        fixture = suite.Fixture(self.root.joinpath("fixture"), candidate_eol="\r\n")
+        expected_report = fixture.write()
+        self.assertTrue(expected_report.records_ready, expected_report.as_dict())
+        paths = {name: str(self.root.joinpath("native", name + ".json")) for name in fixture.paths}
+        result = self.invoke("handoff_maps.write_handoff_maps", str(fixture.inventory_path),
+                             str(fixture.candidate), fixture.deliveries, paths,
+                             expected_source_bindings=fixture.expected)
+        self.assertTrue(result["records_ready"], result)
+        left = {name: suite.read(path) for name, path in fixture.paths.items()}
+        right = {name: suite.read(Path(path)) for name, path in paths.items()}
+        comparison = self.invoke("mapping_rerun.compare_stable_projections", left, right)
+        self.assertTrue(comparison["mapping_equal"], comparison)
+        validated = self.invoke("handoff_maps.validate_handoff_maps", str(fixture.inventory_path),
+                               str(fixture.candidate), paths, expected_source_bindings=fixture.expected)
+        self.assertTrue(validated["records_ready"], validated)
+        run = self.root.joinpath("run.json")
+        suite.save(run, {"schema_version": 1, "records": {"source_inventory": str(fixture.inventory_path), **paths},
+                         "config": {"candidate_path": str(fixture.candidate)},
+                         "identity": {"sources": [{"id": key, **value} for key, value in fixture.expected.items()]},
+                         "scope": {"source_roles": {key: value["role"] for key, value in fixture.expected.items()}}})
+        receipt = Path(self.invoke("mapping_rerun.record_mapping_rerun", str(run), fixture.deliveries,
+                                   str(self.root.joinpath("rerun"))))
+        rerun = suite.read(receipt)
+        self.assertTrue(rerun["actual_rerun_performed"])
+        self.assertTrue(rerun["mapping_equal"], rerun)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

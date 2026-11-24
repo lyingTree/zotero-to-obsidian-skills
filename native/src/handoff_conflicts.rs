@@ -74,7 +74,7 @@ fn page_index(source:&Value)->Result<HashMap<u64,&Value>>{
     }
     Ok(pages)
 }
-fn validate_records(unit:&Value,source:&Value,source_file:&Value,base:&Path,
+pub(crate) fn validate_records(unit:&Value,source:&Value,source_file:&Value,base:&Path,
                     pdf:&Pdf,records:&Value,require_resolved:bool)->Result<Vec<Value>>{
     let mut checked=Vec::new();
     let records=index(records,"text_visual_conflicts")?;
