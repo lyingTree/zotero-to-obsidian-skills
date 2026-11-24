@@ -609,5 +609,47 @@ class NativePreparationComparison(unittest.TestCase):
                          ref.new_term_candidate("t","ocean","concept",source_excerpt="ocean",source_locator=loc))
 
 
+class NativeAtomicPreparationComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_actual_repository_rule_catalog(self):
+        expected = reference.coverage_catalog(ROOT)
+        actual = self.invoke("deterministic_stage_checks.coverage_catalog", str(ROOT))
+        self.assertEqual(actual, expected)
+
+    def test_atomic_ledger_creation_and_pending_queries(self):
+        import test_check_records as suite
+        fixture = suite.CheckRecordsTests(methodName="test_skeleton_discovers_all_atomic_ids_without_resolving_any")
+        fixture.setUp()
+        try:
+            expected = fixture.ledger
+            output = fixture.base.joinpath("rust-checks.json")
+            self.invoke("check_records.prepare_check_records", str(fixture.skills), str(output),
+                        sources={"source-a": str(fixture.pdf)}, candidate_path=str(fixture.candidate),
+                        scopes=fixture.scopes, requirement_types=fixture.types, rule_selection="all")
+            actual = json.loads(output.read_text(encoding="utf-8"))
+            # UTC timestamps describe distinct executions. Compare every other
+            # field, including complete rule declarations, selection and hashes.
+            expected = dict(expected)
+            actual.pop("created_at")
+            expected.pop("created_at")
+            self.assertEqual(actual, expected)
+            from complete_workflow import pending_check_batch, pending_check_rows
+            for prefix in (None, "EX", "FMT"):
+                self.assertEqual(self.invoke("complete_workflow.pending_check_batch", str(output), prefix=prefix, limit=5),
+                                 pending_check_batch(output, prefix=prefix, limit=5))
+                self.assertEqual(self.invoke("complete_workflow.pending_check_rows", str(output), prefix=prefix, limit=2),
+                                 pending_check_rows(output, prefix=prefix, limit=2))
+            locator = {"kind": "lines", "start": 1, "end": 1}
+            self.assertEqual(self.invoke("check_records.bind_evidence", str(fixture.candidate), locator),
+                             suite.checker.bind_evidence(fixture.candidate, locator))
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("check_records.prepare_check_records", str(fixture.skills), str(output),
+                            sources={"source-a": str(fixture.pdf)})
+        finally:
+            fixture.doCleanups()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

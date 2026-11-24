@@ -596,3 +596,39 @@ fn docx_source_orchestrator_blocks_pdf_before_writing(){
     assert!(result.unwrap_err().to_string().contains("UNMIGRATED_PDF_INVENTORY"));
     assert!(!out.exists());
 }
+
+
+#[test]
+fn atomic_rule_catalog_ignores_comments_and_fences_and_binds_exact_bytes(){
+    use z2o_native::check_ledger as checks;
+    let root=tempdir().unwrap();
+    let skills=root.path().join("skills");
+    let skill=skills.join("example");
+    fs::create_dir_all(skill.join("references")).unwrap();
+    fs::write(skill.join("SKILL.md"),"---\nname: example\n---\n# Example\n- [X-C01] Constraint.\n- [ ] [X-A01] Outcome. <!-- check-type: offline_outcome -->\n- [ ] [X-A02] Observe. <!-- check-type: execution_process -->\n<!--\n- [FAKE-A01] Hidden.\n-->\n\x60\x60\x60markdown\n- [FAKE-A02] Code.\n\x60\x60\x60\n").unwrap();
+    fs::write(skill.join("references").join("rules.md"),"- [PROP-A01] Actual YAML. <!-- check-type: offline_outcome -->\n").unwrap();
+    let cat=checks::coverage(&skills,|_,_,_|{}).unwrap();
+    let rows=cat["rules"].as_array().unwrap();
+    assert_eq!(rows.len(),4);
+    assert_eq!(rows[1]["id"],"X-A01");
+    assert_eq!(rows[1]["rule"]["line"],6);
+    assert_eq!(rows[1]["declared_type"],"offline_outcome");
+    assert_eq!(rows[3]["new_stage_helper"],"audit_properties");
+    let source=root.path().join("source.pdf");let candidate=root.path().join("candidate.md");
+    fs::write(&source,b"fixture").unwrap();fs::write(&candidate,b"candidate\n").unwrap();
+    let options=||checks::PrepareOptions{
+        sources:json!({"source":source.to_str().unwrap()}),candidates:Value::Null,candidate_path:Some(candidate.clone()),
+        scopes:json!({"X-A01":[{"object_id":"p1","locator":{"kind":"whole_file"}}]}),types:Value::Null,environments:Value::Null,
+        mode:"acceptance".into(),additional:json!([]),
+    };
+    let output=root.path().join("checks.json");
+    checks::prepare(&skills,&output,options(),|_,_,_|{}).unwrap();
+    let payload=z2o_native::pipeline::read_json(&output).unwrap();
+    assert_eq!(payload["catalog"].as_array().unwrap().len(),4);
+    assert_eq!(payload["checks"].as_array().unwrap().len(),3);
+    assert!(payload["checks"].as_array().unwrap().iter().all(|r|r["status"]=="not_verified"&&r["evidence"]==json!([])));
+    assert_eq!(checks::pending_rows(&output,40,Some("X")).unwrap(),json!([["X-A01","Outcome."]]));
+    assert!(checks::prepare(&skills,&output,options(),|_,_,_|{}).is_err());
+    fs::write(skill.join("references").join("duplicate.md"),"- [X-A01] Duplicate.\n").unwrap();
+    assert!(checks::coverage(&skills,|_,_,_|{}).is_err());
+}

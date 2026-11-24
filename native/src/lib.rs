@@ -22,6 +22,7 @@ pub mod acceptance;
 pub mod docx;
 pub mod translation_prepare;
 pub mod source_prepare;
+pub mod check_ledger;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -93,6 +94,12 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_translation_review.expand_source_locations",
     "prepare_translation_review.prepare_translation_review",
     "prepare_source_inventory.prepare_docx_sources",
+    "check_records.bind_file",
+    "check_records.bind_evidence",
+    "check_records.prepare_check_records",
+    "deterministic_stage_checks.coverage_catalog",
+    "complete_workflow.pending_check_batch",
+    "complete_workflow.pending_check_rows",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -516,6 +523,44 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             json!(path_text(&source_prepare::prepare_docx_sources(&sources,&root,&roles,glossary.as_deref(),dpi,
                 |i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?)?)
+        }
+        "check_records.bind_file" | "check_records.bind_evidence" => {
+            let p=path(&c.positional("path")?)?;
+            if op.ends_with("bind_file"){c.finish()?;check_ledger::bind_file(&p)?}
+            else{
+                let loc=c.positional("locator")?;let typ=string(&c.option("evidence_type",json!("offline_result")),"evidence_type")?;
+                let obs=c.option("observation",Value::Null);c.finish()?;check_ledger::bind_evidence(&p,&loc,&typ,&obs)?
+            }
+        }
+        "deterministic_stage_checks.coverage_catalog" => {
+            let p=path(&c.positional("skills_root")?)?;c.finish()?;
+            check_ledger::coverage(&p,|i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?
+        }
+        "check_records.prepare_check_records" => {
+            let root=path(&c.positional("skills_root")?)?;let output=path(&c.positional("output_path")?)?;
+            let sources=c.required("sources")?;let candidates=c.option("candidates",Value::Null);
+            let candidate=c.option("candidate_path",Value::Null);
+            let candidate_path=if candidate.is_null(){None}else{Some(path(&candidate)?)};
+            let scopes=c.option("scopes",Value::Null);let types=c.option("requirement_types",Value::Null);
+            let environments=c.option("environment_kinds",Value::Null);
+            let mode=string(&c.option("rule_selection",json!("acceptance")),"rule_selection")?;
+            let additional=c.option("additional_ids",json!([]));
+            let inventory=c.option("inventory_path",Value::Null);
+            let overwrite=c.option("overwrite",json!(false));
+            c.finish()?;
+            ensure!(inventory.is_null()&&overwrite==false,"UNMIGRATED_LEDGER_TRANSACTION: inventory writeback or overwrite requires full native transaction support");
+            let options=check_ledger::PrepareOptions{sources,candidates,candidate_path,scopes,types,environments,mode,additional};
+            json!(path_text(&check_ledger::prepare(&root,&output,options,|i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?)?)
+        }
+        "complete_workflow.pending_check_batch" | "complete_workflow.pending_check_rows" => {
+            let p=path(&c.positional("checks_path")?)?;
+            let limit=c.option("limit",json!(if op.ends_with("pending_check_batch"){20}else{40})).as_u64().context("limit must be a positive integer")?;
+            let limit=usize::try_from(limit)?;
+            let prefix=c.option("prefix",Value::Null);
+            let prefix=if prefix.is_null(){None}else{Some(string(&prefix,"prefix")?)};
+            c.finish()?;
+            if op.ends_with("pending_check_batch"){check_ledger::pending_batch(&p,limit,prefix.as_deref())?}
+            else{check_ledger::pending_rows(&p,limit,prefix.as_deref())?}
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

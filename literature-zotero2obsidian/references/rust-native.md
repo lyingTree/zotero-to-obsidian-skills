@@ -35,6 +35,7 @@
 | docx_source_inventory | 原生 XML、段落/表格/图片关系、嵌入媒体、待核对象及原生位置校验 |
 | prepare_source_inventory | DOCX 专用来源准备；PDF 仍阻断 |
 | prepare_translation_review | 真实文件绑定、位置扩展、待核出现项/术语及翻译审计初始化 |
+| check_records / complete_workflow 增量 | 实际规则目录、证据绑定、全量待核台账的独占创建、待核队列；验证、写回和事务仍待迁移 |
 | 其他操作 | 以 native/migration-status.json 和实际二进制 describe 为准，尚未全部迁移 |
 
 所有原生实现目前均需通过相应回归，不能以新增函数数量充当迁移完成率。YAML 解析使用 serde-saphyr 的重复键拒绝及解析预算；保守修复不重新序列化原有自定义属性，不确定的复杂 YAML 阻断。Unicode 规范化/完整 casefold 算法必须与目标文件系统约定及参考版本对照，不能假设库的 Unicode 数据版本一致。路径使用本机 Path/PathBuf，文件名仍同时检查 UTF-16 单元及可声明的 UTF-8 字节预算。资源相对路径拒绝穿越、设备名和解析到根外的符号链接；并发文件替换不是本阶段只读扫描所能完全消除的风险。
@@ -79,3 +80,5 @@ native/migration-status.json 登记实际存在的 23 个参考模块和 11 项�
 ### 来源准备与翻译审计初始化
 
 DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结果。新增 prepare_source_inventory.prepare_docx_sources 可为一组 DOCX 生成统一来源清单及待核术语记录；在创建工作目录前阻断 PDF（无 Python 回退）。JSON 对象按键顺序处理，跨文档阅读顺序必须由独立来源计划确认。新增 prepare_translation_review 的原生脚手架在发布前复核源、清单、候选和术语表文件哈希，保留显式选中和未选中单元、各类待核检查与出现项；不推断任何语义结论。新增实际文件比较及负例测试，仍待 CI 验证。尚未移植 PDF 渲染/图片对象链、翻译审计 writer/validator、完整验收台账/映射及原生安装器和 API。
+
+原子规则目录迁移保留实际 SKILL.md 和 references 的字节哈希、行号、声明类型与完整独立 ID；注释、代码和嵌套归档不计入。新建台账只生成 not_verified，不产生内容或执行通过结论。旧台账覆盖和 inventory_path 写回在原生事务未实现前明确阻断；完整校验器和记录写回未迁移。因此不能将此增量标为 check_records 或 complete_workflow 已具备发布资格。
