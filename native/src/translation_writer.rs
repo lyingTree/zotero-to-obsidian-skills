@@ -246,6 +246,42 @@ impl Writer{
         }
         Ok(Selection{locator:loc,reading:reading.into(),raw:Some(quote.into()),basis:selector["interpretation_basis"].clone()})
     }
+    /// JSON transport for the original UnitReview selection API. The returned
+    /// selector may be replayed, but the client cannot assert a trusted
+    /// Selection object: each subsequent decision resolves it again.
+    pub fn select(&mut self,id:&str,side:&str,selector:&Value)->Result<Value>{
+        ensure!(self.selected.iter().any(|s|s==id),"TRW_UNIT: use selected prepared unit");
+        self.ranges(id)?;
+        let fields:&[&str]=match side{
+            "source"=>&["quote","page","bbox","block_id","occurrence","observation_basis"],
+            "candidate"=>&["quote","lines","occurrence","comparison_text","interpretation_basis"],
+            _=>return Err(anyhow!("TRW_SELECTION_UNIT: unknown selection side")),
+        };
+        let supplied=selector.as_object().context("TRW_LOCATION: selector must be an object")?;
+        ensure!(supplied.keys().all(|k|fields.contains(&k.as_str())),"TRW_LOCATION: unknown selector field");
+        let mut normalized=Map::new();
+        for key in fields{normalized.insert((*key).to_owned(),selector[*key].clone());}
+        let selector=Value::Object(normalized);
+        for key in ["block_id","observation_basis","comparison_text","interpretation_basis"]{
+            ensure!(selector[key].is_null()||selector[key].is_string(),"TRW_LOCATION: invalid {key}");
+        }
+        self.verify()?;
+        let selected=match side{"source"=>self.source(id,&selector)?,"candidate"=>self.candidate(id,&selector)?,_=>unreachable!()};
+        self.verify()?;
+        Ok(json!({"unit_id":id,"side":side,"locator":selected.locator,"text":selected.reading,
+            "raw_text":selected.raw,"basis":selected.basis,"selector":selector}))
+    }
+    pub fn snapshot(&self)->Value{
+        json!({"data":self.data,"prepared":self.prepared,"decisions":self.commands,"terminology_summary":self.summary})
+    }
+    pub fn append_decision(&mut self,command:&Value)->Result<Value>{
+        // Replay from the frozen preparation is performed by the caller before
+        // this operation. There is no accepting caller-supplied mutable ledger.
+        self.verify()?;
+        self.apply(command)?;
+        self.verify()?;
+        Ok(self.snapshot())
+    }
     pub fn apply(&mut self,command:&Value)->Result<Value>{
         let command_obj=command.as_object().context("TRW_DRAFT: invalid short call")?;
         let op=text(&command["op"],"op")?;

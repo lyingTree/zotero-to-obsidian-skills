@@ -83,6 +83,11 @@
   ],
   "nonruntime_api_exclusions": {},
   "api_replacements": {
-    "docx_source_inventory.NativeDocument.resolve_native_locator": "docx_source_inventory.resolve_native_locator"
+    "docx_source_inventory.NativeDocument.resolve_native_locator": "docx_source_inventory.resolve_native_locator",
+    "translation_review_writer.UnitReview.source": "translation_review_writer.select_source",
+    "translation_review_writer.UnitReview.candidate": "translation_review_writer.select_candidate",
+    "translation_review_writer.ReviewWriter.save": "translation_review_writer.save_review",
+    "translation_review_writer.ReviewWriter.save_draft": "translation_review_writer.save_decision_draft",
+    "translation_review_writer.ReviewWriter.from_draft": "translation_review_writer.restore_decision_draft"
   }
 }

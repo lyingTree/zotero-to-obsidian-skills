@@ -137,6 +137,9 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_translation_review.prepare_translation_review",
     "validate_translation_review.validate_translation_review",
     "translation_review_writer.replay_decisions",
+    "translation_review_writer.select_source",
+    "translation_review_writer.select_candidate",
+    "translation_review_writer.append_decision",
     "translation_review_writer.save_decision_draft",
     "translation_review_writer.restore_decision_draft",
     "translation_review_writer.save_review",
@@ -785,6 +788,19 @@ pub fn invoke(request: Value) -> Result<Value> {
             let inv=if inv.is_null(){None}else{Some(path(&inv)?)};
             let candidate=if candidate.is_null(){None}else{Some(path(&candidate)?)};
             c.finish()?;translation_validate::validate(&p,inv.as_deref(),candidate.as_deref())?
+        }
+        "translation_review_writer.select_source" | "translation_review_writer.select_candidate" |
+        "translation_review_writer.append_decision" => {
+            let p=path(&c.positional("prepared_path")?)?;
+            let decisions=c.optional_positional("decisions",json!([]))?;
+            let mut writer=translation_writer::replay(&p,&decisions)?;
+            if op.ends_with("append_decision"){
+                let command=c.required("command")?;c.finish()?;writer.append_decision(&command)?
+            }else{
+                let id=string(&c.required("unit_id")?,"unit_id")?;
+                let selector=c.required("selector")?;c.finish()?;
+                writer.select(&id,if op.ends_with("select_source"){"source"}else{"candidate"},&selector)?
+            }
         }
         "translation_review_writer.replay_decisions" |
         "translation_review_writer.save_decision_draft" | "translation_review_writer.save_review" |

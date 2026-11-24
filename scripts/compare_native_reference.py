@@ -1142,6 +1142,47 @@ class NativeFigureEdgeComparison(unittest.TestCase):
         self.assertEqual(rs.read_bytes(), original)
 
 
+class NativeTranslationSelectionComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_explicit_selectors_and_incremental_decision_replay(self):
+        import test_translation_review_writer as suite
+        fixture = suite.CompactReviewTests(methodName="test_compact_draft_resumes_exact_decisions_and_keeps_remaining_targets")
+        fixture.setUp()
+        try:
+            writer, unit = fixture.active()
+            decisions = [{"op": "unit", "unit_id": "one", "candidate_locations": [{"lines": [1, 1]}]}]
+            for side, selector in (
+                ("source", {"quote": "cobalt badge"}),
+                ("candidate", {"quote": "钴蓝色徽片"}),
+                ("candidate", {"quote": "7 px", "comparison_text": "7 pixels", "interpretation_basis": "Explicit fixture reading"}),
+            ):
+                expected = getattr(unit, side)(**selector)
+                actual = self.invoke("translation_review_writer.select_" + side, str(fixture.prepared),
+                    decisions, unit_id="one", selector=selector)
+                self.assertEqual(actual, {key: getattr(expected, key) for key in
+                    ("unit_id", "side", "locator", "text", "raw_text", "basis", "selector")})
+            command = {"op": "check", "unit_id": "one", "name": "alignment", "status": "passed",
+                       "reason": "Explicit fixture observation."}
+            unit.check("alignment", "passed", command["reason"])
+            updated = self.invoke("translation_review_writer.append_decision", str(fixture.prepared),
+                decisions, command=command)
+            self.assertEqual(updated["data"], writer.data)
+            self.assertEqual(updated["decisions"], decisions + [command])
+            for side, selector in (("source", {"quote": "nonexistent"}), ("candidate", {"quote": "玩具窗"}),
+                                   ("candidate", {"quote": "7 px", "comparison_text": "7 pixels"})):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.invoke("translation_review_writer.select_" + side, str(fixture.prepared),
+                        decisions, unit_id="one", selector=selector)
+            fixture.candidate.write_text("Changed candidate", encoding="utf-8")
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("translation_review_writer.select_source", str(fixture.prepared),
+                    decisions, unit_id="one", selector={"quote": "cobalt badge"})
+        finally:
+            fixture.doCleanups()
+
+
 class NativeTranslationLifecycleComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp
     invoke = ReferenceComparison.invoke
