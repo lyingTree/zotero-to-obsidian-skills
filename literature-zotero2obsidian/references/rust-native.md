@@ -101,3 +101,7 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 ### PDF 与交付准备增量
 
 新增真实 PDF 页树、未旋转坐标、Do 调用及嵌套 Form 遍历、原始流哈希、遮罩引用与图形状态记录；仅生成结构证据，不能替代原来的页面图像/文本清单。index_page_structure 与 prepare_pdf_structure_evidence 明示 not_rendered，不授予原始 ImageObjectIndexer 或完整提取资格。prepare_sources 对 DOCX 保持现有实现，对 PDF 仍阻断。新增真实文件绑定的交付清单、Markdown 链接位置、来源单元结构和稳定投影对照；对照不是实际 rerun，保留 original record_mapping_rerun 阻断，直到真实地图生成与验证迁移完成。候选实现待完整差分与跨平台 CI。
+
+### 翻译审计生命周期增量
+
+原生 validate_translation_review 按真实源文件/候选/术语表哈希、原始 PDF 页范围、DOCX XML 定位、候选行及唯一引文、逐处出现项、逐类别术语检索、术语指针、范围排除和事件证据生成逐项记录诊断。原生 writer 采用无状态 JSON 短命令重放：replay_decisions、save_decision_draft、restore_decision_draft、save_review，执行实际 glossary 查询而非接受伪造 hit；源/候选原始范围和声明的可见/转义读法分开，保存新文件和原始绑定。task 模块据同一验证器按 scope→unit→global 的顺序提供任务，最终预览只写临时文件。未验证的旧类接口映射保留未资格化，不以新增接口数量替代行为等价；原有完整正例及多类反例用于差分测试。发布门禁仍保持关闭。

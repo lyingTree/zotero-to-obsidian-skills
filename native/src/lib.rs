@@ -31,6 +31,9 @@ pub mod draft_queue;
 pub mod delivery_prepare;
 pub mod mapping_compare;
 pub mod pdf_structure;
+pub mod translation_validate;
+pub mod translation_writer;
+pub mod translation_tasks;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -125,6 +128,14 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_translation_review.new_term_candidate",
     "prepare_translation_review.expand_source_locations",
     "prepare_translation_review.prepare_translation_review",
+    "validate_translation_review.validate_translation_review",
+    "translation_review_writer.replay_decisions",
+    "translation_review_writer.save_decision_draft",
+    "translation_review_writer.restore_decision_draft",
+    "translation_review_writer.save_review",
+    "translation_review_tasks.unit_record_report",
+    "translation_review_tasks.require_unit_records",
+    "translation_review_tasks.next_review_task",
     "prepare_source_inventory.prepare_docx_sources",
     "check_records.bind_file",
     "check_records.bind_evidence",
@@ -708,6 +719,45 @@ pub fn invoke(request: Value) -> Result<Value> {
             let p=path(&c.positional("path")?)?;c.finish()?;
             let binding=check_ledger::bind_file(&p)?;
             if op.ends_with("sha256_file"){binding["sha256"].clone()}else{binding}
+        }
+        "validate_translation_review.validate_translation_review" => {
+            let p=path(&c.positional("path")?)?;
+            let inv=c.optional_positional("inventory_path",Value::Null)?;
+            let candidate=c.optional_positional("candidate_path",Value::Null)?;
+            let inv=if inv.is_null(){None}else{Some(path(&inv)?)};
+            let candidate=if candidate.is_null(){None}else{Some(path(&candidate)?)};
+            c.finish()?;translation_validate::validate(&p,inv.as_deref(),candidate.as_deref())?
+        }
+        "translation_review_writer.replay_decisions" |
+        "translation_review_writer.save_decision_draft" | "translation_review_writer.save_review" |
+        "translation_review_tasks.unit_record_report" | "translation_review_tasks.require_unit_records" |
+        "translation_review_tasks.next_review_task" => {
+            let p=path(&c.positional("prepared_path")?)?;
+            let decisions=c.optional_positional("decisions",json!([]))?;
+            let mut writer=translation_writer::replay(&p,&decisions)?;
+            match op.as_str(){
+                "translation_review_writer.replay_decisions"=>{c.finish()?;json!({"data":writer.data,"prepared":writer.prepared,"decisions":writer.commands,"terminology_summary":writer.summary})}
+                "translation_review_writer.save_decision_draft"=>{
+                    let dest=path(&c.required("output_path")?)?;c.finish()?;json!(path_text(&writer.draft(&dest)?)?)
+                }
+                "translation_review_writer.save_review"=>{
+                    let dest=path(&c.required("output_path")?)?;
+                    let term=c.option("terminology_path",Value::Null);let term=if term.is_null(){None}else{Some(path(&term)?)};
+                    c.finish()?;writer.save(&dest,term.as_deref())?
+                }
+                "translation_review_tasks.unit_record_report"|"translation_review_tasks.require_unit_records"=>{
+                    let id=string(&c.required("unit_id")?,"unit_id")?;c.finish()?;translation_tasks::unit_report(&mut writer,&id,op.ends_with("require_unit_records"))?
+                }
+                _=>{
+                    let limit=c.option("scope_limit",json!(8)).as_u64().context("scope_limit must be a positive integer")?;
+                    c.finish()?;translation_tasks::next(&mut writer,usize::try_from(limit)?)?
+                }
+            }
+        }
+        "translation_review_writer.restore_decision_draft" => {
+            let p=path(&c.positional("draft_path")?)?;c.finish()?;
+            let writer=translation_writer::Writer::from_draft(&p)?;
+            json!({"data":writer.data,"prepared":writer.prepared,"decisions":writer.commands,"terminology_summary":writer.summary})
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

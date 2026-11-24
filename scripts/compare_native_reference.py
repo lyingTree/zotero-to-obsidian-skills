@@ -934,5 +934,83 @@ class NativeDeliveryPreparationComparison(unittest.TestCase):
                          [asdict(v) for v in delivery.scan_markdown_links(text)])
 
 
+
+class NativeTranslationLifecycleComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_reference_completed_and_defective_ledgers(self):
+        import test_translation_review as suite
+        fixture=suite.TranslationRecordValidationTests(methodName="test_complete_synthetic_record_is_ready_without_semantic_certification")
+        fixture.setUp()
+        try:
+            from collections import Counter
+            from copy import deepcopy
+            ledger=fixture.completed()
+            def compare(data):
+                fixture.save_ledger(data)
+                expected=fixture.validate().to_dict()
+                actual=self.invoke("validate_translation_review.validate_translation_review",str(fixture.path))
+                self.assertEqual(actual["records_ready"],expected["records_ready"],actual["findings"])
+                self.assertEqual(Counter((x["code"],x["object_id"],x["level"]) for x in actual["findings"]),
+                                 Counter((x["code"],x["object_id"],x["level"]) for x in expected["findings"]))
+                for field in ("status_counts","inventory_unit_count","selected_unit_count","recorded_unit_count","excluded_unit_count","review_status","source_fidelity","execution_truth"):
+                    self.assertEqual(actual[field],expected[field],field)
+                for field in ("pending_ids","failed_ids","unresolved_ids"):
+                    self.assertEqual(sorted(actual[field]),sorted(expected[field]),field)
+            compare(ledger)
+            mutations=[
+                lambda v:v["units"]["paragraph-a"]["occurrences"].update(claims=[]),
+                lambda v:v["units"]["paragraph-a"]["checks"].pop("directions"),
+                lambda v:v["units"]["paragraph-a"]["candidate_locations"].append({"lines":[99,99]}),
+                lambda v:v["units"]["paragraph-a"]["term_candidates"][0]["searches"]["family"].update(status="not_applicable",queries=[]),
+                lambda v:v["units"]["paragraph-a"]["term_candidates"][0].update(terminology_pointer="/adopted/999"),
+                lambda v:v["units"]["paragraph-a"]["occurrences"]["claims"][0].update(candidate_span={"lines":[2,2]}),
+                lambda v:v["bindings"]["candidate"].update(sha256="0"*64),
+                lambda v:v["scope"].update(selected_units=["paragraph-a"]),
+            ]
+            for mutate in mutations:
+                data=deepcopy(ledger);mutate(data);compare(data)
+        finally:
+            fixture.doCleanups()
+
+    def test_replay_real_reference_writer_draft_and_final_files(self):
+        import test_translation_review_writer as suite
+        fixture=suite.CompactReviewTests(methodName="test_compact_draft_resumes_exact_decisions_and_keeps_remaining_targets")
+        fixture.setUp()
+        try:
+            writer,unit=fixture.active()
+            writer.scope("passed","Explicit fixture scope decision.")
+            writer.exclude("two","This independent fixture task selects one paragraph.","Second paragraph is outside the selected scope.")
+            unit.check("alignment","passed","Actual complete pair was compared.")
+            unit.occurrence("claims","claim-a",unit.source(fixture.source_text),unit.candidate(fixture.candidate_text),
+                            "failed","Retain explicit failed comparison.")
+            term=unit.term("badge","cobalt badge","concept",unit.source("cobalt badge"))
+            term.search("full_phrase","cobalt badge","Actual exact search.")
+            term.search("family","badge","Actual family search.")
+            term.search_status("aliases","not_applicable","No alias in the selected source.")
+            term.decide("adopted","钴蓝色徽片","Explicit fixture decision.",matches=["BADGE"])
+            unit.scan("concept","scanned",["badge"],"One actual candidate.")
+            draft=writer.save_draft(fixture.base.joinpath("reference-draft.json"))
+            commands=json.loads(draft.read_text(encoding="utf-8"))["decisions"]
+            restored=self.invoke("translation_review_writer.restore_decision_draft",str(draft))
+            self.assertEqual(restored["data"],writer.data)
+            replay=self.invoke("translation_review_writer.replay_decisions",str(fixture.prepared),commands)
+            self.assertEqual(replay["data"],writer.data)
+            task=self.invoke("translation_review_tasks.next_review_task",str(fixture.prepared),commands)
+            self.assertEqual(task["stage"],"unit")
+            actual=self.invoke("translation_review_writer.save_review",str(fixture.prepared),commands,
+                               output_path=str(fixture.base.joinpath("rust-review.json")),
+                               terminology_path=str(fixture.base.joinpath("rust-terms.json")))
+            expected=writer.save(fixture.output,terminology_path=fixture.term_output).to_dict()
+            self.assertFalse(actual["records_ready"])
+            self.assertEqual(sorted(actual["pending_ids"]),sorted(expected["pending_ids"]))
+            self.assertEqual(sorted(actual["failed_ids"]),sorted(expected["failed_ids"]))
+            self.assertEqual(json.loads(fixture.base.joinpath("rust-terms.json").read_text(encoding="utf-8")),
+                             json.loads(fixture.term_output.read_text(encoding="utf-8")))
+        finally:
+            fixture.doCleanups()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

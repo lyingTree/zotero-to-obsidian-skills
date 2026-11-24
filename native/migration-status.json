@@ -23,9 +23,9 @@
     "pdf_image_objects": "partial",
     "prepare_source_inventory": "partial",
     "prepare_translation_review": "implementation_candidate",
-    "translation_review_tasks": "not_started",
-    "translation_review_writer": "not_started",
-    "validate_translation_review": "not_started"
+    "translation_review_tasks": "implementation_candidate",
+    "translation_review_writer": "partial",
+    "validate_translation_review": "implementation_candidate"
   },
   "capabilities": {
     "all_original_runtime_operations": {
@@ -46,7 +46,7 @@
     },
     "translation_review_lifecycle": {
       "qualified": false,
-      "blocker": "Translation review tasks, writer and validation parity; preparation candidate awaits qualification"
+      "blocker": "Native validation, explicit decision replay and task routing implemented; full writer API replacement coverage, historical differential and workflow qualification remain"
     },
     "native_complete_workflow": {
       "qualified": false,

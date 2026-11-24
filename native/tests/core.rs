@@ -879,3 +879,51 @@ fn structural_pdf_index_tracks_two_calls_and_actual_encoded_stream(){
     assert_eq!(r["render_status"],"not_rendered");
     assert!(pdf_structure::index_page(&path,2).is_err());
 }
+
+
+#[test]
+fn native_translation_review_replays_explicit_decisions_and_pending_gate(){
+    use lopdf::{Document,Object,Stream,dictionary};
+    use z2o_native::{translation_prepare as prep,translation_writer,translation_tasks,translation_validate,files};
+    let tmp=tempdir().unwrap();let root=tmp.path();
+    let source=root.join("source.pdf");let mut doc=Document::with_version("1.5");
+    let pages=doc.new_object_id();
+    let contents=doc.add_object(Stream::new(dictionary!{},vec![]));
+    let page=doc.add_object(dictionary!{"Type"=>"Page","Parent"=>pages,"Contents"=>contents});
+    doc.objects.insert(pages,Object::Dictionary(dictionary!{"Type"=>"Pages","Kids"=>vec![Object::Reference(page)],"Count"=>1,"MediaBox"=>vec![0.into(),0.into(),100.into(),200.into()]}));
+    let catalog=doc.add_object(dictionary!{"Type"=>"Catalog","Pages"=>pages});doc.trailer.set("Root",catalog);doc.save(&source).unwrap();
+    let candidate=root.join("candidate.md");fs::write(&candidate,"海洋。\n").unwrap();
+    let glossary=root.join("glossary.md");fs::write(&glossary,"| OCEAN | ocean | 海洋 |\n").unwrap();
+    let b=prep::bind_file(&source).unwrap();let inv=root.join("inventory.json");
+    fs::write(&inv,serde_json::to_vec(&json!({"schema_version":1,"sources":[{"id":"s","path":b["path"],"sha256":b["sha256"],"page_count":1}],
+        "units":[{"id":"p","source":"s","kind":"paragraph","evidence":[{"page":1,"bbox":[0,0,50,50],"quote":"ocean"}]}]})).unwrap()).unwrap();
+    let prepared=root.join("prepared.json");prep::prepare(&inv,&candidate,&prepared,&json!(["p"]),Some(&glossary),&Value::Null,|_,_,_|{}).unwrap();
+    let before=fs::read(&prepared).unwrap();
+    let mut w=translation_writer::replay(&prepared,&json!([])).unwrap();
+    assert_eq!(translation_tasks::next(&mut w,8).unwrap()["stage"],"scope");
+    let commands=json!([
+        {"op":"scope","status":"passed","reason":"Explicit source scope review."},
+        {"op":"unit","unit_id":"p","candidate_locations":[{"lines":[1,1]}]},
+        {"op":"occurrence","unit_id":"p","kind":"claims","occurrence_id":"claim","source":{"quote":"ocean"},"candidate":{"quote":"海洋"},
+         "status":"passed","reason":"Explicit comparison.","comparison":{}},
+        {"op":"check","unit_id":"p","name":"completeness","status":"passed","reason":"Recorded claim."},
+        {"op":"term","unit_id":"p","term_id":"t","original":"ocean","category":"concept","source":{"quote":"ocean"},"aliases":[]},
+        {"op":"search","unit_id":"p","term_id":"t","mode":"full_phrase","query":"ocean","interpretation":"Actual query"},
+        {"op":"search","unit_id":"p","term_id":"t","mode":"family","query":"ocean","interpretation":"Actual family query"},
+        {"op":"search_status","unit_id":"p","term_id":"t","mode":"aliases","status":"not_applicable","reason":"No alias in fixture"},
+        {"op":"decide","unit_id":"p","term_id":"t","decision":"adopted","translation":"海洋","reason":"Explicit decision","matches":["OCEAN"]}
+    ]);
+    let mut w=translation_writer::replay(&prepared,&commands).unwrap();
+    assert_eq!(translation_tasks::next(&mut w,8).unwrap()["stage"],"unit");
+    let draft=root.join("draft.json");w.draft(&draft).unwrap();
+    let mut restored=translation_writer::Writer::from_draft(&draft).unwrap();
+    assert_eq!(w.data,restored.data);
+    let output=root.join("review.json");let term=root.join("terms.json");
+    let report=restored.save(&output,Some(&term)).unwrap();
+    assert_eq!(report["records_ready"],false);
+    assert_eq!(report["source_fidelity"],"not_assessed");
+    assert_eq!(report,translation_validate::validate(&output,Some(&inv),Some(&candidate)).unwrap());
+    assert_eq!(fs::read(&prepared).unwrap(),before);
+    fs::write(&candidate,"changed").unwrap();
+    assert!(translation_writer::Writer::from_draft(&draft).is_err());
+}
