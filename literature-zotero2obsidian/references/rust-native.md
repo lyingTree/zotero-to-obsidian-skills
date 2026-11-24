@@ -201,3 +201,11 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 修复 5322d80 在 CI 中的两个真实 E0599 编译错误（render_note.keys 缺少错误传播）。剩余报告对象、进度与脚本入口共 27 个公开符号新增真实 native 调用；报告方法根据当前实际文件重新执行相应校验器并投影，不接受调用方伪造的通过报告。旧 main 的可编辑脚本全局变量改为显式 JSON 参数，退出语义作为 exit_code 字段返回；不运行 Python。进度条输出 stderr，保持 stdout JSON 协议。此轮针对上次 AST 报告列出的全部缺口，最终以新编译二进制的门禁结果为准。
 
 新增 native_runtime.package / inspect_bundle / install 及 z2o package、z2o install 原生入口。从实际仓库 12 个技能目录与当前预编译程序构建独立候选目录，包清单逐文件 SHA-256、大小及 Unix 可执行位，绑定 OS/CPU 架构、当前运行器哈希及独立可信清单哈希。拒绝链接/特殊文件、路径穿越、大小写/Unicode 冲突、额外或缺失文件；先完整暂存、复核，再提交目录，保留本地旧技能的原始备份和事务记录；重复同一包跳过。安装后的每个 SKILL.md 在 YAML 题头后插入明确 native-only 守则；旧 .py 作为参考资料保留，不能作为执行路径。实际外部 Zotero/Obsidian、OCR 资源自动分发、第三方许可证和正式发布仍待验收，不宣称已替代外部技能。CI 六个平台新增预编译实际仓库候选包、空 PATH 安装、安装后 describe，以及合成夹具的升级备份、重复安装、篡改拒绝和实际 invoke。避免同一 PR push/PR 双跑，并不取消已开始的六平台验收。当前仅保存安装回执，不发布二进制安装包或 2.0.0。
+
+### 原生 Zotero 读取、库内身份索引与交付缺口
+
+新增 `zotero_local.inspect_item(library_type, library_id, item_key, storage_root=..., attachment_paths=..., output_path=...)`，与 `zotero_local.catalog(library_type, library_id, output_path=...)`。按 Zotero 官方 Local API v3 文档（https://www.zotero.org/support/dev/web_api/v3/local_api），仅访问本机 loopback 23119 的 GET 请求，拒绝重定向、异常帧、重复分页、身份变化和超预算响应。不执行附件下载或写入。保留原始条目、直接子项、附件子项、集合父链、声明 MIME/语言、本地明确附件字节与 PDF/DOCX 解析状态；语言和主全文版本仍待人工/模型核对。0 仅作为本地用户路由，不当成跨设备身份。新增实际 loopback HTTP 模拟服务测试，覆盖分页、父链和无下载，不声称连接真实 Zotero 实机。
+
+新增 `vault_library.index(vault_root, literature_relative, excluded_relative=[], personal_library_id=..., output_path=...)` 及 `vault_library.match_reference(index_path, reference, expected_index_sha256=..., catalog_path=..., expected_catalog_sha256=...)`（JSON kwargs 或显式命名输入）。扫描已确认文献根下真实笔记，排除模板/附件/工作稿等目录并保留无法读取记录；仅使用末尾原条目 URI，不将正文引用中的 DOI 当作笔记身份。结合实际绑定 Zotero catalog、完整题名、全部作者、年份、文献类型及 DOI；同 DOI 冲突、重名、重复笔记保持歧义。个人库映射需明确实际库 ID，唯一候选仍须独立版本确认。空结果只针对已绑定快照，不证明当前实时库无文献。真实笔记读取和篡改负例测试。两项均不修改真实库，正式桌面集成和提交链仍需资格验证。
+
+补齐 author affiliation_numbers / affiliation_units、未编号及缺失理由、重复关系、同源归属，以及实际 bibliography call 的独立 citation unit 和重复参考锚点约束。当前 `NATIVE_DELIVERY_PARITY_PENDING` 等最终阻断仍保留。442f0a0 实际 CI 编译后二进制覆盖 23 个参考模块、0 缺失公开符号，差分和 CPU OCR 通过；本次新增功能仍须 CI 验收。

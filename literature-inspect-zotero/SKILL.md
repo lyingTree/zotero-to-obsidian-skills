@@ -16,7 +16,7 @@ description: 只读检查指定 Zotero 条目的完整可用信息、集合层�
 
 集合父链及本地附件的文件事实使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 collection_ancestry / snapshot，程序遍历已取得的真实 API 记录，输出缺项、成环和分页状态；不得手工构造缺失父链或将字节可读等同于格式有效。
 
-1. 通过 [zotero-skills](../zotero-skills/SKILL.md) 定位条目。
+1. 原生运行时存在时，通过 `zotero_local.inspect_item` 使用明确的 library_type、library_id、item_key 读取本机 Zotero API v3；无条目 key 时可用 `zotero_local.catalog` 获取已确认库的原始记录并进行身份核对。可选 storage_root / attachment_paths 用于独立验证本地附件；不得下载附件。原生接口失败须标记阻断，不能编造身份。旧版参考运行环境才使用 [zotero-skills](../zotero-skills/SKILL.md)。
 2. 遍历字段、子项、附件、批注与集合分页。
 3. 依据文档内容确认全文版本及附件角色。
 4. 核对关联笔记、人工内容和重复候选。

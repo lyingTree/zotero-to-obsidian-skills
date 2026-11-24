@@ -80,3 +80,31 @@ fn actual_rerun_records_selector_change(){
     let r=pipeline::read_json(&p).unwrap();assert_eq!(r["actual_rerun_performed"],true);
     assert_eq!(r["mapping_equal"],false);assert!(!r["differences"].as_array().unwrap().is_empty());
 }
+
+
+#[test]
+fn reject_bibliography_call_without_explicit_citation_unit(){
+    let f=Fixture::new();
+    let mut inv=pipeline::read_json(&f.inventory).unwrap();
+    inv["units"].as_array_mut().unwrap().retain(|u|u["id"]!="call");
+    save(&f.inventory,&inv);
+    let mut deliveries=f.deliveries.clone();
+    deliveries.as_array_mut().unwrap().retain(|d|d["unit"]!="call");
+    // Source display data is explicit so failure must be the missing citation
+    // unit, not an unrelated missing display-text prerequisite.
+    let body=inv["units"].as_array_mut().unwrap().iter_mut().find(|u|u["id"]=="body").unwrap();
+    body["display_text"]=json!("[1]");save(&f.inventory,&inv);
+    let r=maps::write(&f.inventory,&f.candidate,&deliveries,&f.paths,&f.expected,|_,_,_|{}).unwrap();
+    assert_eq!(r["records_ready"],false);
+    assert!(r["findings"][0]["message"].as_str().unwrap().contains("MAP_OUTPUT_CITATION_UNMAPPED"),"{r}");
+}
+#[test]
+fn author_metadata_requires_literal_affiliation_mapping_or_reason(){
+    let f=Fixture::new();
+    let mut inv=pipeline::read_json(&f.inventory).unwrap();
+    let body=inv["units"].as_array_mut().unwrap().iter_mut().find(|u|u["id"]=="body").unwrap();
+    body["kind"]=json!("metadata");body["field"]=json!("author");
+    save(&f.inventory,&inv);
+    let r=f.write();
+    assert_eq!(r["records_ready"],false);assert!(r["findings"][0]["message"].as_str().unwrap().contains("MAP_AFFILIATION_REFERENCE"),"{r}");
+}

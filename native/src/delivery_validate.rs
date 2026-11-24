@@ -118,6 +118,16 @@ fn inventory_checks(a:&mut Audit,inventory:&Value,base:&Path)->Result<()>{
             let mut fields=u.as_object().unwrap().clone();
             for key in ["id","source","kind","evidence"]{fields.remove(key);}
             crate::delivery_prepare::unit(id,sid,kind,&u["evidence"],fields)?;
+            if kind=="metadata"&&u["field"]=="author"{
+                let affiliations=u["affiliation_units"].as_array().context("Record actual author-to-affiliation units")?;
+                let numbers=u["affiliation_numbers"].as_array().filter(|n|n.len()==affiliations.len()).context("Retain parallel source markers and affiliation units")?;
+                ensure!(numbers.iter().all(|n|n.is_null()||text(n)),"Preserve literal source affiliation markers or null");
+                if affiliations.is_empty()||numbers.iter().any(Value::is_null){ensure!(text(&u["affiliation_reason"]),"Explain absent or unnumbered author affiliations");}
+                let seen=ids(&u["affiliation_units"])?;
+                for id in seen{
+                    ensure!(units.get(id).is_some_and(|v|v["kind"]=="metadata"&&v["field"]=="affiliation"&&v["source"]==sid),"Author affiliation must be an actual same-source affiliation unit");
+                }
+            }
             for loc in list(&u["evidence"],"source evidence")?{
                 evidence(a,s,sid,loc,matches!(kind,"metadata"|"figure"|"table"|"formula"),kind,pdfs.get(sid),base,&mut used_blocks,&mut used_pages,&mut used_media)?;
             }
@@ -193,7 +203,7 @@ fn targets(a:&mut Audit,inv:&Value,manifest:&Value,candidate:&Candidate,root:&Pa
     let units=index(&inv["units"],"id")?;let deliveries=index(&manifest["deliveries"],"unit")?;
     ensure!(units.keys().eq(deliveries.keys()),"Every registered unit needs one explicit target");
     let tables=candidate.table_records()?;
-    let mut covered=BTreeSet::new();let mut refs=BTreeSet::new();
+    let mut covered=BTreeSet::new();let mut refs=BTreeSet::new();let mut bibliography=BTreeMap::<String,String>::new();let mut calls=Vec::<(String,Span)>::new();
     let formula=regex::Regex::new(r"(?ms)^ {0,3}\$\$[ \t]*(?:[^\r\n]+\$\$[ \t]*$|\r?\n.+?\r?\n {0,3}\$\$[ \t]*$)")?;
     let heading=regex::Regex::new(r"(?m)^ {0,3}#{1,6}[ \t]+\S")?;
     for(id,u)in &units{
@@ -230,7 +240,11 @@ fn targets(a:&mut Audit,inv:&Value,manifest:&Value,candidate:&Candidate,root:&Pa
             }
             if kind=="formula"{ensure!(formula.is_match(visible),"Formula requires displayed editable LaTeX");}
             if kind=="section"{ensure!(heading.is_match(visible),"Section requires visible heading");}
-            if kind=="reference"{ensure!(anchors.len()==1,"Reference needs exactly one bibliography anchor");}
+            if kind=="reference"{
+                ensure!(anchors.len()==1,"Reference needs exactly one bibliography anchor");
+                ensure!(bibliography.insert(anchors[0].0.clone(),id.clone()).is_none(),"Distinct bibliography units cannot claim the same candidate anchor");
+            }
+            if kind=="citation"{calls.push((id.clone(),span));}
             if matches!(kind,"figure"|"table"|"formula"|"reference"){for (id,_)in anchors{refs.insert(id.clone());}}
             if kind=="metadata"{
                 let field=u["field"].as_str().unwrap_or("");let value=u["value"].as_str().unwrap_or("");
@@ -247,6 +261,14 @@ fn targets(a:&mut Audit,inv:&Value,manifest:&Value,candidate:&Candidate,root:&Pa
             }
             Ok(())
         })();a.result("DELIVERY_TARGET",id,r);
+    }
+    for link in &candidate.links{
+        if link.image{continue;}
+        let href=percent_encoding::percent_decode_str(&link.href).decode_utf8_lossy();
+        let Some(anchor)=href.strip_prefix("#^")else{continue;};
+        if !bibliography.contains_key(anchor){continue;}
+        let owners:Vec<_>=calls.iter().filter(|(_,s)|s.contains(link.span)).collect();
+        if owners.len()!=1{a.fail("OUTPUT_CITATION_UNMAPPED",anchor,"Every actual bibliography call, including in decoded table fields, must have one explicit source citation occurrence.");}
     }
     for(i,(_,data))in tables.iter().enumerate(){
         let n=if data["version"]==3{data["sheets"].as_array().context("Workbook sheets")?.len()}else{1};

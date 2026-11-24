@@ -30,7 +30,7 @@
   "capabilities": {
     "all_original_runtime_operations": {
       "qualified": false,
-      "blocker": "All previously reported public symbol gaps have explicit native operations; confirm actual compiled AST coverage and historical behavior parity"
+      "blocker": "442f0a0 compiled registry verified all 23 modules with zero unmapped public symbols; full historical behavior and platform qualification remain"
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
@@ -42,7 +42,7 @@
     },
     "source_delivery_mapping_and_review_ledger": {
       "qualified": false,
-      "blocker": "Native handoff/rerun and delivery validation subsets now include header/source accounting, targets, tables, figure atomic and edge records, terminology and acceptance ledgers; full historical representations, PDF fidelity and complete delivery parity remain"
+      "blocker": "Native handoff/rerun and delivery checks now enforce author-affiliation mapping, unmapped bibliography calls and distinct reference anchors; complete historical representations and independent source/figure parity remain"
     },
     "translation_review_lifecycle": {
       "qualified": false,
@@ -54,7 +54,7 @@
     },
     "native_installation_and_external_integration": {
       "qualified": false,
-      "blocker": "Offline native 12-skill candidate package/installer implemented, with precompiled binary, checked manifest, backups and no-PATH tests; trusted release distribution and Zotero/Obsidian integrations remain"
+      "blocker": "Native candidate installer plus local Zotero API v3 GET item/collection/attachment/catalog and read-only vault identity index/matching candidates implemented; actual desktop integration, write transaction, note sync, and trusted release distribution remain"
     },
     "twelve_skill_production_entrypoints": {
       "qualified": false,

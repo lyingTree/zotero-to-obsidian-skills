@@ -195,10 +195,17 @@ impl Ctx{
             if let Some(p)=u.get("parent_id").filter(|v|!v.is_null()){
                 ensure!(p.as_str().and_then(|v|self.units.get(v)).is_some_and(|v|v["source"]==sid),"MAP_PARENT_UNIT");
             }
-            if kind=="metadata"&&u["field"]=="author"&&u.get("affiliation_units").is_some(){
-                let a=u["affiliation_units"].as_array().context("MAP_AFFILIATION_REFERENCE")?;
-                ensure!(u["affiliation_numbers"].as_array().is_some_and(|b|a.len()==b.len()),"MAP_AFFILIATION_REFERENCE");
-                for v in a{ensure!(v.as_str().and_then(|v|self.units.get(v)).is_some_and(|x|x["source"]==sid&&x["kind"]=="metadata"&&x["field"]=="affiliation"),"MAP_AFFILIATION_REFERENCE");}
+            if kind=="metadata"&&u["field"]=="author"{
+                let a=u["affiliation_units"].as_array().context("MAP_AFFILIATION_REFERENCE: actual parallel source markers and units required")?;
+                let numbers=u["affiliation_numbers"].as_array().filter(|b|b.len()==a.len()).context("MAP_AFFILIATION_REFERENCE: parallel arrays required")?;
+                ensure!(numbers.iter().all(|n|n.is_null()||nonempty(n)),"MAP_AFFILIATION_NUMBER: source markers are literal strings or null");
+                if a.is_empty()||numbers.iter().any(Value::is_null){ensure!(nonempty(&u["affiliation_reason"]),"MAP_AFFILIATION_REASON: explain absent or unnumbered source affiliation");}
+                let mut seen=HashSet::new();
+                for v in a{
+                    let id=v.as_str().context("MAP_AFFILIATION_REFERENCE")?;
+                    ensure!(seen.insert(id),"MAP_AFFILIATION_DUPLICATE");
+                    ensure!(self.units.get(id).is_some_and(|x|x["source"]==sid&&x["kind"]=="metadata"&&x["field"]=="affiliation"),"MAP_AFFILIATION_REFERENCE");
+                }
             }
         }
         for(sid,s)in &self.sources{
@@ -318,7 +325,10 @@ impl Ctx{
                     let spans=self.candidate.headings.get(f).filter(|s|s.len()==1).context("MAP_LINK_TARGET: absent/ambiguous heading")?;
                     (f,owner(targets,spans[0]).context("MAP_LINK_TARGET_UNIT")?)
                 };
-                if unit["kind"]=="citation"{ensure!(unit["references"].as_array().unwrap().iter().any(|r|r==target),"MAP_CITATION_TARGET");}
+                if self.units[target]["kind"]=="reference"{
+                    ensure!(unit["kind"]=="citation","MAP_OUTPUT_CITATION_UNMAPPED: actual bibliography call requires its own source citation occurrence");
+                }
+                if unit["kind"]=="citation"{ensure!(self.units[target]["kind"]=="reference"&&unit["references"].as_array().unwrap().iter().any(|r|r==target),"MAP_CITATION_TARGET");}
                 if unit["kind"]=="cross_reference"{ensure!(unit["target_unit"]==target,"MAP_CROSS_REFERENCE_TARGET");}
                 ensure!(over.get("target_unit").is_none()||over["target_unit"]==target,"MAP_LINK_TARGET_UNIT");
                 if CALLS.contains(&unit["kind"].as_str().unwrap()){calls.entry(u.to_owned()).or_default().insert(target.to_owned());}

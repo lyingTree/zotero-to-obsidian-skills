@@ -33,6 +33,8 @@ pub mod delivery_provenance;
 pub mod delivery_validate;
 pub mod runtime_reports;
 pub mod native_install;
+pub mod zotero_local;
+pub mod vault_library;
 pub mod workflow;
 pub mod mapping_compare;
 pub mod handoff_conflicts;
@@ -229,6 +231,10 @@ pub const OPERATIONS: &[&str] = &[
     "native_runtime.package",
     "native_runtime.inspect_bundle",
     "native_runtime.install",
+    "zotero_local.inspect_item",
+    "zotero_local.catalog",
+    "vault_library.index",
+    "vault_library.match_reference",
     "check_records.CheckFinding.to_dict",
     "check_records.CheckRecordsReport.offline_records_ready",
     "check_records.CheckRecordsReport.recorded_checks_complete",
@@ -1256,6 +1262,37 @@ pub fn invoke(request: Value) -> Result<Value> {
             let p=path(&c.positional("draft_path")?)?;c.finish()?;
             let writer=translation_writer::Writer::from_draft(&p)?;
             json!({"data":writer.data,"prepared":writer.prepared,"decisions":writer.commands,"terminology_summary":writer.summary})
+        }
+        "zotero_local.inspect_item" | "zotero_local.catalog" => {
+            let kind=string(&c.positional("library_type")?,"library_type")?;
+            let id=c.positional("library_id")?.as_u64().context("library_id must be an integer")?;
+            let output=c.option("output_path",Value::Null);let output=if output.is_null(){None}else{Some(path(&output)?)};
+            let mut report=if op.ends_with(".inspect_item"){
+                let key=string(&c.positional("item_key")?,"item_key")?;
+                let storage=c.option("storage_root",Value::Null);
+                let storage=if storage.is_null(){None}else{Some(path(&storage)?)};
+                let paths=c.option("attachment_paths",json!({}));c.finish()?;
+                zotero_local::inspect_item(&kind,id,&key,storage.as_deref(),&paths,runtime_reports::progress_line)?
+            }else{c.finish()?;zotero_local::catalog(&kind,id,runtime_reports::progress_line)?};
+            if let Some(p)=output{let b=runtime_reports::save_new_report(&p,&report)?;report["saved_record"]=b;}
+            report
+        }
+        "vault_library.index" => {
+            let root=path(&c.positional("vault_root")?)?;
+            let lit=string(&c.positional("literature_relative")?,"literature_relative")?;
+            let exclude=c.option("excluded_relative",json!([]));
+            let id=c.option("personal_library_id",Value::Null);
+            let id=if id.is_null(){None}else{Some(id.as_u64().context("personal_library_id must be an actual integer ID")?)};
+            let output=c.option("output_path",Value::Null);let output=if output.is_null(){None}else{Some(path(&output)?)};
+            c.finish()?;let mut r=vault_library::index(&root,&lit,&exclude,id,runtime_reports::progress_line)?;
+            if let Some(p)=output{let b=runtime_reports::save_new_report(&p,&r)?;r["saved_record"]=b;}
+            r
+        }
+        "vault_library.match_reference" => {
+            let index=path(&c.positional("index_path")?)?;let ih=string(&c.required("expected_index_sha256")?,"expected_index_sha256")?;
+            let catalog=path(&c.positional("catalog_path")?)?;let ch=string(&c.required("expected_catalog_sha256")?,"expected_catalog_sha256")?;
+            let reference=c.positional("reference")?;c.finish()?;
+            vault_library::match_reference(&index,&ih,&catalog,&ch,&reference)?
         }
         "native_runtime.package" => {
             let source=path(&c.positional("source_root")?)?;let dest=path(&c.positional("destination")?)?;
