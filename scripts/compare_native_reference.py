@@ -810,5 +810,99 @@ class NativeVisibleTextEditComparison(format_suite.VisibleTextEditTests):
         self.addCleanup(patcher.stop)
 
 
+
+import test_draft_queue as draft_suite
+
+class NativeDraftQueueComparison(draft_suite.DraftQueueTests):
+    """Drive the existing queue fixtures through the actual Rust executable.
+    The adapter holds only the latest explicit queue hash, not a Python engine."""
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        original_prepare = draft_suite.queue_tools.prepare_draft_queue
+
+        def encode(value):
+            if isinstance(value, Path):
+                return str(value)
+            if isinstance(value, (tuple,list)):
+                return [encode(v) for v in value]
+            if isinstance(value, dict):
+                return {k:encode(v) for k,v in value.items()}
+            return value
+
+        def invoke(operation, *args, **kwargs):
+            with tempfile.TemporaryDirectory() as directory:
+                request = Path(directory).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version":1,"operation":operation,
+                    "args":encode(args),"kwargs":encode(kwargs)},ensure_ascii=False),encoding="utf-8")
+                completed = subprocess.run([str(BINARY),"invoke",str(request)],capture_output=True,
+                                            encoding="utf-8",timeout=90)
+                if completed.returncode != 0:
+                    msg = completed.stderr
+                    if any(phrase in msg for phrase in ("Resume the existing queue", "Assemble a new version", "Keep existing output")):
+                        raise FileExistsError(msg)
+                    if "another script" in msg:
+                        raise RuntimeError(msg)
+                    raise ValueError(msg)
+                return json.loads(completed.stdout)["result"]
+
+        def prepare(inventory,queue,*,progress=None):
+            # Independently prepare a reference queue with a distinct path.
+            # Its absolute snapshot/parts paths are expected to differ.
+            reference = Path(queue).with_name("reference-" + Path(queue).name)
+            result = invoke("draft_queue.prepare_draft_queue",inventory,queue)
+            if not reference.exists():
+                original_prepare(inventory,reference,progress=progress)
+                a=json.loads(Path(result).read_text(encoding="utf-8"))
+                b=json.loads(reference.read_text(encoding="utf-8"))
+                a.pop("parts_root");b.pop("parts_root")
+                x=a.pop("inventory_snapshot");y=b.pop("inventory_snapshot")
+                self.assertEqual(x["sha256"],y["sha256"])
+                self.assertEqual(Path(x["path"]).read_bytes(),Path(y["path"]).read_bytes())
+                self.assertEqual(a,b)
+            return Path(result)
+
+        class NativeQueue:
+            def __init__(self,p):
+                self.path=Path(p)
+                self._reload()
+            @classmethod
+            def open(cls,p):
+                return cls(p)
+            def _reload(self):
+                opened=invoke("draft_queue.DraftQueue.open",self.path)
+                self.data=opened["data"];self.sha=opened["sha256"]
+            def _call(self,operation,*args,mutate=False,**kwargs):
+                result=invoke("draft_queue.DraftQueue."+operation,self.path,*args,expected_sha256=self.sha,**kwargs)
+                if mutate:
+                    self._reload()
+                return result
+            def status(self):
+                return self._call("status")
+            def next_task(self):
+                return self._call("next_task")
+            def review_pdf_page_order(self,source_id,page,ordered_block_ids,reason):
+                return self._call("review_pdf_page_order",source_id,page,ordered_block_ids,reason,mutate=True)
+            def review_additional_objects(self,source_id,page,reason):
+                return self._call("review_additional_objects",source_id,page,reason,mutate=True)
+            def add_page_object(self,block_id,source_id,page,**kwargs):
+                return self._call("add_page_object",block_id,source_id,page,mutate=True,**kwargs)
+            def group(self,unit_id,block_ids,**kwargs):
+                return self._call("group",unit_id,block_ids,mutate=True,**kwargs)
+            def exclude(self,block_id,reason):
+                return self._call("exclude",block_id,reason,mutate=True)
+            def write_unit(self,unit_id,markdown,**kwargs):
+                return self._call("write_unit",unit_id,markdown,mutate=True,**kwargs)
+            def record_issue_decision(self,issue_id,**kwargs):
+                return self._call("record_issue_decision",issue_id,mutate=True,**kwargs)
+            def assemble(self,output_path,*,progress=None):
+                return self._call("assemble",output_path)
+
+        for name,replacement in (("prepare_draft_queue",prepare),("DraftQueue",NativeQueue)):
+            patcher=patch.object(draft_suite.queue_tools,name,replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

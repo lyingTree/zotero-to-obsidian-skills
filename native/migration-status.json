@@ -17,7 +17,7 @@
     "validate_delivery": "partial",
     "check_records": "implementation_candidate",
     "complete_workflow": "partial",
-    "draft_queue": "not_started",
+    "draft_queue": "implementation_candidate",
     "handoff_maps": "not_started",
     "mapping_rerun": "not_started",
     "pdf_image_objects": "not_started",
@@ -50,7 +50,7 @@
     },
     "native_complete_workflow": {
       "qualified": false,
-      "blocker": "Orchestration, draft queue, restart and mapping rerun parity"
+      "blocker": "Native draft queue candidate implemented; complete orchestration, restart, mapping rerun and integration parity remain"
     },
     "native_installation_and_external_integration": {
       "qualified": false,

@@ -791,3 +791,44 @@ fn visible_text_edits_preserve_original_unicode_offsets_and_declarations(){
     fs::write(&page,"changed").unwrap();
     assert!(visible_edits::apply(&binding,&json!([a])).is_err());
 }
+
+
+#[test]
+fn draft_queue_preserves_frozen_objects_and_cross_page_fragments(){
+    use z2o_native::{draft_queue,check_ledger,files};
+    let root=tempdir().unwrap();let source=root.path().join("source.pdf");let si=root.path().join("supplement.docx");
+    fs::write(&source,"source bytes").unwrap();fs::write(&si,"supplement bytes").unwrap();
+    let s=check_ledger::bind_file(&source).unwrap();let d=check_ledger::bind_file(&si).unwrap();
+    let inv=root.path().join("inventory.json");let q=root.path().join("draft.json");
+    let payload=json!({"sources":[
+        {"id":"main","path":s["path"],"sha256":s["sha256"],"role":"main","page_count":2,"pages":[
+            {"page":1,"blocks":[{"id":"a","text":"Start","bbox":[0,0,1,1]}],"image_index":{"page_bounds":[0,0,100,100],"occurrences":[]}},
+            {"page":2,"blocks":[{"id":"b","text":"End","bbox":[0,0,1,1]}],"image_index":{"page_bounds":[0,0,100,100],"occurrences":[]}}]},
+        {"id":"si","path":d["path"],"sha256":d["sha256"],"format":"docx","native_blocks":[{"id":"s1","kind":"paragraph","text":"SI","locator":{"part":"word/document.xml","element_path":[0]}}],
+            "media_calls":[],"native_issues":[]}],"units":[]});
+    fs::write(&inv,serde_json::to_vec(&payload).unwrap()).unwrap();
+    draft_queue::prepare(&inv,&q,|_,_,_|{}).unwrap();
+    let first=draft_queue::open(&q).unwrap();
+    let run=|action:&str,params:Value,expected:Value|draft_queue::operate(&q,action,&params,&expected,|_,_,_|{});
+    assert_eq!(run("next_task",json!({}),Value::Null).unwrap()["stage"],"inventory_page");
+    assert!(run("assemble",json!({"output_path":root.path().join("bad.md").to_str().unwrap()}),Value::Null).is_err());
+    for (page,id) in [(1,"a"),(2,"b")]{
+        run("review_pdf_page_order",json!({"source_id":"main","page":page,"ordered_block_ids":[id],"reason":"Explicit order"}),Value::Null).unwrap();
+        run("review_additional_objects",json!({"source_id":"main","page":page,"reason":"Explicit review"}),Value::Null).unwrap();
+    }
+    assert!(run("group",json!({"unit_id":"bad","block_ids":["a","s1"],"kind":"paragraph","reason":"invalid grouping"}),Value::Null).is_err());
+    assert!(run("exclude",json!({"block_id":"a","reason":"stale writer"}),first["sha256"].clone()).is_err());
+    run("group",json!({"unit_id":"p","block_ids":["a","b"],"kind":"paragraph","reason":"Cross-page paragraph"}),Value::Null).unwrap();
+    run("write_unit",json!({"unit_id":"p","markdown":"正文\r\n跨页。","assets":[]}),Value::Null).unwrap();
+    run("group",json!({"unit_id":"si-p","block_ids":["s1"],"kind":"paragraph","reason":"Native order"}),Value::Null).unwrap();
+    run("write_unit",json!({"unit_id":"si-p","markdown":"补充。","assets":[]}),Value::Null).unwrap();
+    assert_eq!(run("status",json!({}),Value::Null).unwrap()["draft_ready"],true);
+    fs::write(&inv,b"changed working inventory").unwrap();
+    let out=root.path().join("candidate.md");
+    let report=run("assemble",json!({"output_path":out.to_str().unwrap()}),Value::Null).unwrap();
+    let bytes=fs::read(&out).unwrap();assert_eq!(bytes,"正文\r\n跨页。\n\n补充。\n".as_bytes());
+    assert_eq!(report["candidate"]["sha256"],files::digest(&bytes));
+    assert_eq!(report["units"][0]["block_ids"],json!(["a","b"]));
+    assert_eq!(report["source_fidelity"],"not_assessed");
+    assert!(run("assemble",json!({"output_path":out.to_str().unwrap()}),Value::Null).is_err());
+}

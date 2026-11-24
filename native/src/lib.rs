@@ -27,6 +27,7 @@ pub mod check_validate;
 pub mod check_write;
 pub mod check_scope;
 pub mod visible_edits;
+pub mod draft_queue;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -61,6 +62,18 @@ pub const OPERATIONS: &[&str] = &[
     "format_helpers.build_figure_block",
     "format_helpers.starts_with_bold_source_label",
     "format_helpers.apply_visible_text_edits",
+    "draft_queue.prepare_draft_queue",
+    "draft_queue.DraftQueue.open",
+    "draft_queue.DraftQueue.status",
+    "draft_queue.DraftQueue.next_task",
+    "draft_queue.DraftQueue.review_pdf_page_order",
+    "draft_queue.DraftQueue.review_additional_objects",
+    "draft_queue.DraftQueue.add_page_object",
+    "draft_queue.DraftQueue.group",
+    "draft_queue.DraftQueue.exclude",
+    "draft_queue.DraftQueue.write_unit",
+    "draft_queue.DraftQueue.record_issue_decision",
+    "draft_queue.DraftQueue.assemble",
     "format_helpers.plan_supplement_figure_caption",
     "source_url_inventory.scan_source_url_occurrences",
     "source_url_inventory.source_url_coverage",
@@ -612,6 +625,40 @@ pub fn invoke(request: Value) -> Result<Value> {
         "format_helpers.apply_visible_text_edits" => {
             let file=c.required("text_file")?;let edits=c.required("edits")?;c.finish()?;
             visible_edits::apply(&file,&edits)?
+        }
+        "draft_queue.prepare_draft_queue" => {
+            let inventory=path(&c.positional("inventory_path")?)?;let queue=path(&c.positional("queue_path")?)?;c.finish()?;
+            json!(path_text(&draft_queue::prepare(&inventory,&queue,|i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?)?)
+        }
+        "draft_queue.DraftQueue.open" => {
+            let p=path(&c.positional("queue_path")?)?;c.finish()?;draft_queue::open(&p)?
+        }
+        "draft_queue.DraftQueue.status" | "draft_queue.DraftQueue.next_task" |
+        "draft_queue.DraftQueue.review_pdf_page_order" | "draft_queue.DraftQueue.review_additional_objects" |
+        "draft_queue.DraftQueue.add_page_object" | "draft_queue.DraftQueue.group" |
+        "draft_queue.DraftQueue.exclude" | "draft_queue.DraftQueue.write_unit" |
+        "draft_queue.DraftQueue.record_issue_decision" | "draft_queue.DraftQueue.assemble" => {
+            let p=path(&c.positional("queue_path")?)?;
+            let expected=c.option("expected_sha256",Value::Null);
+            let action=op.rsplit('.').next().unwrap();
+            let mut params=Map::new();
+            let (pos,required,optional):(&[&str],&[&str],&[(&str,Value)])=match action{
+                "status"|"next_task"=>(&[],&[],&[]),
+                "review_pdf_page_order"=>(&["source_id","page","ordered_block_ids","reason"],&[],&[]),
+                "review_additional_objects"=>(&["source_id","page","reason"],&[],&[]),
+                "add_page_object"=>(&["block_id","source_id","page"],&["kind","reason"],&[("bbox",Value::Null),("text",json!(""))]),
+                "group"=>(&["unit_id","block_ids"],&["kind","reason"],&[]),
+                "exclude"=>(&["block_id","reason"],&[],&[]),
+                "write_unit"=>(&["unit_id","markdown"],&[],&[("assets",json!([]))]),
+                "record_issue_decision"=>(&["issue_id"],&["status","reason","evidence_paths"],&[]),
+                "assemble"=>(&["output_path"],&[],&[]),
+                _=>unreachable!(),
+            };
+            for name in pos{params.insert((*name).into(),c.positional(name)?);}
+            for name in required{params.insert((*name).into(),c.required(name)?);}
+            for (name,default) in optional{params.insert((*name).into(),c.option(name,default.clone()));}
+            c.finish()?;
+            draft_queue::operate(&p,action,&Value::Object(params),&expected,|i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };
