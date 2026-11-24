@@ -23,7 +23,8 @@
 |---|---|
 | deterministic_stage_checks | snapshot、verify_binding、inspect_relative_files、author_token、collection_ancestry、split_frontmatter、build_properties、repair_properties、audit_properties、audit_unchanged_properties、audit_write_readback、audit_translation_binding、audit_rich_tables |
 | format_helpers | build_naming_plan、validate_naming_plan（当前 schema）、check_local_name_conflicts、new_figure_table_anchor、build_figure_block、plan_supplement_figure_caption |
-| 其余 21 个生产 Python 模块及上述两个模块的其他操作 | 尚未完成等价迁移 |
+| source_url_inventory | scan_source_url_occurrences、source_url_coverage（重复出现位置、源位置及一对一匹配） |
+| 其余 20 个生产 Python 模块及上述模块的其他操作 | 尚未完成等价迁移 |
 
 所有原生实现目前均需通过相应回归，不能以新增函数数量充当迁移完成率。YAML 解析使用 serde-saphyr 的重复键拒绝及解析预算；保守修复不重新序列化原有自定义属性，不确定的复杂 YAML 阻断。Unicode 规范化/完整 casefold 算法必须与目标文件系统约定及参考版本对照，不能假设库的 Unicode 数据版本一致。路径使用本机 Path/PathBuf，文件名仍同时检查 UTF-16 单元及可声明的 UTF-8 字节预算。资源相对路径拒绝穿越、设备名和解析到根外的符号链接；并发文件替换不是本阶段只读扫描所能完全消除的风险。
 

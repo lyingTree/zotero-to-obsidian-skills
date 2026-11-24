@@ -166,3 +166,27 @@ fn native_binary_with_empty_path(){
     assert_eq!(call("deterministic_stage_checks.split_frontmatter",json!([encoded_bytes(b"# x\n")]),json!({}))[1],
         encoded_bytes(b"# x\n"));
 }
+
+#[test]
+fn url_occurrences_preserve_unicode_offsets_and_one_to_one_mapping(){
+    use z2o_native::source_urls;
+    let raw="中文 🌊 (https://example.org/Fn_(x)),(https://example.org/Fn_(x)).";
+    let inv=json!({"sources":[{"id":"main","pages":[{"page":1,"blocks":[{"id":"b1","text":raw}]}]}],"units":[
+        {"id":"u1","kind":"metadata","field":"external_url","source":"main","value":"https://example.org/Fn_(x)","evidence":[{"page":1}]}
+    ]});
+    let report=source_urls::coverage(&inv,&json!([]),&json!([])).unwrap();
+    assert_eq!(report["occurrences"].as_array().unwrap().len(),2);
+    assert_eq!(report["unmapped"].as_array().unwrap().len(),1);
+    let first=&report["occurrences"][0];
+    let extracted:String=raw.chars().skip(first["start"].as_u64().unwrap() as usize)
+        .take((first["end"].as_u64().unwrap()-first["start"].as_u64().unwrap()) as usize).collect();
+    assert_eq!(extracted,first["raw_text"].as_str().unwrap());
+    let value="https://example.org/repeated";
+    let inv=json!({"sources":[{"id":"main","pages":[{"page":1,"blocks":[{"id":"b1","text":value},{"id":"b2","text":value}]}]}],
+        "units":[{"id":"broad","kind":"metadata","field":"external_url","source":"main","value":value,"evidence":[{"page":1}]},
+        {"id":"narrow","kind":"metadata","field":"external_url","source":"main","value":value,"evidence":[{"page":1,"blocks":["b1"]}]}]});
+    let result=source_urls::coverage(&inv,&json!([]),&json!([])).unwrap();
+    assert_eq!(result["unmapped"],json!([]));
+    assert_eq!(result["recorded"][0]["unit"],"narrow");
+    assert_eq!(result["recorded"][1]["unit"],"broad");
+}

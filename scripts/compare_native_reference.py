@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT.joinpath("literature-zotero2obsidian", "scripts")))
 import deterministic_stage_checks as reference
 import format_helpers as formatting
+import source_url_inventory as urls
 
 BINARY = ROOT.joinpath("native", "target", "debug", "z2o.exe" if sys.platform == "win32" else "z2o")
 
@@ -112,6 +113,24 @@ class ReferenceComparison(unittest.TestCase):
                         "    footer: 123\n" + fence + "\n^tbl-1\n", encoding="utf-8")
         self.assertEqual(statuses(self.invoke("deterministic_stage_checks.audit_rich_tables", str(note))),
                          statuses(reference.audit_rich_tables(note)))
+
+
+    def test_source_url_occurrence_assignment(self):
+        value = "https://example.org/Fn_(x)"
+        inventory = {"sources": [{"id": "main", "pages": [{"page": 1, "blocks": [
+            {"id": "b1", "text": "中文 🌊 (" + value + ")."},
+            {"id": "b2", "text": value},
+        ]}]}], "units": [
+            {"id": "broad", "kind": "metadata", "field": "external_url", "source": "main",
+             "value": value, "evidence": [{"page": 1}]},
+            {"id": "narrow", "kind": "metadata", "field": "external_url", "source": "main",
+             "value": value, "evidence": [{"page": 1, "blocks": ["b1"]}]},
+        ]}
+        self.assertEqual(self.invoke("source_url_inventory.source_url_coverage", inventory),
+                         urls.source_url_coverage(inventory))
+        self.assertEqual(self.invoke("source_url_inventory.scan_source_url_occurrences", inventory,
+                                     excluded_blocks=["b2"]),
+                         urls.scan_source_url_occurrences(inventory, excluded_blocks=["b2"]))
 
 
 if __name__ == "__main__":

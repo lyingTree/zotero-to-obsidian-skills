@@ -6,6 +6,7 @@ pub mod metadata;
 pub mod naming;
 pub mod properties;
 pub mod tables;
+pub mod source_urls;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -39,6 +40,8 @@ pub const OPERATIONS: &[&str] = &[
     "format_helpers.new_figure_table_anchor",
     "format_helpers.build_figure_block",
     "format_helpers.plan_supplement_figure_caption",
+    "source_url_inventory.scan_source_url_occurrences",
+    "source_url_inventory.source_url_coverage",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -274,6 +277,14 @@ pub fn invoke(request: Value) -> Result<Value> {
             let display = c.option("display_number",Value::Null);
             let reason = c.option("original_number_reason",Value::Null);
             c.finish()?; figures::supplement(&original,&caption,&display,&reason)?
+        }
+        "source_url_inventory.scan_source_url_occurrences" | "source_url_inventory.source_url_coverage" => {
+            let inventory = c.positional("inventory")?;
+            let blocks = c.option("excluded_blocks",json!([]));
+            let pages = c.option("excluded_pages",json!([]));
+            c.finish()?;
+            if op.ends_with("scan_source_url_occurrences"){source_urls::scan(&inventory,&blocks,&pages)?}
+            else{source_urls::coverage(&inventory,&blocks,&pages)?}
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };
