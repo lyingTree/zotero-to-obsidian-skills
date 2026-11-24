@@ -524,7 +524,7 @@ def _bibliography(lines: list[str], findings: list[Finding]) -> None:
     finish()
 
 
-def validate_note(text: str) -> list[Finding]:
+def validate_note(text: str, *, table_records: list[dict] | None = None) -> list[Finding]:
     """Return static findings; an empty list is not a whole-note acceptance."""
     lines = text.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n").split("\n")
     findings: list[Finding] = []
@@ -552,6 +552,11 @@ def validate_note(text: str) -> list[Finding]:
                         following += 1
                     anchor = _WHOLE_ANCHOR.fullmatch(lines[following]) if following < len(lines) else None
                     own_id = anchor[1] if anchor and anchor[1].startswith("tbl-") else None
+                    if table_records is not None:
+                        table_records.append({"line": opening + 1, "closing_line": index + 1,
+                                              "content": fence_content.copy(),
+                                              "anchor": own_id,
+                                              "anchor_line": following + 1 if own_id else None})
                     _rich_table(fence_content, opening + 1, findings, links, anchor=own_id)
                     _object_anchor(lines, index, "tbl-", findings, required=True)
                 fence, fence_content = None, []
@@ -606,6 +611,10 @@ def validate_note(text: str) -> list[Finding]:
         visible[index] = line
 
     if fence:
+        if table_records is not None and fence[2] == "rich-table":
+            table_records.append({"line": fence[3] + 1, "closing_line": None,
+                                  "content": fence_content.copy(), "anchor": None,
+                                  "anchor_line": None})
         findings.append(Finding("error", "FENCE_UNCLOSED", fence[3] + 1, "代码围栏未闭合。"))
     if equation is not None:
         findings.append(Finding("error", "MATH_UNCLOSED", equation + 1, "显示公式未闭合。"))

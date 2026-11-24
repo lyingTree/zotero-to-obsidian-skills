@@ -14,6 +14,8 @@ description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已�
 
 ## 执行步骤
 
+WRITE-A04 与 WRITE-A05 直接运行 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 audit_write_readback，针对独立待提交文件与实际回读文件；实际资源路径与可读字节可由 inspect_relative_files 核对。未列出的资源及版本身份不由该函数认证。
+
 1. plan 先完成[运行预检](../literature-zotero2obsidian/references/project-profile.md#运行预检)，核实目标库目录、文献根、附件根及库外工作/备份根。
 2. plan 按集合层级和命名计划列出本次涉及的文件、资源、入链及目标预期哈希或“不存在”。
 3. commit 核对授权、候选验收记录、源与目标的写前条件。解析 `final.md` 起始 YAML；若存在 `库内参考文献` 键，先交[属性技能](../literature-note-properties/SKILL.md)修正并重验候选。新增笔记或本次涉及书目时，写前按[第 8 步](../literature-body-format/SKILL.md#验收标准)核对 `final.md` 的书目标题与节序号。新增笔记或本次涉及书目、书目锚点或引文时，写前须通过[第 9 步书目锚点验收](../literature-internal-links/SKILL.md#验收标准)。

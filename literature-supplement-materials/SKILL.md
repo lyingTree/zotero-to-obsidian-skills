@@ -12,6 +12,8 @@ description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、�
 
 ## 执行步骤
 
+对明确列出的本地资源运行 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 inspect_relative_files，实际读取文件并检查根边界及哈希；仍须按来源库存核对完整性、实际视频容器、编解码和首帧。
+
 1. 复用第 1 步清单核对每份 SI 附件的身份。
 2. 查看每份 SI 自己的题头；PDF 使用题头页图，DOCX 使用原生段落并按实际版面需要渲染。
 3. 按[来源命名空间](../literature-zotero2obsidian/references/pipeline-contract.md#补充材料与书目命名空间)建立该份 SI 的来源记录。

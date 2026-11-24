@@ -12,6 +12,8 @@ description: 为文献正文中的图、表、公式和引文建立指向本篇�
 
 ## 执行步骤
 
+优先使用现有 render_note、validate_note、validate_delivery 及 handoff_maps 的文件结果；按 [原子文件检查](../literature-zotero2obsidian/references/atomic-stage-checks.md) 记录具体已覆盖目标，不能将目标存在误认为来源书目身份正确。
+
 1. 先按来源登记所有目标。
 2. 按原文逐处登记调用，重复出现逐次登记。
 3. 将每处调用绑定到其实际支持的陈述。

@@ -12,6 +12,8 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 
 ## 执行步骤
 
+继续以现有逐页/原生清单与来源交付检查为机械证据；实际文件绑定使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md)。页图内容是否正确与源单元是否完整仍须核对。
+
 1. 核对每份附件的来源身份。
 2. 生成 PDF 题头页及对象所在页的可读页图。
 3. 先在 source-map.json 登记原文章节及对象清单。

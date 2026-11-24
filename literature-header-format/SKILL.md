@@ -12,6 +12,8 @@ description: 核对并规范文献的原文标题、中文译名、作者、单�
 
 ## 执行步骤
 
+题头阶段属性保护使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 audit_unchanged_properties(stage="header") 直接比较前后实际 YAML 区域字节并生成 HDR-A14 结论。
+
 新候选的题头由 [Python 组装入口](../literature-zotero2obsidian/references/deterministic-pipeline.md)的 `header` / `metadata` 单元生成。源题名、作者顺序、上标、单位、邮箱与元信息先对源确认，程序负责转义、分行及间距；不让模型再次手工拼接。既有候选用规范化入口处理已能明确识别的格式，角色不明时保留原文并定位报告。
 
 1. 查看所处理来源的题头页图。

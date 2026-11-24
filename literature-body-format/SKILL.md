@@ -12,6 +12,8 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 
 ## 执行步骤
 
+机械排版继续使用既有 normalize_note、lint_presentation、validate_note 与 accept_note；[原子文件检查](../literature-zotero2obsidian/references/atomic-stage-checks.md) 区分直接计算与仍需来源语义复核的记录，禁止零提示即全篇通过。
+
 优先按 [Python 组装、规范化与验收](../literature-zotero2obsidian/references/deterministic-pipeline.md)执行：结构化内容由 `render_note()` 序列化，既有候选由 `normalize_note()` 规范化，再由 `accept_note()` 读取实际文件。统一调用 `process_content()` / `process_markdown()` 可同时取得新候选、可重放变换、来源映射和逐环节报告。模型处理译义与异常判断，不手拼已由程序管理的空行、量值包装和对象块。
 
 1. 依原文章序整理候选结构。

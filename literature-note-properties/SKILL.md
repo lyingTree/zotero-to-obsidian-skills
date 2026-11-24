@@ -14,6 +14,8 @@ description: 按文献类型及既有模板构建或修复 Obsidian 文献 YAML 
 
 ## 执行步骤
 
+新建属性直接调用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 build_properties；既有稿删除废弃顶层键使用 repair_properties，无法安全隔离时阻断。另存阶段稿后使用 audit_properties，实际文件的 PROP-A01/A02/A04/A05/A06/A08 由 Python 分别判定；来源及其他未覆盖项仍单独核验。
+
 1. 读取实际 itemType 对应模板。
 2. 仅编辑起始 YAML 属性区。
 

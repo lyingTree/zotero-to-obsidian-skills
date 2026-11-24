@@ -14,6 +14,8 @@ description: 只读检查指定 Zotero 条目的完整可用信息、集合层�
 
 ## 执行步骤
 
+集合父链及本地附件的文件事实使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 collection_ancestry / snapshot，程序遍历已取得的真实 API 记录，输出缺项、成环和分页状态；不得手工构造缺失父链或将字节可读等同于格式有效。
+
 1. 通过 [zotero-skills](../zotero-skills/SKILL.md) 定位条目。
 2. 遍历字段、子项、附件、批注与集合分页。
 3. 依据文档内容确认全文版本及附件角色。

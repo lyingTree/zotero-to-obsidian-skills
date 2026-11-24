@@ -14,6 +14,8 @@ description: 将文献参考条目与 Obsidian 文献库中已有笔记核对，
 
 ## 执行步骤
 
+LIB-A08 直接使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 audit_unchanged_properties(stage="library") 比较原始 YAML 字节；对明确列出的出链目标运行 inspect_relative_files，文件存在不等于身份或版本唯一。
+
 1. 在指定库内查找候选，优先复用有效身份映射。
 2. 核对每个候选自身的题头、属性及关联 Zotero 条目。
 3. 保存 bibliography_id、参考 ID、目标路径、条目身份、版本证据和指纹；主文与各份 SI 的同号条目分别核对。

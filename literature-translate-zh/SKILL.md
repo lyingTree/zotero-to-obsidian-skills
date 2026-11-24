@@ -18,6 +18,8 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 
 ## 执行步骤
 
+TRN-A17 与 TRN-A25 优先使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 audit_translation_binding，以独立选定的实际术语表/译稿核对路径及哈希，不重复人工计算或把译文语义标为通过。
+
 1. 核实语种，按源块 ID 列出本次应译范围。
 2. 绑定实际术语表指纹。
 3. 按来源块逐段翻译。

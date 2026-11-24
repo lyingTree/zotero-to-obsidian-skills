@@ -123,6 +123,8 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 ## 验收标准
 
+全流程逐项检查另见 [原子文件检查与确定性阶段辅助](references/atomic-stage-checks.md)。coverage_catalog 枚举实际技能及引用页中的全部规则；record_file_checks 仅将相应程序实际判定的原子验收结果写入检查账本，不由模型代填机械判断，不将未映射项记为通过。
+
 - [ ] [PIPE-A01] 本次范围内的每个[逐篇验收项](references/acceptance.md)都有独立结果。 <!-- check-type: offline_outcome -->
 - [ ] [PIPE-A02] 本次涉及的书目标题层级正确。 <!-- check-type: offline_outcome -->
 - [ ] [PIPE-A03] 本次涉及的书目节序号正确。 <!-- check-type: offline_outcome -->
