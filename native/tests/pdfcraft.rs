@@ -382,3 +382,111 @@ fn legacy_pdf_selector_crosswalk_replays_actual_source_without_importing_review(
     request["kwargs"]["expected_legacy_inventory_sha256"]=json!(files::digest(&changed));
     assert!(invoke(request).unwrap_err().to_string().contains("source hash or role differs"));
 }
+
+#[test]
+fn legacy_pdf_image_correspondence_requires_encoded_identity_and_plain_unique_invocation() {
+    use z2o_native::{invoke, pipeline, source_prepare};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let pdf = root.join("source.pdf");
+    let mut doc = Document::with_version("1.5");
+    let pages = doc.new_object_id();
+    let encoded = vec![20, 30, 40, 50];
+    let img = doc.add_object(Stream::new(
+        dictionary!{"Type"=>"XObject","Subtype"=>"Image","Width"=>2,"Height"=>2,
+            "BitsPerComponent"=>8,"ColorSpace"=>"DeviceGray"},
+        encoded.clone(),
+    ));
+    let content = doc.add_object(Stream::new(
+        dictionary!{}, b"q 20 0 0 20 10 10 cm /Img Do Q".to_vec(),
+    ));
+    let page = doc.add_object(dictionary!{"Type"=>"Page","Parent"=>pages,"Contents"=>content,
+        "Resources"=>dictionary!{"XObject"=>dictionary!{"Img"=>img}}});
+    doc.objects.insert(pages, Object::Dictionary(dictionary!{"Type"=>"Pages",
+        "Kids"=>vec![Object::Reference(page)],"Count"=>1,
+        "MediaBox"=>vec![0.into(),0.into(),100.into(),100.into()]}));
+    let catalog = doc.add_object(dictionary!{"Type"=>"Catalog","Pages"=>pages});
+    doc.trailer.set("Root", catalog);
+    doc.save(&pdf).unwrap();
+    let native = source_prepare::prepare_sources(
+        &json!({"main":pdf}), &root.join("native"), &json!({"main":"main"}),
+        None, 72, None, |_, _, _| {},
+    ).unwrap();
+    let v = pipeline::read_json(&native).unwrap();
+    let source = &v["sources"][0];
+    // Known fixture's historical-format fields, independent of native output
+    // except for the common source binding. Standalone extraction hash differs.
+    let old = json!({"schema_version":1,"sources":[{
+        "id":"main","role":"main","sha256":source["sha256"],"page_count":1,
+        "image_objects":[{
+            "image_xref":img.0,"status":"extracted","pdf_stream_sha256":files::digest(&encoded),
+            "extracted_sha256":files::digest(b"standalone PNG, not the PDF stream"),
+            "smask":{"image_xref":0,"status":"absent"},"image_mask":false,
+            "decode":null,"explicit_mask":null,"smask_in_data":null
+        }],
+        "pages":[{"page":1,"blocks":[],"image_index":{
+            "status":"indexed","issues":[],"skipped_forms":[],
+            "bbox_meaning":"full_object_bounds_before_clipping",
+            "coordinate_system":{"space":"pdf_page","unit":"pt","origin":"top_left",
+                "x_axis":"right","y_axis":"down","rotation":"unrotated"},
+            "page_rotation":0,"page_bounds":[0,0,100,100],
+            "pdf_to_page_transform":[1,0,0,-1,0,100],
+            "occurrences":[{
+                "occurrence":1,"image_xref":img.0,"generation":0,"resource_name":"/Img",
+                "resource_path":["/Img"],"container_xref":page.0,"operation_index":2,
+                "form_xrefs":[],"form_clips":[],"context_effects":[],"fully_inside_page":true,
+                "bbox":[10,70,30,90],"transform":[20,0,0,20,10,70],
+                "visibility":"not_assessed"
+            }]
+        }}]
+    }]});
+    let legacy = root.join("old.json");
+    let run = |record: &serde_json::Value| {
+        let bytes = serde_json::to_vec(record).unwrap();
+        fs::write(&legacy, &bytes).unwrap();
+        let result = invoke(json!({"schema_version":1,
+            "operation":"validate_delivery.crosswalk_legacy_pdf_text","args":[legacy,native],
+            "kwargs":{"source_id":"main","expected_legacy_inventory_sha256":files::digest(&bytes),
+                "expected_native_inventory_sha256":files::digest(&fs::read(&native).unwrap())}})).unwrap();
+        assert_eq!(fs::read(&legacy).unwrap(), bytes);
+        assert_eq!(result["result"]["delivery_ready"], false);
+        assert_eq!(result["result"]["source_checks_complete"], false);
+        assert_eq!(result["result"]["pages"][0]["image_correspondence"]["visual"], "pending");
+        assert_eq!(result["result"]["pages"][0]["image_correspondence"]["human_review"], "not_transferred");
+        result["result"]["pages"][0]["image_correspondence"].clone()
+    };
+    let same = run(&old);
+    assert_eq!(same["status"], "mechanical_image_correspondence", "{same}");
+    assert_eq!(same["rows"][0]["pdf_raw_stream_sha256"], files::digest(&encoded));
+    for (key, replacement, reason) in [
+        ("generation", json!(1), "image_generation_differs_or_is_ambiguous"),
+        ("generation", serde_json::Value::Null, "invocation_generation_missing"),
+        ("transform", json!([20,0,0,20,11,70]), "normalized_locator_differs"),
+        ("operation_index", json!(3), "normalized_locator_differs"),
+        ("context_effects", json!(["optional_content_visibility"]), "image_dependencies_or_display_context_require_review"),
+    ] {
+        let mut altered = old.clone();
+        altered["sources"][0]["pages"][0]["image_index"]["occurrences"][0][key] = replacement;
+        let row = run(&altered);
+        assert_eq!(row["status"], "pending");
+        assert_eq!(row["rows"][0]["reason"], reason);
+    }
+    let mut changed = old.clone();
+    let mut duplicate = changed["sources"][0]["pages"][0]["image_index"]["occurrences"][0].clone();
+    duplicate["occurrence"] = json!(2);
+    changed["sources"][0]["pages"][0]["image_index"]["occurrences"].as_array_mut().unwrap().push(duplicate);
+    assert_eq!(run(&changed)["rows"][0]["reason"], "invocation_missing_repeated_or_ambiguous");
+
+    changed = old.clone();
+    let obj = &mut changed["sources"][0]["image_objects"][0];
+    obj["pdf_stream_sha256"] = obj["extracted_sha256"].clone();
+    assert_eq!(run(&changed)["rows"][0]["reason"], "raw_stream_identity_differs_or_is_unavailable");
+    changed["sources"][0]["image_objects"][0]["pdf_stream_sha256"] = serde_json::Value::Null;
+    assert_eq!(run(&changed)["rows"][0]["reason"], "legacy_raw_stream_hash_missing");
+    changed = old.clone();
+    changed["sources"][0]["image_objects"][0].as_object_mut().unwrap().remove("explicit_mask");
+    assert_eq!(run(&changed)["rows"][0]["reason"], "image_dependencies_or_display_context_require_review");
+    changed = old.clone();
+    changed["sources"][0]["pages"][0]["image_index"]["status"] = json!("partial");
+    assert_eq!(run(&changed)["reason"], "page_image_index_missing_or_incomplete");
+}

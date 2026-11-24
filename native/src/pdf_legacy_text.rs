@@ -1,5 +1,5 @@
 //! Read-only crosswalk of historic PDF text selectors, not an acceptance gate.
-use crate::{check_ledger, check_write, files, parse_json, path, pdf_inventory};
+use crate::{check_ledger, check_write, files, parse_json, path, pdf_inventory, pdf_legacy_images::LegacyImages};
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{collections::BTreeSet, fs, io::Read, path::Path};
@@ -119,11 +119,14 @@ pub fn crosswalk(old_path:&Path,old_sha:&str,new_path:&Path,new_sha:&str,id:&str
     let (a,b)=(old["pages"].as_array().context("Legacy pages required")?,
                new["pages"].as_array().context("Native pages required")?);
     ensure!(a.len()==b.len()&&old["page_count"].as_u64()==Some(a.len() as u64),"Legacy PDF page count differs");
+    let images=LegacyImages::new(old,a);
     let mut pages=Vec::with_capacity(a.len());
     for(i,(a,b))in a.iter().zip(b).enumerate(){
         let n=(i+1) as u64;
         ensure!(a["page"].as_u64()==Some(n)&&b["page"].as_u64()==Some(n),"Page order differs");
-        pages.push(report_page(a,b,id,n));
+        let mut page=report_page(a,b,id,n);
+        page["image_correspondence"]=images.report(a,b);
+        pages.push(page);
     }
     ensure!(check_ledger::bind_file(old_path)?==old_binding&&check_ledger::bind_file(new_path)?==new_binding
         &&files::snapshot(&pdf)?==original,"Crosswalk inputs changed");
@@ -133,7 +136,7 @@ pub fn crosswalk(old_path:&Path,old_sha:&str,new_path:&Path,new_sha:&str,id:&str
         "text_policy":"exact_tokens_ascii_layout_whitespace_only","range_policy":"zero_based_half_open_page_tokens",
         "legacy_engine_provenance":"not_verified","legacy_raster_provenance":"not_assessed",
         "source_fidelity":"not_assessed","source_checks_complete":false,
-        "delivery_ready":false,"evidence_boundary":"Mechanical text selectors only. No legacy raster, visual/OCR, reading order, human review or acceptance is established."}))
+        "delivery_ready":false,"evidence_boundary":"Mechanical selectors only. No legacy raster, visual/OCR, reading order, human review or acceptance is established."}))
 }
 
 #[cfg(test)]

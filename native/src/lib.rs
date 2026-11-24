@@ -46,6 +46,7 @@ pub mod pdf_structure;
 pub mod pdf_boundary;
 pub mod pdfcraft_backend;
 pub mod pdf_inventory;
+mod pdf_legacy_images;
 pub mod pdf_legacy_text;
 pub mod ocr_backend;
 pub mod ocr_acceleration;

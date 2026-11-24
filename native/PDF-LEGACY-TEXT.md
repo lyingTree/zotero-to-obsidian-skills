@@ -29,3 +29,28 @@ No proof of a historical engine's authorship, legacy page raster provenance,
 or source-fidelity acceptance is inferred; the original material remains
 authoritative for the original decisions only. OCR, visual checks and human
 decisions still require explicit evidence in the new workflow.
+
+## Indirect image invocation correspondence
+
+The same receipt also includes an additive, separately versioned
+`pages[].image_correspondence` diagnostic. The native page's structure and
+encoded image stream hash have already been checked against the actual PDF by
+independent replay. The historical comparator is `pdf_stream_sha256` (raw
+encoded PDF stream), **not** the extracted PNG/JPEG asset digest. The old
+object table keys by xref alone, so the legacy generation must come from
+actual invocation records; a missing or disputed generation is not inferred.
+
+A match requires complete image indexes, one invocation per xref on each
+side of that page, and exact xref, generation and raw-stream SHA-256.
+Unrotated page point frames, container xref, operation index, simple resource
+name/path, full object bounds and affine placement must agree. A 0.0001 pt
+absolute tolerance in placement and page-frame components accounts only for
+floating-point recording. The ordinal alone never supplies image identity.
+Only direct, fully in-page calls without forms, clipping flags, other
+recorded display effects, explicit masks, soft masks or Decode overrides
+are mapped. Incomplete or non-equivalent evidence remains pending, including
+repeated calls, and the text result is independent of this image diagnostic.
+
+A mapping matches selectors for an encoded indirect stream and its plain
+invocation. It does not validate the figure's visuals, visibility, composition,
+reading order, or source acceptance, and does not import any human decision.
