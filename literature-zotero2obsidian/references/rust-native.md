@@ -231,3 +231,13 @@ PP-OCRv6 `recognize_ocr_png_accelerated` 使用独立 z2o worker；CPU 与可选
 ### 原生候选包排除旧 Python 文件
 
 候选包生成和读取均强制排除旧 Python 文件（`*.py`、`*.pyw`、`*.pyc`、`*.pyo`、`*.pyz`、`*.pyd`、`*.pyi`、`__pycache__`，路径按 ASCII 大小写无关匹配）。包清单新增 `legacy_python_files_included=false`；即使重新计算合法清单哈希，含旧 Python 路径的清单仍拒绝安装。保留非 Python 资料及旧安装的完整事务备份；源仓库 Python 仅用于历史差分。旧候选包须用新版二进制重新生成。该变化只解决交付载荷残留，不代表历史行为等价、旧文档示例全部转换或完整发布资格通过。
+
+### Remaining seven runtime modules: additional native implementation
+
+The native implementation now additionally supports historical merged source-block partitions with exact source locators, joiners, original text digests, kind and target-unit coverage; link origins resolve through those partitions. Mapping reruns validate the actual original source paths, declared IDs/roles and independently regenerated evidence, and include the block partition in stable comparisons.
+
+PDF extraction additionally handles packed 1/2/4-bit grayscale/RGB sample rows and explicit identity/inverting Decode arrays in the supported native extraction subset. The inventory preserves separately bound indirect mask stream evidence and replays it against the original PDF, including when standalone extraction is not appropriate. Source preparation rejects ambiguous roles, duplicate canonical attachments and case-conflicting source IDs before writing output.
+
+Delivery and workflow verification bind the same manifest/map target and worksheet selectors, retain the original resource root, reject escaped or stale assets, and recheck evidence across stages. Translation decision drafts may be restored with an explicit `expected_draft_sha256`; input bytes and review publication are checked again before returning validation results.
+
+These changes cover all seven previously partial module areas, but are implementation increments, not evidence of complete historical behavior parity. Keep the existing release gates and module qualification states until native compilation, reference comparisons, mixed-source acceptance and the required six-platform execution results establish them. Unsupported PDF display/codec cases remain explicit, rather than silently falling back to Python or certifying semantic correctness.

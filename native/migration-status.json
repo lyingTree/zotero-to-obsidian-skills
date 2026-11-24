@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "PP-OCR CPU real qualification; optional isolated GPU/CPU fallback integrated into PDF OCR preparation and inventory, with same-profile model bindings; local MiniCPM-OCR/Jev model-bearing Linux/Intel Mac CI tests added; actual new results, accelerator hardware and full PDF/platform qualification remain"
+      "blocker": "PP-OCR CPU real qualification; optional isolated GPU/CPU fallback integrated into PDF OCR preparation and inventory, with same-profile model bindings; local MiniCPM-OCR/Jev model-bearing Linux/Intel Mac CI tests added; actual new results, accelerator hardware and full PDF/platform qualification remain; packed 1/2/4-bit samples, explicit Decode inversion and independently bound indirect mask replay added; complete codec/color-space coverage and independent render comparison remain unverified"
     },
     "docx_source_qualification": {
       "qualified": false,
@@ -42,15 +42,15 @@
     },
     "source_delivery_mapping_and_review_ledger": {
       "qualified": false,
-      "blocker": "Native handoff/rerun and delivery checks now enforce author-affiliation mapping, unmapped bibliography calls and distinct reference anchors; complete historical representations and independent source/figure parity remain"
+      "blocker": "Native handoff/rerun and delivery checks now enforce author-affiliation mapping, unmapped bibliography calls and distinct reference anchors; complete historical representations and independent source/figure parity remain; merged historical block partitions, actual rerun source-scope/hash checks and cross-stage resource bindings added; differential verification pending"
     },
     "translation_review_lifecycle": {
       "qualified": false,
-      "blocker": "All reference ReviewWriter/UnitReview/TermReview mutation methods now have explicit native replay-backed operations; expanded per-method differential and full workflow qualification remain"
+      "blocker": "All reference ReviewWriter/UnitReview/TermReview mutation methods now have explicit native replay-backed operations; expanded per-method differential and full workflow qualification remain; hash-bound decision draft restoration and review publication rechecks added; new regression results pending"
     },
     "native_complete_workflow": {
       "qualified": false,
-      "blocker": "Native mixed PDF/DOCX initialization, draft queue, handoff/rerun and post-draft workflow inspection/resume implemented; final delivery equivalence remains unqualified"
+      "blocker": "Native mixed PDF/DOCX initialization, draft queue, handoff/rerun and post-draft workflow inspection/resume implemented; final delivery equivalence remains unqualified; exact manifest/map selector and resource-root consistency plus cross-stage evidence revalidation added; new CI and complete historical acceptance required"
     },
     "native_installation_and_external_integration": {
       "qualified": false,

@@ -478,6 +478,9 @@ fn check_block_partition(c:&Ctx,actual:&Value,expected:&Value,name:&str)->Result
         for v in &values{ensure!(actual_units.insert(text(v,"target unit")?.to_owned()),"MAP_DUPLICATE_REFERENCE");}
         if let Some(v)=row.get("target_unit"){ensure!(actual_units.contains(text(v,"target unit")?),"MAP_BLOCK_TARGET_SET: contradictory singular target");}
         ensure!(actual_units==units,"MAP_BLOCK_TARGET_SET: {id}");
+        let kinds:BTreeSet<_>=units.iter().map(|u|c.units[u]["kind"].as_str().unwrap()).collect();
+        let expected_kind=if kinds.len()==1{*kinds.iter().next().unwrap()}else if kinds.is_empty(){"excluded"}else{"mixed"};
+        ensure!(row["kind"]==expected_kind,"MAP_BLOCK_KIND: {id}");
         if excluded==Some(true){
             ensure!(row["decision"]=="exclude"&&units.is_empty()&&reasons.len()==1&&reasons.contains(text(&row["reason"],"exclusion reason")?),"MAP_EXCLUSION_CONFLICT: {id}");
         }else{ensure!(row["decision"]=="keep"&&!units.is_empty(),"MAP_BLOCK_DECISION: {id}");}

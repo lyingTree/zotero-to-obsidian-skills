@@ -144,6 +144,9 @@ fn validates_explicit_merged_block_view_and_rerun_reports_changed_partition(){
     let mut bad=source.clone();bad["blocks"][0]["target_units"]=json!(["body","reference"]);
     save(&f.map("source_map"),&bad);
     assert_eq!(f.validate()["records_ready"],false);
+    let mut bad=source.clone();bad["blocks"][0]["kind"]=json!("paragraph");
+    save(&f.map("source_map"),&bad);
+    assert_eq!(f.validate()["records_ready"],false);
     save(&f.map("source_map"),&source);
     links["internal_links"][0]["origin_block"]=json!("s1");
     save(&f.map("link_map"),&links);
