@@ -935,6 +935,74 @@ class NativeDeliveryPreparationComparison(unittest.TestCase):
 
 
 
+class NativeSourceProvenanceComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_actual_docx_source_provenance_and_mutations(self):
+        import test_docx_complete_workflow as suite
+        fixture = suite.NativeFigureProvenanceTests(methodName="test_two_native_calls_form_one_logical_figure_without_fake_pagination")
+        fixture.setUp()
+        try:
+            actual = self.invoke("validate_delivery.check_source_provenance", str(fixture.inventory_path))
+            self.assertEqual(actual["findings"], [])
+            self.assertTrue(actual["source_checks_complete"])
+            self.assertFalse(actual["delivery_ready"])
+            fixture.inventory["sources"][0]["native_blocks"][0]["text"] = "Unsupported replacement"
+            suite.save(fixture.inventory_path, fixture.inventory)
+            actual = self.invoke("validate_delivery.check_source_provenance", str(fixture.inventory_path))
+            expected = fixture.validate()
+            expected_native = {(row.code, row.object_id) for row in expected.findings if row.code.startswith("NATIVE_PROVENANCE")}
+            self.assertTrue(expected_native)
+            self.assertEqual({(row["code"], row["object_id"]) for row in actual["findings"]}, expected_native)
+            self.assertFalse(actual["source_checks_complete"])
+            media = Path(fixture.inventory["sources"][0]["native_media"][0]["file"]["path"])
+            media.write_bytes(media.read_bytes() + b"changed")
+            actual = self.invoke("validate_delivery.check_source_provenance", str(fixture.inventory_path))
+            self.assertIn("FILE_HASH_MISMATCH", {row["code"] for row in actual["findings"]})
+        finally:
+            fixture.doCleanups()
+
+
+class NativeBoundMappingComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_file_bound_mapping_comparison_preserves_evidence_boundary(self):
+        import mapping_rerun as reference
+        base = {"source_map": {"units": [{"unit": "p", "source_id": "main", "review_status": "pending"}]}, "link_map": {}}
+        current = json.loads(json.dumps(base))
+        current["source_map"]["units"][0]["review_status"] = "reviewed"
+        paths = [{}, {}]
+        for i, doc in enumerate((base, current)):
+            for key, value in doc.items():
+                p = self.root.joinpath(f"{i}-{key}.json")
+                p.write_text(json.dumps(value), encoding="utf-8")
+                paths[i][key] = str(p)
+        output = self.root.joinpath("comparison.json")
+        saved = Path(self.invoke("mapping_rerun.compare_bound_maps", *paths, str(output)))
+        actual = json.loads(saved.read_text(encoding="utf-8"))
+        self.assertTrue(actual["mapping_equal"])
+        self.assertFalse(actual["actual_rerun_performed"])
+        self.assertFalse(actual["acceptance_status_written"])
+        self.assertEqual(actual["baseline_counts"], {key: {name: len(rows) for name, rows in reference._projection(value, key).items()} for key, value in base.items()})
+        for label, source in zip(("baseline", "comparison"), paths):
+            for key, value in source.items():
+                self.assertEqual(actual["inputs"][label][key]["sha256"], hashlib.sha256(Path(value).read_bytes()).hexdigest())
+        before = saved.read_bytes()
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("mapping_rerun.compare_bound_maps", *paths, str(output))
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("mapping_rerun.compare_bound_maps", paths[0], paths[0], str(self.root.joinpath("aliased.json")))
+        self.assertEqual(saved.read_bytes(), before)
+        current["source_map"]["units"][0]["source_id"] = "si"
+        Path(paths[1]["source_map"]).write_text(json.dumps(current["source_map"]), encoding="utf-8")
+        changed = Path(self.invoke("mapping_rerun.compare_bound_maps", *paths, str(self.root.joinpath("changed.json"))))
+        result = json.loads(changed.read_text(encoding="utf-8"))
+        self.assertFalse(result["mapping_equal"])
+        self.assertEqual(result["differences"][0]["id"], "p")
+
+
 class NativeTextVisualConflictComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp
     invoke = ReferenceComparison.invoke

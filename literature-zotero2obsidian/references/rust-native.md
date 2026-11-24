@@ -121,3 +121,7 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 ### 翻译 writer 原生接口增量
 
 新增 select_source、select_candidate、append_decision。复用冻结准备记录和已有原生选择器，返回实际来源/候选位置、原始字节对应读法、显式解释及可重放选择参数；后续决定重新验证而非信任外部构造的 selection。追加决定之前和之后均复核绑定。正式登记原有 UnitReview.source/candidate 及 ReviewWriter.save/save_draft/from_draft 的原生替代接口。类方法的全部行为、历史正反例及完整工作流尚未全部取得发布资格。
+
+### 原生来源交付核验与映射文件差分增量
+
+`validate_delivery.check_source_provenance` 重新读取实际 OOXML，比较原生块/关系/媒体顺序、图件与 XML 字节、保存的原始文字及实际问题审阅证据。PDF 只检查实际页树、页范围及已保存的文件绑定，显式产生 PDF_FULL_PROVENANCE_UNMIGRATED；本操作始终不宣称完整交付通过。`mapping_rerun.compare_bound_maps` 从不同的实际映射文件读取并绑定精确字节，对稳定身份投影进行独立比较，写入独占证据报告；不会将调用者提供的第二组文件当作程序实际 rerun。完整原生映射生成/验证、PDF 像素/文本来源验证及交付整体验收仍需完成。

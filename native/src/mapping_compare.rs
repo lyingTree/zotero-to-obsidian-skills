@@ -63,3 +63,50 @@ pub fn compare(previous:&Value,current:&Value)->Result<Value>{
         "source_fidelity":"not_assessed","acceptance_status_written":false,"actual_rerun_performed":false,
         "boundary":"Stable projection comparison of supplied maps only. Actual regeneration and validation are required for rerun evidence."}))
 }
+
+
+/// Compare real, separately supplied mapping files and preserve the exact
+/// input bindings. This must never be reported as an actual mapping rerun:
+/// the full mapping generator and validator must first be native.
+pub fn compare_bound_maps(previous:&Value,current:&Value,destination:&std::path::Path)->Result<std::path::PathBuf>{
+    use crate::{check_ledger,files,path,path_text,parse_json};
+    use std::{collections::HashSet,io::Write,path::Path};
+    let a=previous.as_object().context("baseline map paths must be an object")?;
+    let b=current.as_object().context("new map paths must be an object")?;
+    ensure!(a.keys().eq(b.keys())&&a.contains_key("source_map")&&a.contains_key("link_map"),
+        "Keep the actual source and link maps and matching map names");
+    let mut bindings=Map::new();let mut docs_a=Map::new();let mut docs_b=Map::new();
+    let mut seen=HashSet::new();
+    for (label,paths,docs) in [("baseline",a,&mut docs_a),("comparison",b,&mut docs_b)]{
+        let mut records=Map::new();
+        for (name,value) in paths{
+            let (raw,record)=files::read_bound(&path(value)?)?;
+            ensure!(seen.insert(record["path"].as_str().context("map path")?.to_owned()),
+                "Each baseline/comparison map must be a separate actual file");
+            let document=parse_json(std::str::from_utf8(&raw)?)?;
+            ensure!(document.is_object(),"A mapping document must be a JSON object");
+            records.insert(name.clone(),record);docs.insert(name.clone(),document);
+        }
+        bindings.insert(label.into(),Value::Object(records));
+    }
+    let mut report=compare(&Value::Object(docs_a),&Value::Object(docs_b))?;
+    report["inputs"]=Value::Object(bindings);
+    report["compared_fields"]=json!(FIELDS.iter().map(|(group,fields)|(*group,*fields)).collect::<std::collections::BTreeMap<_,_>>());
+    report["schema_version"]=json!(1);
+    let parent=destination.parent().filter(|p|!p.as_os_str().is_empty()).unwrap_or_else(||Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let out=files::canonical(parent)?.join(destination.file_name().context("comparison filename")?);
+    ensure!(!seen.contains(&path_text(&out)?),"Comparison must not replace a map");
+    ensure!(!out.exists()&&!out.is_symlink(),"Keep the existing comparison evidence");
+    for records in report["inputs"].as_object().unwrap().values(){
+        for b in records.as_object().unwrap().values(){
+            ensure!(check_ledger::bind_file(&path(&b["path"])?)?==*b,"A comparison input changed before publication");
+        }
+    }
+    let mut bytes=serde_json::to_vec_pretty(&report)?;bytes.push(b'\n');
+    let mut temp=tempfile::NamedTempFile::new_in(out.parent().unwrap())?;
+    temp.write_all(&bytes)?;temp.as_file().sync_all()?;
+    temp.persist_noclobber(&out).map_err(|e|anyhow::anyhow!("Cannot exclusively publish comparison: {}",e.error))?;
+    ensure!(std::fs::read(&out)?==bytes,"Comparison report did not round-trip");
+    Ok(out)
+}

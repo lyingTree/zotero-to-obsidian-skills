@@ -29,6 +29,7 @@ pub mod check_scope;
 pub mod visible_edits;
 pub mod draft_queue;
 pub mod delivery_prepare;
+pub mod delivery_provenance;
 pub mod workflow;
 pub mod mapping_compare;
 pub mod handoff_conflicts;
@@ -108,9 +109,11 @@ pub const OPERATIONS: &[&str] = &[
     "validate_delivery.check_merges",
     "validate_delivery.scan_markdown_links",
     "validate_delivery.write_delivery_manifest",
+    "validate_delivery.check_source_provenance",
     "handoff_maps.make_source_unit",
     "handoff_maps.record_text_visual_conflict",
     "mapping_rerun.compare_stable_projections",
+    "mapping_rerun.compare_bound_maps",
     "pdf_image_objects.index_page_structure",
     "prepare_source_inventory.prepare_pdf_structure_evidence",
     "prepare_source_inventory.record_figure_edges",
@@ -745,6 +748,15 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             handoff_conflicts::record(&p,&unit,handoff_conflicts::Conflict{conflict_id:&id,page_number:page,
                 text_locator:&locator,text_layer_text:&layer,visible_text:&visible,bbox:&bbox,decision:&decision})?
+        }
+        "validate_delivery.check_source_provenance" => {
+            let inv=path(&c.positional("inventory_path")?)?;c.finish()?;
+            delivery_provenance::validate(&inv,|i,n,label|eprintln!("[{i}/{n}] {label}"))?
+        }
+        "mapping_rerun.compare_bound_maps" => {
+            let previous=c.positional("baseline_paths")?;let current=c.positional("comparison_paths")?;
+            let dest=path(&c.positional("destination")?)?;c.finish()?;
+            json!(path_text(&mapping_compare::compare_bound_maps(&previous,&current,&dest)?)?)
         }
         "mapping_rerun.compare_stable_projections" => {
             let a=c.positional("baseline")?;let b=c.positional("current")?;c.finish()?;mapping_compare::compare(&a,&b)?
