@@ -56,6 +56,13 @@ pub(crate) fn bind_pdf_coordinates(ocr:&mut Value,render:&Value)->Result<()>{
         let words=r["words"].as_array_mut().context("OCR word array required")?;
         for word in words{add_coords(word,m);}
     }
+    // Optional explicit table crop: project the two independent geometric
+    // evidence sets without conflating them with the logical cell grid.
+    for key in ["structure_model_boxes","detected_cells"]{
+        if let Some(rows)=ocr.get_mut(key){
+            for r in rows.as_array_mut().context("Table geometry must be an array")?{add_coords(r,m);}
+        }
+    }
     ocr["source_pdf"]=render["source_file"].clone();
     ocr["page"]=render["page"].clone();ocr["render"]=render.clone();
     ocr["coordinate_system"]=coord();Ok(())
@@ -288,6 +295,30 @@ pub fn prepare(source:&Path,output:&Path,opt:Options<'_>,mut progress:impl FnMut
         "source_inventory_ready":false,"acceptance_ready":false,"source_fidelity":"not_assessed","boundary":BOUNDARY});
     let receipt=tempfile::Builder::new().prefix("ocr-run-").tempdir_in(&root)?.keep().join("report.json");
     fresh(&receipt,&report)?;Ok(receipt)
+}
+
+pub struct TableOptions<'a>{
+    pub page:u64,pub bbox:&'a Value,pub coordinate_system:&'a Value,pub dpi:u64,
+    pub package:&'a Path,pub package_sha:&'a str,pub profile:&'a str,pub cell_mode:&'a str,
+    pub expected_source_sha:Option<&'a str>,
+}
+pub fn recognize_table_region(source:&Path,output:&Path,opt:TableOptions<'_>)->Result<PathBuf>{
+    ensure!(*opt.coordinate_system==coord(),"Declare unrotated PDF-point coordinates");
+    ensure!((72..=600).contains(&opt.dpi),"Table OCR dpi must be between 72 and 600");
+    let region=box4(opt.bbox)?;
+    let mut pdf=Backend::open(source,opt.expected_source_sha)?;
+    let root=safe_root(output)?;
+    // Each attempt has its own directory; source or model failure cannot
+    // overwrite earlier evidence, nor produce a final Rich Table.
+    let attempt=tempfile::Builder::new().prefix("table-ocr-").tempdir_in(&root)?.keep();
+    let png=attempt.join("table.png");
+    let render=pdf.render(opt.page,Some(region),opt.dpi,&png)?;
+    fresh(&attempt.join("render.json"),&render)?;
+    let mut result=ocr_backend::recognize_table_png(&png,opt.package,opt.package_sha,opt.profile,opt.cell_mode,render["asset"]["sha256"].as_str())?;
+    bind_pdf_coordinates(&mut result,&render)?;
+    pdf.verify()?;
+    let destination=attempt.join("table-candidate.json");
+    fresh(&destination,&result)?;Ok(destination)
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 use anyhow::{anyhow,bail,ensure,Context,Result};
 use serde_json::{json,Map,Value};
 use std::{collections::HashSet,fs,io::Cursor,path::{Path,PathBuf},sync::Mutex,panic::{catch_unwind,AssertUnwindSafe}};
-use ppocr_rs::{OcrLite,OcrOptions,LayoutAnalyzer,DocOrientationClassifier,Point,TextBlock};
+use ppocr_rs::{OcrLite,OcrOptions,LayoutAnalyzer,DocOrientationClassifier,Point,TextBlock,TableStructureRecognizer,CellDetector};
 use crate::{check_ledger,check_write,files,path,path_text,parse_json};
 
 pub const OCR_REV:&str="b87550b775206655acf84d7fc421ca5bdf745fd3";
@@ -321,6 +321,32 @@ impl Package{
         }
         let p=Self{manifest,resources,policy};p.verify()?;Ok(p)
     }
+    fn for_table(manifest_path:&Path,expected_sha:&str,profile:&str,cell_mode:&str)->Result<Self>{
+        ensure!(matches!(cell_mode,"off"|"wired"|"wireless"),"cell_mode must be off, wired or wireless");
+        let mut p=Self::load(manifest_path,expected_sha,profile,"off")?;
+        // Explicit, potentially expensive operation. No automatic table model
+        // loading while processing ordinary pages.
+        ensure!(available().1>=1024*1024*1024,"Insufficient available memory for table analysis");
+        let (_,manifest,data,root)=verified_manifest(manifest_path,expected_sha)?;
+        ensure!(manifest==p.manifest,"Table package changed during preparation");
+        let aux=&data["auxiliary"];
+        let table=&aux["table_structure"];
+        ensure!(table["architecture"]=="SLANet_plus","Declare the actual SLANet_plus table model");
+        for (name,row) in [("table_model",&table["model"]),("table_dictionary",&table["dictionary"])]{
+            let b=resource(&root,row,name)?;
+            ensure!(p.resources.values().all(|v|v["path"]!=b["path"]),"Table model assets must be distinct");
+            p.resources.insert(name.into(),b);
+        }
+        if cell_mode!="off"{
+            let key=format!("table_cells_{cell_mode}");
+            let b=resource(&root,&aux[&key],"RT-DETR-L cell detector")?;
+            ensure!(p.resources.values().all(|v|v["path"]!=b["path"]),"Cell model assets must be distinct");
+            p.resources.insert("table_cell_detector".into(),b);
+        }
+        // A caller-selected table crop is not a page. Do not auto-rotate it.
+        p.resources.remove("orientation");p.policy["table_cell_mode"]=json!(cell_mode);
+        p.verify()?;Ok(p)
+    }
     fn verify(&self)->Result<()>{
         for b in std::iter::once(&self.manifest).chain(self.resources.values()){
             let p=path(&b["path"])?;check_write::no_link(&p)?;
@@ -395,19 +421,8 @@ impl Engine{
     fn recognize(&mut self,png:&Path,expected_sha:Option<&str>)->Result<Value>{
         self.package.verify()?;
         ensure!(available().1>=512*1024*1024,"Insufficient free memory for another OCR page");
-        let (raw,source)=read_small(png,MAX_PNG_BYTES)?;
-        if let Some(expected)=expected_sha{ensure!(source["sha256"]==sha(&json!(expected))?,"OCR_IMAGE_HASH_MISMATCH");}
-        let (w,h)=image::ImageReader::with_format(Cursor::new(&raw),image::ImageFormat::Png).into_dimensions()?;
-        ensure!(w>0&&h>0&&u64::from(w)*u64::from(h)<=MAX_PIXELS,"OCR image exceeds safe pixel budget; choose a smaller region");
-        let rgba=image::load_from_memory_with_format(&raw,image::ImageFormat::Png)?.into_rgba8();
-        drop(raw);
-        // Explicitly composite transparency over white, rather than silently
-        // ignoring alpha or allowing hidden pixels into an OCR hypothesis.
-        let rgb:Vec<u8>=rgba.as_raw().chunks_exact(4).flat_map(|p|{
-            let a=u32::from(p[3]);[0usize,1,2].map(|c|((u32::from(p[c])*a+255*(255-a)+127)/255) as u8)
-        }).collect();
-        drop(rgba);
-        let mut img=image::RgbImage::from_raw(w,h,rgb).context("Invalid RGB buffer")?;
+        let (mut img,source)=read_rgb(png,expected_sha)?;
+        let (w,h)=img.dimensions();
         let (angle,orientation_score)=if let Some(classifier)=&mut self.orientation{
             let (o,score)=classifier.classify(&img)?;
             let n=o.degrees();
@@ -455,6 +470,22 @@ impl Engine{
             "source_fidelity":"not_assessed","acceptance_ready":false,"evidence_boundary":BOUNDARY}))
     }
 }
+fn read_rgb(png:&Path,expected_sha:Option<&str>)->Result<(image::RgbImage,Value)>{
+        let (raw,source)=read_small(png,MAX_PNG_BYTES)?;
+        if let Some(expected)=expected_sha{ensure!(source["sha256"]==sha(&json!(expected))?,"OCR_IMAGE_HASH_MISMATCH");}
+        let (w,h)=image::ImageReader::with_format(Cursor::new(&raw),image::ImageFormat::Png).into_dimensions()?;
+        ensure!(w>0&&h>0&&u64::from(w)*u64::from(h)<=MAX_PIXELS,"OCR image exceeds safe pixel budget; choose a smaller region");
+        let rgba=image::load_from_memory_with_format(&raw,image::ImageFormat::Png)?.into_rgba8();
+        drop(raw);
+        // Explicitly composite transparency over white, rather than silently
+        // ignoring alpha or allowing hidden pixels into an OCR hypothesis.
+        let rgb:Vec<u8>=rgba.as_raw().chunks_exact(4).flat_map(|p|{
+            let a=u32::from(p[3]);[0usize,1,2].map(|c|((u32::from(p[c])*a+255*(255-a)+127)/255) as u8)
+        }).collect();
+        drop(rgba);
+
+    let image=image::RgbImage::from_raw(w,h,rgb).context("Invalid RGB buffer")?;Ok((image,source))
+}
 fn finite_score(s:f32)->Option<f32>{s.is_finite().then_some(s)}
 
 // The upstream orientation label is the observed clockwise rotation;
@@ -488,6 +519,64 @@ fn block_record(b:&TextBlock,i:usize,angle:u32,w:u32,h:u32)->Value{
 pub fn recognize_png(png:&Path,package:&Path,package_sha:&str,profile:&str,layout:&str,expected_sha:Option<&str>)->Result<Value>{
     let package=Package::load(package,package_sha,profile,layout)?;
     Engine::open(package)?.recognize_png(png,expected_sha)
+}
+
+/// Run the actual optional table model and independently preserve the ordinary
+/// OCR readings plus any RT-DETR-L cell detections. Never trust the structure
+/// box count as proof of cell identity (upstream can omit invalid boxes).
+pub fn recognize_table_png(png:&Path,manifest:&Path,hash:&str,profile:&str,cell_mode:&str,expected:Option<&str>)->Result<Value>{
+    guarded(||{
+        let package=Package::for_table(manifest,hash,profile,cell_mode)?;
+        let mut engine=Engine::open(package)?;
+        let (img,source)=read_rgb(png,expected)?;
+        let (w,h)=img.dimensions();
+        let side=engine.package.policy["max_detection_side"].as_u64().unwrap() as u32;
+        let options=OcrOptions{return_word_box:true,use_doc_orientation:false,..Default::default()};
+        let result=engine.ocr.detect_with_options(&img,10,side,0.6,0.3,1.6,false,false,options)?;
+        ensure!(result.page_angle==0,"Unexpected table crop rotation");
+        let blocks:Vec<_>=result.text_blocks.iter().enumerate().map(|(i,b)|block_record(b,i,0,w,h)).collect();
+        let model=engine.package.get("table_model")?;
+        let dict=engine.package.get("table_dictionary")?;
+        let mut recognizer=TableStructureRecognizer::from_path_with_dict(&model,Some(&dict))?.with_input_size(488);
+        let structure=recognizer.recognize(&img)?;
+        drop(recognizer);
+        let parsed=match crate::ocr_table::parse_structure(&structure.html_tokens){
+            Ok(v)=>v,Err(e)=>json!({"status":"structure_unresolved","reason":format!("{e:#}"),"acceptance_ready":false})
+        };
+        let raw_boxes:Vec<_>=structure.cell_boxes.iter().enumerate().map(|(i,b)|{
+            let bbox=[f64::from(b.x1),f64::from(b.y1),f64::from(b.x2),f64::from(b.y2)];
+            let quad=crate::ocr_table::cell_quad(bbox,w,h);
+            json!({"index":i,"raw_bbox":bbox,"original_pixel_quad":quad,"location_valid":!quad.is_null()})
+        }).collect();
+        let mut cells=Vec::new();
+        if cell_mode!="off"{
+            ensure!(available().1>=1024*1024*1024,"Insufficient available memory for cell detection");
+            let threads=engine.package.policy["threads"].as_u64().unwrap() as usize;
+            let session=ort::session::Session::builder().map_err(ppocr_rs::OcrError::from)?
+                .with_intra_threads(threads).map_err(ppocr_rs::OcrError::from)?
+                .with_inter_threads(1).map_err(ppocr_rs::OcrError::from)?
+                .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3).map_err(ppocr_rs::OcrError::from)?
+                .commit_from_file(engine.package.get("table_cell_detector")?).map_err(ppocr_rs::OcrError::from)?;
+            let mut detector=CellDetector::from_session(session);
+            let detected=detector.detect(&img)?;
+            ensure!(detected.len()<=4096,"Cell detection budget exceeded");
+            for (i,b) in detected.iter().enumerate(){
+                let bbox=[f64::from(b.left),f64::from(b.top),f64::from(b.right),f64::from(b.bottom)];
+                let quad=crate::ocr_table::cell_quad(bbox,w,h);
+                cells.push(json!({"index":i,"raw_bbox":bbox,"original_pixel_quad":quad,
+                    "score":finite_score(b.score),"location_valid":!quad.is_null()}));
+            }
+        }
+        let association=crate::ocr_table::associate_readings(&cells,&blocks)?;
+        engine.package.verify()?;
+        ensure!(binding(png)?==source,"Table crop changed during inference");
+        Ok(json!({"schema_version":1,"source_image":source,"source_image_size":[w,h],"model_package":engine.package.report(),
+            "layout_regions":[],"blocks":blocks,"raw_structure_tokens":structure.html_tokens,
+            "structure_score":finite_score(structure.score),"structure_candidate":parsed,
+            "structure_model_boxes":raw_boxes,"detected_cells":cells,"cell_mode":cell_mode,
+            "box_identity_verified":false,"cell_association":association,"status":"table_candidate_review_required",
+            "source_fidelity":"not_assessed","acceptance_ready":false,"evidence_boundary":crate::ocr_table::BOUNDARY}))
+    })
 }
 
 #[cfg(test)]

@@ -156,3 +156,24 @@ fn offline_install_rejects_bad_unselected_model_before_creating_store(){
     assert!(ocr_backend::install_package(&manifest,&files::digest(&raw),&store,|_,_,_|{}).is_err());
     assert!(!store.exists());
 }
+
+#[test]
+fn explicit_table_model_resources_are_checked_before_runtime(){
+    let root=tempfile::tempdir().unwrap();
+    let (manifest,_)=fixture(root.path());
+    let mut data:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    fs::write(root.path().join("table.onnx"),b"table fixture").unwrap();
+    fs::write(root.path().join("table.txt"),b"<td>\n</td>\n").unwrap();
+    data["auxiliary"]["table_structure"]=json!({"architecture":"SLANet_plus",
+        "model":{"path":"table.onnx","sha256":files::digest(b"table fixture")},
+        "dictionary":{"path":"table.txt","sha256":files::digest(b"<td>\n</td>\n")}});
+    let bytes=serde_json::to_vec(&data).unwrap();fs::write(&manifest,&bytes).unwrap();
+    let installed=ocr_backend::install_package(&manifest,&files::digest(&bytes),&root.path().join("store"),|_,_,_|{}).unwrap();
+    assert_eq!(installed["resource_count"],6);
+    // An ordinary OCR package inspection never loads optional table resources.
+    let inspected=ocr_backend::inspect_package(&manifest,&files::digest(&bytes),"tiny","off").unwrap();
+    assert_eq!(inspected["resources"].as_object().unwrap().len(),4);
+    fs::write(root.path().join("table.onnx"),b"changed").unwrap();
+    assert!(ocr_backend::recognize_table_png(&root.path().join("missing.png"),&manifest,&files::digest(&bytes),"tiny","off",None).is_err());
+    assert!(ocr_backend::install_package(&manifest,&files::digest(&bytes),&root.path().join("other"),|_,_,_|{}).is_err());
+}

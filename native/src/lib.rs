@@ -37,6 +37,7 @@ pub mod pdf_structure;
 pub mod pdfcraft_backend;
 pub mod ocr_backend;
 pub mod ocr_pdf;
+pub mod ocr_table;
 pub mod translation_validate;
 pub mod translation_writer;
 pub mod translation_tasks;
@@ -125,6 +126,8 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_source_inventory.inspect_ocr_package",
     "prepare_source_inventory.install_ocr_package",
     "prepare_source_inventory.recognize_ocr_png",
+    "prepare_source_inventory.recognize_ocr_table_png",
+    "prepare_source_inventory.recognize_pdf_table_region",
     "prepare_source_inventory.prepare_pdf_ocr_evidence",
     "prepare_source_inventory.prepare_pdfcraft_evidence",
     "prepare_source_inventory.prepare_pdf_structure_evidence",
@@ -772,6 +775,31 @@ pub fn invoke(request: Value) -> Result<Value> {
         }
         "mapping_rerun.compare_stable_projections" => {
             let a=c.positional("baseline")?;let b=c.positional("current")?;c.finish()?;mapping_compare::compare(&a,&b)?
+        }
+        "prepare_source_inventory.recognize_ocr_table_png" | "prepare_source_inventory.recognize_pdf_table_region" => {
+            let package=path(&c.required("package_manifest")?)?;
+            let sha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
+            let profile=string(&c.option("profile",json!("auto")),"profile")?;
+            let cell_mode=string(&c.option("cell_mode",json!("off")),"cell_mode")?;
+            if op.ends_with("recognize_ocr_table_png"){
+                let png=path(&c.positional("image_path")?)?;
+                let expected=c.option("expected_image_sha256",Value::Null);
+                let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_image_sha256")?)};
+                c.finish()?;
+                ocr_backend::recognize_table_png(&png,&package,&sha,&profile,&cell_mode,expected.as_deref())?
+            }else{
+                let source=path(&c.positional("source_pdf")?)?;
+                let dest=path(&c.required("destination")?)?;
+                let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
+                let bbox=c.required("bbox")?;let coords=c.required("coordinate_system")?;
+                let dpi=c.option("dpi",json!(200)).as_u64().context("dpi must be an integer")?;
+                let expected=c.option("expected_source_sha256",Value::Null);
+                let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
+                c.finish()?;
+                let options=ocr_pdf::TableOptions{page,bbox:&bbox,coordinate_system:&coords,dpi,
+                    package:&package,package_sha:&sha,profile:&profile,cell_mode:&cell_mode,expected_source_sha:expected.as_deref()};
+                json!(path_text(&ocr_pdf::recognize_table_region(&source,&dest,options)?)?)
+            }
         }
         "prepare_source_inventory.prepare_pdf_ocr_evidence" => {
             let source=path(&c.positional("source_pdf")?)?;

@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "CPU-first page/region OCR and restart candidate; real CPU OCR smoke is required, all six platforms and complete PDF source inventory/figure export/boundary parity remain"
+      "blocker": "Native PDF/OCR page evidence, restart and optional table region hypotheses implemented; real CPU qualification, table-model accuracy, final source inventory/figure export/boundary parity remain"
     },
     "docx_source_qualification": {
       "qualified": false,

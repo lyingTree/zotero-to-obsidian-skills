@@ -155,3 +155,7 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 ### 原生离线 OCR 资源安装
 
 新增 `prepare_source_inventory.install_ocr_package(package_manifest, expected_package_sha256=..., store=...)`。独立可信 SHA-256 绑定清单；所有声明的 tiny/small/medium、运行库及依赖、辅助模型逐一检查，包括当前机器不会加载的模型。仅复制被声明的常规文件，拒绝目录穿越、链接、冲突及额外文件；暂存目录校验完后发布到 `store/<manifest SHA-256>/package.json`，同包可复用，不覆盖或悄悄修复旧资源。运行时依赖列表 `runtime.dependencies` 纳入哈希核验。支持已有离线可信包，不包含自动下载、签名发布、GPU 探测或合格模型目录。用户无需 Python 执行本安装接口。新增真实文件的安装、复用、篡改与未选模型负例。
+
+### 可选表格结构及单元格证据
+
+新增 `recognize_ocr_table_png` 和 `recognize_pdf_table_region`。显式传入表格截图或原始 PDF 的未旋转点坐标，使用经绑定的 `auxiliary.table_structure = {"architecture":"SLANet_plus","model":{path,sha256},"dictionary":{path,sha256}}`；可选择 `cell_mode="wired"|"wireless"` 使用独立 RT-DETR-L 单元格检测模型（`auxiliary.table_cells_wired` / `table_cells_wireless`）。默认 cell_mode=off，不自动加载表格模型。原始 HTML 仅作为数据，不执行或写入最终 Markdown；有限语法解析记录明确 rowspan/colspan、空位及上游可能省略的终止容器标签。缺失行/单元格、越界、非法属性、重叠 span 均阻断，不猜补。上游可能产生数量或位置不匹配的结构框，始终保留独立框数组，不按索引与结构单元格强配。RT-DETR-L 框只与完全且唯一包含的 OCR 行形成几何候选，跨格/未归属读法全部保留。PDF 接口同时映射独立结构框、检测框及正文到原始未旋转坐标。没有自动 Rich Table 输出、合并格匹配验收或真实模型测试通过的声明；表格模型本身须单独安装、实测和复核。
