@@ -155,18 +155,60 @@ pub fn record_rows(p:&Path,rows:&Value,contexts:&Value,evidence:&Value)->Result<
     }
     record_batch(p,&json!(results),evidence)
 }
+pub(crate) struct CandidateUpdate{
+    pub before:Value,
+    pub after:Value,
+    pub old:Vec<u8>,
+    pub new:Option<Vec<u8>>,
+}
+impl CandidateUpdate{
+    // The caller holds the native ledger lock for preparation and publishing.
+    pub fn prepare(run:&crate::workflow::CandidateRun)->Result<Self>{
+        let p=&run.checks;
+        let (old,before)=files::read_bound(p)?;
+        let mut ledger=parse_json(std::str::from_utf8(&old)?)?;
+        let data=&run.data;
+        let actual_root=files::canonical(&p.parent().unwrap().join(path(&ledger["skills_root"])?))?;
+        let expected_root=files::canonical(&run.base().join(path(&data["config"]["skills_root"])?))?;
+        ensure!(ledger["schema_version"].as_u64()==Some(1)&&actual_root==expected_root&&
+            data["versions"]["rule_files"].as_array().is_some_and(|a|!a.is_empty())&&
+            ledger["rule_files"]==data["versions"]["rule_files"]&&
+            data["identity"]["sources"].as_array().is_some_and(|a|!a.is_empty())&&
+            ledger["bindings"]["sources"]==data["identity"]["sources"],
+            "Check ledger does not match the original workflow skill catalog and source scope");
+        for b in ledger["rule_files"].as_array().unwrap().iter().chain(ledger["bindings"]["sources"].as_array().unwrap()){
+            let bound_path=files::canonical(&p.parent().unwrap().join(path(&b["path"])?))?;
+            ensure!(bound_path!=*p&&path_text(&bound_path)?!=run.candidate["path"],
+                "Candidate or check ledger aliases a frozen rule or source");
+        }
+        let mut binding=run.candidate.clone();binding["id"]=json!("candidate");
+        let bindings=ledger["bindings"].as_object_mut().context("Ledger bindings must be an object")?;
+        if let Some(existing)=bindings.get("candidates"){
+            let rows=existing.as_array().context("Candidate bindings must be an array")?;
+            if rows.as_slice()==[binding.clone()]{
+                return Ok(Self{old,before:before.clone(),after:before,new:None});
+            }
+            ensure!(rows.is_empty(),"The candidate changed. Preserve the earlier ledger, invalidate affected results, and review the new file before rebinding.");
+        }
+        bindings.insert("candidates".into(),json!([binding]));
+        let mut new=serde_json::to_vec_pretty(&ledger)?;new.push(b'\n');
+        let after=json!({"path":before["path"],"sha256":files::digest(&new)});
+        Ok(Self{old,before,after,new:Some(new)})
+    }
+    pub fn apply(&self,p:&Path)->Result<()>{
+        no_link(p)?;
+        ensure!(check_ledger::bind_file(p)?==self.before,"Check ledger changed before candidate binding");
+        if let Some(new)=&self.new{replace_bytes(p,self.before["sha256"].as_str().unwrap(),new)?;}
+        Ok(())
+    }
+}
 pub fn bind_candidate(run_path:&Path)->Result<Value>{
-    let run=pipeline::read_json(run_path)?;
-    let p=path(&run["records"]["checks"])?;
-    let candidate=check_ledger::bind_file(&path(&run["config"]["candidate_path"])?)?;
-    let(p,_lock)=lock(&p)?;let(mut ledger,digest)=load(&p)?;
-    let mut binding=candidate.clone();binding["id"]=json!("candidate");
-    let existing=ledger["bindings"]["candidates"].as_array().context("candidate bindings must be an array")?;
-    if existing==&vec![binding.clone()]{return Ok(candidate);}
-    ensure!(existing.is_empty(),"The candidate changed. Preserve the earlier ledger, invalidate affected results, and review the new file before rebinding.");
-    ledger["bindings"]["candidates"]=json!([binding]);
-    ensure!(check_ledger::bind_file(Path::new(candidate["path"].as_str().unwrap()))?==candidate,"Candidate changed before binding");
-    replace(&p,&digest,&ledger)?;Ok(candidate)
+    let run=crate::workflow::CandidateRun::open(run_path)?;
+    let _lock=lock_target(&run.checks)?;
+    let update=CandidateUpdate::prepare(&run)?;
+    run.verify()?;
+    update.apply(&run.checks)?;
+    Ok(run.candidate)
 }
 pub struct AuditOptions<'a>{pub stage:&'a str,pub after:&'a Path,pub before:Option<&'a Path>,pub mode:Option<&'a str>,pub item_type:Option<&'a str>,pub kind:Option<&'a str>}
 fn audit(opt:AuditOptions<'_>)->Result<Value>{

@@ -65,6 +65,22 @@ fn actual_offline_native_install_reuse_backup_and_tamper_protection(){
     let req=base.join("request.json");
     fs::write(&req,serde_json::to_vec(&json!({"schema_version":1,"operation":"deterministic_stage_checks.author_token","args":[["Smith","Jones"]]})).unwrap()).unwrap();
     assert_eq!(success(run(&installed_exe,&["invoke",path(&req)]))["result"],"Smith and Jones");
+    let verified=success(run(&installed_exe,&["verify-install",path(&manifest),&sha,path(&installed)]));
+    assert_eq!(verified["status"],"installed_candidate_files_verified");
+    assert_eq!(verified["package_manifest"]["sha256"],sha);
+    assert_eq!(verified["runtime_sha256"],manifest_data["files"][manifest_data["runtime"].as_str().unwrap()]["sha256"]);
+    assert_eq!(verified["file_count"],manifest_data["files"].as_object().unwrap().len());
+    assert_eq!(verified["qualified"],false);
+    let from_uninstalled_exe=run(exe,&["verify-install",path(&manifest),&sha,path(&installed)]);
+    assert!(!from_uninstalled_exe.status.success());
+    assert!(String::from_utf8_lossy(&from_uninstalled_exe.stderr).contains("NATIVE_INSTALLED_RUNTIME_PATH_MISMATCH"));
+    let resource=installed.join(SKILLS[1]).join("nested").join("reference.md");
+    fs::write(&resource,b"Keep documentatioN").unwrap(); // Same size as the packaged content.
+    let mismatch=run(&installed_exe,&["verify-install",path(&manifest),&sha,path(&installed)]);
+    assert!(!mismatch.status.success());
+    assert!(String::from_utf8_lossy(&mismatch.stderr).contains("NATIVE_INSTALLED_FILE_MISMATCH"));
+    assert_eq!(fs::read_to_string(&resource).unwrap(),"Keep documentatioN");
+    fs::write(&resource,b"Keep documentation").unwrap();
     let repeat=success(run(exe,&["install",path(&manifest),&sha,path(&installed)]));
     assert!(repeat["installed"].as_array().unwrap().is_empty());
     assert_eq!(repeat["skipped"].as_array().unwrap().len(),12);
@@ -72,6 +88,14 @@ fn actual_offline_native_install_reuse_backup_and_tamper_protection(){
     fs::write(bundle.join("skills").join(SKILLS[0]).join("reference.py"),b"tampered").unwrap();
     assert!(!run(exe,&["install",path(&manifest),&sha,path(&installed)]).status.success());
     assert_eq!(fs::read(installed.join(SKILLS[0]).join("SKILL.md")).unwrap(),untouched);
+    // A post-install verification depends on the original manifest, not an unpacked payload.
+    let moved=bundle.join("skills");let absent=bundle.join("unpacked-payload-moved");
+    fs::rename(&moved,&absent).unwrap();
+    let verify_op=json!({"schema_version":1,"operation":"native_runtime.verify_install","args":[manifest,sha,installed]});
+    fs::write(&req,serde_json::to_vec(&verify_op).unwrap()).unwrap();
+    let via_invoke=success(run(&installed_exe,&["invoke",path(&req)]));
+    assert_eq!(via_invoke["result"],verified);
+    fs::rename(&absent,&moved).unwrap();
     // A correctly hashed manifest must still not authorize Python payloads.
     let injected=bundle.join("skills").join(SKILLS[0]).join("reference.py");
     let binding=files::snapshot(&injected).unwrap();

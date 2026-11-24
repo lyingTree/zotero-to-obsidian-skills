@@ -11,15 +11,20 @@ pub const FIELDS:&[(&str,&[&str])]=&[
  ("anchors",&["target_id","target_unit","source_id","candidate_locator"]),
  ("links",&["source_id","origin_unit","origin_block","candidate_locator","href","display_text","source_display_text","syntax","image","target_id","target_unit","target_path"]),
 ];
+// Preserve the historical report's map and collection order independently
+// of JSON object ordering. Identity order within a collection is lexical.
+const MAP_NAMES:[&str;3]=["source_map","si_map","link_map"];
+fn collections(name:&str)->Result<&'static [(&'static str,&'static str,&'static str)]>{
+    match name{
+        "source_map"|"si_map"=>Ok(&[("blocks","block_id","blocks"),("units","unit","units")]),
+        "link_map"=>Ok(&[("anchors","id","anchors"),("internal_links","id","links"),("library_matches","id","links"),("external_links","id","links"),("resource_links","id","links")]),
+        _=>anyhow::bail!("Unknown mapping name {name}"),
+    }
+}
 fn project(doc:&Value,name:&str)->Result<Value>{
     ensure!(doc.is_object(),"A mapping document must be a JSON object");
-    let kinds:&[(&str,&str,&str)]=match name{
-        "source_map"|"si_map"=>&[("blocks","block_id","blocks"),("units","unit","units")],
-        "link_map"=>&[("anchors","id","anchors"),("internal_links","id","links"),("library_matches","id","links"),("external_links","id","links"),("resource_links","id","links")],
-        _=>anyhow::bail!("Unknown mapping name {name}"),
-    };
     let mut result=Map::new();
-    for &(collection,key,group) in kinds{
+    for &(collection,key,group) in collections(name)?{
         let mut index=Map::new();
         let fields=FIELDS.iter().find(|(k,_)|*k==group).unwrap().1;
         let mut rows=Vec::new();
@@ -48,18 +53,20 @@ pub fn compare(previous:&Value,current:&Value)->Result<Value>{
     let a=previous.as_object().context("baseline maps must be an object")?;
     let b=current.as_object().context("comparison maps must be an object")?;
     ensure!(a.keys().eq(b.keys())&&a.contains_key("source_map")&&a.contains_key("link_map"),"Keep the actual source and link maps and matching map names");
+    for name in a.keys(){ensure!(MAP_NAMES.contains(&name.as_str()),"Unknown mapping name {name}");}
     let mut counts=Map::new();let mut differences=Vec::new();
-    for (name,left) in a{
+    for name in MAP_NAMES{
+        let Some(left)=a.get(name)else{continue;};
         let left=project(left,name)?;let right=project(&b[name],name)?;let mut per=Map::new();
-        for (collection,rows) in left.as_object().unwrap(){
-            let rows=rows.as_object().unwrap();let other=right[collection].as_object().unwrap();
-            per.insert(collection.clone(),json!(rows.len()));
+        for &(collection,_,_) in collections(name)?{
+            let rows=left[collection].as_object().unwrap();let other=right[collection].as_object().unwrap();
+            per.insert(collection.into(),json!(rows.len()));
             let identities:BTreeSet<_>=rows.keys().chain(other.keys()).collect();
             for id in identities{
                 if rows.get(id)!=other.get(id){differences.push(json!({"map":name,"collection":collection,"id":id,"previous":rows.get(id),"rerun":other.get(id)}));}
             }
         }
-        counts.insert(name.clone(),Value::Object(per));
+        counts.insert(name.into(),Value::Object(per));
     }
     Ok(json!({"baseline_counts":counts,"mapping_equal":differences.is_empty(),"differences":differences,
         "source_fidelity":"not_assessed","acceptance_status_written":false,"actual_rerun_performed":false,
@@ -69,7 +76,7 @@ pub fn compare(previous:&Value,current:&Value)->Result<Value>{
 
 /// Compare real, separately supplied mapping files and preserve the exact
 /// input bindings. This must never be reported as an actual mapping rerun:
-/// the full mapping generator and validator must first be native.
+/// this entry point does not invoke the generator or validator.
 pub fn compare_bound_maps(previous:&Value,current:&Value,destination:&std::path::Path)->Result<std::path::PathBuf>{
     use crate::{check_ledger,files,path,path_text,parse_json};
     use std::{collections::HashSet,io::Write,path::Path};
@@ -117,17 +124,30 @@ pub fn compare_bound_maps(previous:&Value,current:&Value,destination:&std::path:
 /// Generate genuinely new mappings from the bound run inputs, not two
 /// arbitrarily supplied map snapshots. Validate both before comparing.
 pub fn record_mapping_rerun(run_path:&std::path::Path,deliveries:&Value,destination:&std::path::Path,mut progress:impl FnMut(usize,usize,&str))->Result<std::path::PathBuf>{
-    use crate::{check_ledger,files,handoff_native::{self,Bindings},path,path_text};
-    use std::path::Path;
-    let mut run_inputs=Bindings::new();let (run,run_binding)=run_inputs.json(run_path)?;
-    let run_path=path(&run_binding["path"])?;let base=run_path.parent().context("Run directory")?;
+    use crate::{files,handoff_native::{self,Bindings},parse_json,path,path_text};
+    use std::{fs,io::Read,path::Path};
+    let mut run_inputs=Bindings::new();
+    let run_path=files::canonical(run_path)?;
+    const RUN_MAX_BYTES:u64=128*1024*1024;
+    ensure!(fs::metadata(&run_path)?.len()<=RUN_MAX_BYTES,"Mapping run exceeds byte budget");
+    let run_binding=run_inputs.capture(&run_path)?;
+    let mut raw=Vec::new();
+    fs::File::open(&run_path)?.take(RUN_MAX_BYTES+1).read_to_end(&mut raw)?;
+    ensure!(raw.len() as u64<=RUN_MAX_BYTES&&run_binding["sha256"]==files::digest(&raw),"MAP_INPUT_CHANGED: mapping run manifest");
+    let run=parse_json(std::str::from_utf8(&raw)?)?;
+    // Older task-local scripts omitted the version field on the wrapper
+    // manifest. A supplied version remains mandatory to recognize.
+    ensure!(run.is_object()&&run.get("schema_version").is_none_or(|v|v.as_u64()==Some(1)),"MAP_SCHEMA_VERSION");
+    let base=run_path.parent().context("Run directory")?;
     let records=run["records"].as_object().context("Workflow records required")?;
     let config=run["config"].as_object().context("Workflow config required")?;
-    let inventory=base.join(path(records.get("source_inventory").context("Source inventory required")?)?);
-    let candidate=base.join(path(config.get("candidate_path").context("Candidate required")?)?);
+    let inventory=files::canonical(&base.join(path(records.get("source_inventory").context("Source inventory required")?)?))?;
+    let candidate=files::canonical(&base.join(path(config.get("candidate_path").context("Candidate required")?)?))?;
     let mut original=Map::new();
-    for name in ["source_map","si_map","link_map"]{
-        if let Some(v)=records.get(name){original.insert(name.into(),json!(path_text(&base.join(path(v)?))?));}
+    for name in MAP_NAMES{
+        if let Some(v)=records.get(name){
+            original.insert(name.into(),json!(path_text(&files::canonical(&base.join(path(v)?))?)?));
+        }
     }
     ensure!(original.contains_key("source_map")&&original.contains_key("link_map"),"Keep original source and link maps");
     let identity=run["identity"]["sources"].as_array().filter(|a|!a.is_empty()).context("Original source bindings required")?;
@@ -152,9 +172,29 @@ pub fn record_mapping_rerun(run_path:&std::path::Path,deliveries:&Value,destinat
         ensure!(ids.len()==list.len()&&ids==expected.keys().map(String::as_str).collect(),"Original declared source scope differs");
     }
     let expected=Value::Object(expected);let original=Value::Object(original);
-    let old=handoff_native::validate_full(&inventory,&candidate,&original,&expected,&mut progress).context("Resolve original native mapping diagnostics before rerun")?;
     let dest=std::path::absolute(destination)?;
     ensure!(!dest.exists()&&!dest.is_symlink(),"Use a new mapping rerun directory");
+
+    // Freeze every original before validation can make progress. In
+    // particular, the validator loads sources first and only reads the
+    // baseline maps later; a concurrent, valid edit cannot become the
+    // original merely because validation had not yet opened the map.
+    let mut inputs=Map::new();
+    inputs.insert("run".into(),run_binding);
+    inputs.insert("inventory".into(),run_inputs.capture(&inventory)?);
+    inputs.insert("candidate".into(),run_inputs.capture(&candidate)?);
+    for(name,row)in original.as_object().unwrap(){
+        inputs.insert(format!("baseline:{name}"),run_inputs.capture(&path(row)?)?);
+    }
+    for(id,row)in expected.as_object().unwrap(){
+        let binding=run_inputs.capture(&path(&row["path"])?)?;
+        ensure!(binding["sha256"]==row["sha256"],"Original source SHA-256 changed: {id}");
+        inputs.insert(format!("source:{id}"),binding);
+    }
+    let old=handoff_native::validate_full(&inventory,&candidate,&original,&expected,&mut progress).context("Resolve original native mapping diagnostics before rerun")?;
+    run_inputs.merge(&old.bindings).context("An input or baseline changed during baseline validation")?;
+    run_inputs.verify().context("An input or baseline changed during baseline validation")?;
+
     let parent=dest.parent().filter(|p|!p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let dest=files::canonical(parent)?.join(dest.file_name().context("Rerun destination name")?);
@@ -163,7 +203,6 @@ pub fn record_mapping_rerun(run_path:&std::path::Path,deliveries:&Value,destinat
         Ok((name.clone(),json!(path_text(&dest.join(format!("{}.json",name.replace('_',"-"))))?)))
     }).collect::<Result<_>>()?;
     let paths=Value::Object(paths);
-    old.bindings.verify()?;run_inputs.verify()?;
     let generation=handoff_native::write(&inventory,&candidate,deliveries,&paths,&expected,&mut progress)?;
     ensure!(generation["records_ready"]==true,"Actual mapping rerun generation failed: {}",generation["findings"]);
     let new=handoff_native::validate_full(&inventory,&candidate,&paths,&expected,&mut progress).context("Actual rerun validation failed")?;
@@ -173,27 +212,18 @@ pub fn record_mapping_rerun(run_path:&std::path::Path,deliveries:&Value,destinat
     for name in ["source_inventory","candidate"]{
         ensure!(old.checked[name]==new.checked[name]&&generation["checked_files"][name]==old.checked[name],"A bound source/candidate changed during actual rerun: {name}");
     }
-    old.bindings.verify()?;new.bindings.verify()?;run_inputs.verify()?;
+    run_inputs.merge(&new.bindings).context("An input or generated map changed during the mapping rerun")?;
     let mut report=compare(&old.docs,&new.docs)?;
-    let mut inputs=Map::new();inputs.insert("run".into(),run_binding);
-    inputs.insert("inventory".into(),old.checked["source_inventory"].clone());
-    inputs.insert("candidate".into(),old.checked["candidate"].clone());
     let mut rerun_maps=Map::new();
     for name in original.as_object().unwrap().keys(){
-        inputs.insert(format!("baseline:{name}"),old.checked[name].clone());
         rerun_maps.insert(name.clone(),new.checked[name].clone());
-    }
-    for(id,row)in expected.as_object().unwrap(){
-        let p=path(&row["path"])?;let b=check_ledger::bind_file(&p)?;
-        ensure!(b["sha256"]==row["sha256"],"Source changed during rerun");
-        inputs.insert(format!("source:{id}"),b);
     }
     report["schema_version"]=json!(1);report["created_at"]=json!(chrono::Utc::now().to_rfc3339());
     report["inputs"]=json!(inputs);report["rerun_maps"]=json!(rerun_maps);
     report["compared_fields"]=json!(FIELDS.iter().map(|(g,f)|(*g,*f)).collect::<std::collections::BTreeMap<_,_>>());
     report["actual_rerun_performed"]=json!(true);report["baseline_validated"]=json!(true);report["rerun_validated"]=json!(true);
     report["boundary"]=json!("Actual native mapping regeneration and stable identity comparison only. No translation, source identity or human observation is certified.");
-    old.bindings.verify()?;new.bindings.verify()?;run_inputs.verify()?;
+    run_inputs.verify().context("A comparison input changed before the report was saved")?;
     let output=dest.join("rerun-comparison.json");handoff_native::publish(&output,&report)?;Ok(output)
 }
 
@@ -210,5 +240,23 @@ mod identity_tests {
         let a=json!({"source_map":{"blocks":{"block-a":{"source_id":"main"}}},"link_map":{}});
         let b=json!({"source_map":{"blocks":[{"block_id":"block-a","source_id":"main"}]},"link_map":{}});
         assert_eq!(compare(&a,&b).unwrap()["mapping_equal"],true);
+    }
+    #[test]
+    fn differences_follow_legacy_map_collection_and_identity_order() {
+        let baseline=json!({"link_map":{"anchors":[{"id":"z"},{"id":"a"}],
+            "external_links":[{"id":"e"}],"internal_links":[{"id":"i"}],
+            "library_matches":[{"id":"l"}],"resource_links":[{"id":"r"}]},
+            "si_map":{"units":[{"unit":"si"}]},
+            "source_map":{"units":[{"unit":"main"}],"blocks":[{"block_id":"b"}]}});
+        let rerun=json!({"source_map":{},"si_map":{},"link_map":{}});
+        let report=compare(&baseline,&rerun).unwrap();
+        let differences=report["differences"].as_array().unwrap();
+        let actual=differences.iter().map(|row|(
+            row["map"].as_str().unwrap(),row["collection"].as_str().unwrap(),row["id"].as_str().unwrap()
+        )).collect::<Vec<_>>();
+        assert_eq!(actual,vec![("source_map","blocks","b"),("source_map","units","main"),
+            ("si_map","units","si"),("link_map","anchors","a"),("link_map","anchors","z"),
+            ("link_map","internal_links","i"),("link_map","library_matches","l"),
+            ("link_map","external_links","e"),("link_map","resource_links","r")]);
     }
 }

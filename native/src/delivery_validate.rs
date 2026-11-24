@@ -5,7 +5,7 @@ use anyhow::{ensure,Context,Result};
 use serde_json::{json,Map,Value};
 use std::{collections::{BTreeMap,BTreeSet,HashSet},path::{Path,PathBuf},fs};
 use crate::{check_ledger,check_validate,delivery_provenance,docx,files,grid,handoff_native::{self,Bindings},
-    handoff_scan::{Candidate,Span},path,pdf_structure::Pdf,source_urls,translation_validate,validate};
+    handoff_scan::{Candidate,Span},path,pdf_structure::Pdf,source_urls,syntax,translation_validate,validate};
 
 const BOUNDARY:&str="Native delivery record and file consistency checks; source fidelity, actual observation, scientific meaning and independent visual review are not certified. Full historical parity remains a release blocker.";
 fn text(v:&Value)->bool{v.as_str().is_some_and(|s|!s.trim().is_empty())}
@@ -204,6 +204,22 @@ fn local_image(a:&mut Audit,href:&str,root:&Path)->Result<Value>{
     ensure!(image.width()>0&&image.height()>0&&u64::from(image.width())*u64::from(image.height())<=40_000_000,"Invalid image dimensions");
     Ok(b)
 }
+fn header_note_layout(candidate:&Candidate,span:Span)->Result<bool>{
+    // Selectors may start mid-line, but a quote marker only applies at the
+    // actual physical line start. Use the prose view to exclude literal
+    // markers inside comments, code, Rich Table data or display math.
+    let start=candidate.raw[..span.start].rfind(['\r','\n']).map_or(0,|i|i+1);
+    let selected=candidate.visible_prose(span)?;
+    if !selected.chars().any(|c|!c.is_whitespace()&&c!='>'){return Ok(false);}
+    let prose=candidate.visible_prose(Span{start,end:span.end})?;
+    for row in syntax::lines(prose){
+        let line=syntax::body(prose,row);
+        if line.trim().is_empty(){continue;}
+        let rest=line.trim_start_matches(' ');
+        if line.len()-rest.len()>3||!rest.starts_with('>'){return Ok(false);}
+    }
+    Ok(true)
+}
 fn targets(a:&mut Audit,inv:&Value,manifest:&Value,candidate:&Candidate,root:&Path)->Result<()>{
     let units=index(&inv["units"],"id")?;let deliveries=index(&manifest["deliveries"],"unit")?;
     ensure!(units.keys().eq(deliveries.keys()),"Every registered unit needs one explicit target");
@@ -260,7 +276,11 @@ fn targets(a:&mut Audit,inv:&Value,manifest:&Value,candidate:&Candidate,root:&Pa
                     },
                     "doi"=>ensure!(regex::Regex::new(r"^10\.\d{4,9}/\S+$")?.is_match(value)&&links.iter().any(|l|!l.image&&percent_encoding::percent_decode_str(&l.href).decode_utf8_lossy().eq_ignore_ascii_case(&format!("https://doi.org/{value}"))),"Source DOI not delivered canonically"),
                     "email"=>ensure!(regex::Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")?.is_match(value)&&links.iter().any(|l|!l.image&&l.href.split('?').next().unwrap_or("").eq_ignore_ascii_case(&format!("mailto:{value}"))),"Literal source email not delivered"),
-                    "header_note"=>ensure!(!visible.trim().is_empty()&&visible.lines().filter(|s|!s.trim().is_empty()).all(|s|s.trim_start().starts_with('>')),"Source header note must be a nonempty blockquote"),
+                    "header_note"=>{
+                        if !header_note_layout(candidate,span)?{
+                            a.fail("HEADER_NOTE_LAYOUT",id,"Deliver this source header note inside its source-specific visible metadata blockquote.");
+                        }
+                    },
                     _=>{},
                 }
             }

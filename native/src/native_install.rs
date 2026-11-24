@@ -178,7 +178,7 @@ pub fn package(source:&Path,destination:&Path,mut progress:impl FnMut(usize,usiz
         "skill_count":SKILLS.len(),"qualified":false,"boundary":BOUNDARY}))
 }
 struct Bundle{binding:Value,payload:PathBuf,files:FileMap}
-fn load_bundle(manifest:&Path,expected:&str)->Result<Bundle>{
+fn load_manifest(manifest:&Path,expected:&str)->Result<(Value,FileMap)>{
     ensure!(valid_hash(expected),"Provide the independently trusted manifest SHA-256");
     let raw=read_small(manifest,32*1024*1024)?;
     ensure!(files::digest(&raw)==expected,"NATIVE_BUNDLE_MANIFEST_HASH_MISMATCH");
@@ -189,7 +189,6 @@ fn load_bundle(manifest:&Path,expected:&str)->Result<Bundle>{
     ensure!(v["platform"]==std::env::consts::OS&&v["architecture"]==std::env::consts::ARCH&&v["engine_version"]==ENGINE_VERSION,
         "Bundle architecture, platform or engine version mismatch");
     ensure!(v["skills"]==json!(SKILLS)&&v["runtime"]==exe_relative()&&v["system_python_required"]==false&&v["legacy_python_files_included"]==false,"Bundle skill scope or runtime differs");
-    let root=path(&b["path"])?;let payload=dir(&root.parent().context("Bundle directory")?.join("skills"),false)?;
     let table=v["files"].as_object().filter(|m|!m.is_empty()&&m.len()<=MAX_FILES).context("Bundle file list required")?;
     let mut total=0u64;let mut aliases=BTreeSet::new();let mut expected_files=BTreeMap::new();
     for(name,r)in table{
@@ -201,10 +200,17 @@ fn load_bundle(manifest:&Path,expected:&str)->Result<Bundle>{
         total=total.checked_add(r["size"].as_u64().context("Bundle file size")?).context("Bundle size overflow")?;
         ensure!(total<=MAX_TOTAL,"Bundle exceeds byte budget");expected_files.insert(name.clone(),r.clone());
     }
-    for name in SKILLS{skill_header(&payload.join(name),name)?;ensure!(expected_files.contains_key(&format!("{name}/SKILL.md")),"Missing skill manifest");}
+    for name in SKILLS{ensure!(expected_files.contains_key(&format!("{name}/SKILL.md")),"Missing skill manifest");}
     let runtime=expected_files.get(&exe_relative()).context("Missing bundled runtime")?;
     ensure!(runtime["sha256"]==files::snapshot(&std::env::current_exe()?)?["sha256"],"Run the exact executable bound by this package");
     #[cfg(unix)]ensure!(runtime["executable"]==true,"Bundle runtime executable bit missing");
+    Ok((b,expected_files))
+}
+fn load_bundle(manifest:&Path,expected:&str)->Result<Bundle>{
+    let (b,expected_files)=load_manifest(manifest,expected)?;
+    let root=path(&b["path"])?;
+    let payload=dir(&root.parent().context("Bundle directory")?.join("skills"),false)?;
+    for name in SKILLS{skill_header(&payload.join(name),name)?;}
     ensure!(scan(&payload,false)?==expected_files,"NATIVE_BUNDLE_FILE_MISMATCH: missing, added or changed asset");
     ensure!(check_ledger::bind_file(manifest)?==b,"Bundle manifest changed during verification");
     Ok(Bundle{binding:b,payload,files:expected_files})
@@ -222,6 +228,25 @@ fn snapshot(p:&Path,name:&str)->Result<Option<FileMap>>{
         Err(e) if e.kind()==io::ErrorKind::NotFound=>Ok(None),
         Err(e)=>Err(e.into()),
     }
+}
+/// Compare the installed candidate against its independently trusted manifest.
+/// This does not require unpacked bundle contents and never repairs the installation.
+pub fn verify_install(manifest:&Path,expected:&str,skills_root:&Path)->Result<Value>{
+    let (binding,installed)=load_manifest(manifest,expected)?;
+    let root=dir(skills_root,false)?;
+    let runtime=child(&root,&exe_relative())?;
+    ensure!(runtime==files::canonical(&std::env::current_exe()?)?,
+        "NATIVE_INSTALLED_RUNTIME_PATH_MISMATCH: run the executable inside this skills root");
+    for name in SKILLS{
+        ensure!(snapshot(&root.join(name),name)?==Some(skill_files(&installed,name)),
+            "NATIVE_INSTALLED_FILE_MISMATCH: missing, added or changed skill file in {name}");
+    }
+    ensure!(check_ledger::bind_file(manifest)?==binding,"Bundle manifest changed during verification");
+    Ok(json!({"schema_version":1,"status":"installed_candidate_files_verified","skills_root":path_text(&root)?,
+        "package_manifest":binding,"runtime_path":path_text(&runtime)?,
+        "runtime_sha256":installed[&exe_relative()]["sha256"],"skill_count":SKILLS.len(),
+        "file_count":installed.len(),"system_python_required":false,"qualified":false,
+        "boundary":"Read-only comparison of the installed candidate files against this manifest. Other skills are outside scope. This does not qualify platform installs, external integrations, licenses, OCR resources, or the full literature workflow."}))
 }
 pub fn install(manifest:&Path,expected:&str,skills_root:&Path,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
     let b=load_bundle(manifest,expected)?;

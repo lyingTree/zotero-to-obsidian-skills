@@ -343,10 +343,46 @@ fn img_chain(doc:&Document,d:&Dictionary)->Result<Vec<(Filter,Params)>>{
     }
     Ok(out)
 }
-struct Samples{w:u32,h:u32,channels:usize,bits:usize,bytes:Vec<u8>,jpeg:bool,preserve_jpeg:bool,filters:Vec<String>}
+struct Samples{
+    w:u32,h:u32,channels:usize,bits:usize,bytes:Vec<u8>,jpeg:bool,preserve_jpeg:bool,filters:Vec<String>,
+    pdf_colorspace:&'static str,indexed_palette:Option<Value>,
+}
+fn device_space(value:&Object)->Option<(&'static str,usize)>{
+    match value.as_name().ok()?{
+        b"DeviceRGB"=>Some(("/DeviceRGB",3)),b"DeviceGray"=>Some(("/DeviceGray",1)),_=>None,
+    }
+}
+struct Palette{base:&'static str,channels:usize,hival:u8,lookup:Vec<u8>,lookup_format:&'static str,encoded_sha:Option<String>}
+fn indexed_palette(doc:&Document,color:&Object)->Result<Palette>{
+    let a=color.as_array().context("PAGE_RENDER_REQUIRED: ICC, CMYK or resource-defined ColorSpace")?;
+    ensure!(a.len()==4&&deref(doc,&a[0])?.as_name().ok()==Some(b"Indexed"),"PAGE_RENDER_REQUIRED: unsupported ColorSpace array");
+    let (base,channels)=device_space(deref(doc,&a[1])?).context("PAGE_RENDER_REQUIRED: Indexed base is not DeviceRGB/DeviceGray")?;
+    let hival=u8::try_from(deref(doc,&a[2])?.as_i64().context("PAGE_RENDER_REQUIRED: Indexed hival must be an integer")?)
+        .context("PAGE_RENDER_REQUIRED: Indexed hival is outside 0..255")?;
+    let expected=(usize::from(hival)+1)*channels;
+    let (lookup,lookup_format,encoded_sha)=match deref(doc,&a[3])?{
+        Object::String(data,_)=>{
+            ensure!(data.len()==expected,"PAGE_RENDER_REQUIRED: Indexed lookup length differs from hival and base");
+            (data.clone(),"string",None)
+        }
+        Object::Stream(stream)=>{
+            ensure!(stream.content.len()<=1024*1024,"PAGE_RENDER_REQUIRED: Indexed lookup encoded byte budget");
+            let chain=img_chain(doc,&stream.dict)?;
+            ensure!(chain.iter().all(|(f,p)|f.is_decodable()&&p.predictor==1),
+                "PAGE_RENDER_REQUIRED: unsupported Indexed lookup stream filter or predictor");
+            let mut work=8u64*1024*1024;
+            let bytes=filters::decode_within(&chain,&stream.content,expected,&mut work)
+                .context("PAGE_RENDER_REQUIRED: cannot decode Indexed lookup stream")?;
+            (bytes,"stream",Some(files::digest(&stream.content)))
+        }
+        _=>return Err(anyhow!("PAGE_RENDER_REQUIRED: Indexed lookup must be a string or stream")),
+    };
+    ensure!(lookup.len()==expected,"PAGE_RENDER_REQUIRED: Indexed lookup length differs from hival and base");
+    Ok(Palette{base,channels,hival,lookup,lookup_format,encoded_sha})
+}
 // PDF rows are independently byte-padded and samples are MSB-first.
-// Convert the supported integer sample domain to 8-bit PNG channels.
-fn unpack_samples(raw:&[u8],w:u32,h:u32,channels:usize,bits:usize)->Result<Vec<u8>>{
+// Keep original integer indices for a palette; device-color samples scale to PNG channels.
+fn unpack_samples(raw:&[u8],w:u32,h:u32,channels:usize,bits:usize,scale:bool)->Result<Vec<u8>>{
     ensure!(matches!(bits,1|2|4|8),"Unsupported packed PDF samples");
     let samples=(w as usize).checked_mul(channels).context("Image row size overflow")?;
     let stride=samples.checked_mul(bits).context("Image row bits overflow")?.div_ceil(8);
@@ -358,7 +394,7 @@ fn unpack_samples(raw:&[u8],w:u32,h:u32,channels:usize,bits:usize)->Result<Vec<u
         for n in 0..samples{
             let pos=n*bits;let shift=8-bits-pos%8;
             let value=(u16::from(row[pos/8])>>shift)&max;
-            result.push((value*255/max) as u8);
+            result.push(if scale{(value*255/max) as u8}else{value as u8});
         }
     }
     Ok(result)
@@ -367,10 +403,16 @@ fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>
     let d=&stream.dict;
     let w=u32::try_from(img_int(doc,d,b"Width",None)?)?;let h=u32::try_from(img_int(doc,d,b"Height",None)?)?;
     ensure!(w>0&&h>0&&u64::from(w)*u64::from(h)<=20_000_000,"Image exceeds pixel budget");
-    let channels=match img_value(doc,d,b"ColorSpace")?.context("Missing ColorSpace")?.as_name().ok(){
-        Some(b"DeviceRGB")=>3,Some(b"DeviceGray")=>1,_=>return Err(anyhow!("PAGE_RENDER_REQUIRED: ICC, CMYK, indexed or resource-defined ColorSpace")),
+    let colorspace=img_value(doc,d,b"ColorSpace")?.context("Missing ColorSpace")?;
+    let (pdf_colorspace,channels,palette)=if let Some((base,channels))=device_space(colorspace){
+        (base,channels,None)
+    }else{
+        ensure!(!mask,"PAGE_RENDER_REQUIRED: non-gray SMask");
+        let palette=indexed_palette(doc,colorspace)?;
+        ("/Indexed",palette.channels,Some(palette))
     };
     ensure!(!mask||channels==1,"PAGE_RENDER_REQUIRED: non-gray SMask");
+    let sample_channels=if palette.is_some(){1}else{channels};
     let bits=usize::try_from(img_int(doc,d,b"BitsPerComponent",None)?)?;
     ensure!(matches!(bits,1|2|4|8),"PAGE_RENDER_REQUIRED: unsupported sample depth");
     for key in [b"Mask".as_slice(),b"Matte",b"OC",b"Alternates"]{
@@ -379,24 +421,31 @@ fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>
     ensure!(img_int(doc,d,b"SMaskInData",Some(0))?==0&&matches!(img_value(doc,d,b"ImageMask")?,None|Some(Object::Boolean(false))),
         "PAGE_RENDER_REQUIRED: SMaskInData or ImageMask");
     let mut invert=vec![false;channels];
+    let max_sample=((1u32<<bits)-1) as f64;
+    let mut index_decode=[0.,max_sample];
     if let Some(v)=img_value(doc,d,b"Decode")?{
-        let a=v.as_array()?;
-        ensure!(a.len()==2*channels,"PAGE_RENDER_REQUIRED: invalid Decode array length");
-        for (channel,pair) in a.chunks_exact(2).enumerate(){
-            let low=number(deref(doc,&pair[0])?)?;let high=number(deref(doc,&pair[1])?)?;
-            ensure!((low,high)==(0.,1.)||(low,high)==(1.,0.),"PAGE_RENDER_REQUIRED: non-identity/non-inverting Decode");
-            invert[channel]=low==1.;
+        if palette.is_some(){
+            index_decode=array::<2>(doc,v).context("PAGE_RENDER_REQUIRED: invalid Indexed Decode array")?;
+        }else{
+            let a=v.as_array()?;
+            ensure!(a.len()==2*channels,"PAGE_RENDER_REQUIRED: invalid Decode array length");
+            for (channel,pair) in a.chunks_exact(2).enumerate(){
+                let low=number(deref(doc,&pair[0])?)?;let high=number(deref(doc,&pair[1])?)?;
+                ensure!((low,high)==(0.,1.)||(low,high)==(1.,0.),"PAGE_RENDER_REQUIRED: non-identity/non-inverting Decode");
+                invert[channel]=low==1.;
+            }
         }
     }
     if mask{if let Some(v)=img_value(doc,d,b"SMask")?{ensure!(v.as_name().ok()==Some(b"None".as_slice()),"PAGE_RENDER_REQUIRED: nested SMask");}}
     ensure!(stream.content.len()<=128*1024*1024,"Encoded image exceeds byte budget");
     let chain=img_chain(doc,d)?;
     let names=chain.iter().map(|(f,_)|f.name().to_owned()).collect::<Vec<_>>();
-    let size=(w as usize)*(h as usize)*channels;
-    let stride=(w as usize).checked_mul(channels).and_then(|n|n.checked_mul(bits)).context("Image row bits overflow")?.div_ceil(8);
+    let size=(w as usize)*(h as usize)*sample_channels;
+    let stride=(w as usize).checked_mul(sample_channels).and_then(|n|n.checked_mul(bits)).context("Image row bits overflow")?.div_ceil(8);
     let packed_size=stride.checked_mul(h as usize).context("Image byte budget overflow")?;
     let jpeg=chain.len()==1&&chain[0].0==Filter::Dct;
     let mut bytes=if jpeg{
+        ensure!(palette.is_none(),"PAGE_RENDER_REQUIRED: Indexed images with DCT are not supported");
         ensure!(bits==8&&img_value(doc,d,b"DecodeParms")?.is_none(),"PAGE_RENDER_REQUIRED: JPEG depth or DecodeParms");
         let mut dec=JpegDecoder::new(Cursor::new(&stream.content))?;
         ensure!(dec.dimensions()==(w,h),"JPEG dimensions differ from PDF dictionary");
@@ -407,10 +456,11 @@ fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>
         let mut data=vec![0u8;size];dec.read_image(&mut data)?;data
     }else{
         ensure!(chain.iter().all(|(f,_)|f.is_decodable()),"PAGE_RENDER_REQUIRED: unsupported image codec");
-        ensure!(bits==8||chain.iter().all(|(_,p)|p.predictor==1),"PAGE_RENDER_REQUIRED: packed samples with predictor");
+        ensure!((bits==8&&palette.is_none())||chain.iter().all(|(_,p)|p.predictor==1),
+            "PAGE_RENDER_REQUIRED: packed or Indexed samples with predictor");
         let mut work=512u64*1024*1024;
         let raw=filters::decode_within(&chain,&stream.content,packed_size.checked_add(h as usize).context("Sample budget overflow")?,&mut work)?;
-        if bits==8{raw}else{unpack_samples(&raw,w,h,channels,bits)?}
+        if bits==8{raw}else{unpack_samples(&raw,w,h,sample_channels,bits,palette.is_none())?}
     };
     ensure!(bytes.len()==size,"Decoded sample size differs from actual PDF image dimensions");
     if invert.iter().any(|b|*b){
@@ -418,8 +468,24 @@ fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>
             for (sample,reverse) in pixel.iter_mut().zip(&invert){if *reverse{*sample=255-*sample;}}
         }
     }
+    let indexed_palette=palette.map(|palette|{
+        let [low,high]=index_decode;
+        // ISO 32000-2: default Decode for a palette is [0, 2^bpc - 1], not [0, hival].
+        // Decode precedes nearest-integer lookup and clipping to [0, hival].
+        let mut indices=[0usize;256];
+        for (sample,index) in indices.iter_mut().take(max_sample as usize+1).enumerate(){
+            *index=(low+(sample as f64/max_sample)*(high-low)).round().clamp(0.,f64::from(palette.hival)) as usize;
+        }
+        bytes=bytes.iter().flat_map(|&sample|{
+            let start=indices[usize::from(sample)]*palette.channels;
+            palette.lookup[start..start+palette.channels].iter().copied()
+        }).collect();
+        json!({"base":palette.base,"hival":palette.hival,"decode":index_decode,
+            "lookup_format":palette.lookup_format,"lookup_sha256":files::digest(&palette.lookup),
+            "encoded_lookup_stream_sha256":palette.encoded_sha})
+    });
     let preserve_jpeg=jpeg&&!invert.iter().any(|b|*b);
-    Ok(Samples{w,h,channels,bits,bytes,jpeg,preserve_jpeg,filters:names})
+    Ok(Samples{w,h,channels,bits,bytes,jpeg,preserve_jpeg,filters:names,pdf_colorspace,indexed_palette})
 }
 fn image_png(s:&Samples,alpha:Option<&[u8]>)->Result<Vec<u8>>{
     let mut out=Vec::new();
@@ -497,16 +563,18 @@ pub(crate) fn export_indexed(pdf:&Pdf,source:&Path,before:&Value,page:u64,xref:u
     pipeline::publish(&target,data)?;
     let asset=check_ledger::bind_file(&target)?;
     ensure!(asset["sha256"]==files::digest(data)&&check_ledger::bind_file(source)?==*before,"Source or output changed");
-    Ok(json!({"schema_version":1,"source_file":before,"page":page,"image_xref":xref,"source_locations":locations,
+    let mut record=json!({"schema_version":1,"source_file":before,"page":page,"image_xref":xref,"source_locations":locations,
         "source_index_status":index["status"],"source_index_issues":issues,"page_rotation":geo.rotation,
         "page_to_rotated_page_transform":geo.rotated,"coordinate_system":index["coordinate_system"],
         "source_object":{"image_xref":xref,"generation":generation,"width":s.w,"height":s.h,"bits_per_component":s.bits,
-            "pdf_colorspace":if s.channels==3{"/DeviceRGB"}else{"/DeviceGray"},"filters":s.filters,
+            "pdf_colorspace":s.pdf_colorspace,"filters":s.filters,
             "original_encoded_extension":if s.jpeg{Some("jpeg")}else{None},"pdf_stream_sha256":files::digest(&stream.content),
             "decoded_samples_sha256":files::digest(&s.bytes),"smask":mask,"figure_completeness":"not_assessed"},
         "asset":asset,"output_extension":ext,"method":method,"orientation":"native_image_samples",
         "visual_review":{"status":"pending","figure_completeness":"not_assessed"},"source_fidelity":"not_assessed",
-        "evidence_boundary":"Actual invoked image samples, not proof of visible ink or complete figure membership. Overlay, text, vector and unsupported display effects require page rendering and independent review."}))
+        "evidence_boundary":"Actual invoked image samples, not proof of visible ink or complete figure membership. Overlay, text, vector and unsupported display effects require page rendering and independent review."});
+    if let Some(palette)=s.indexed_palette{record["source_object"]["indexed_palette"]=palette;}
+    Ok(record)
 }
 
 

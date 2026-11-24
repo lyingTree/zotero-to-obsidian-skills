@@ -64,3 +64,109 @@ fn manifest_preserves_existing_asset_hash_and_resource_boundary(){
     let valid=json!([{"unit":"f","assets":[{"path":"figure.png"}]}]);
     assert!(delivery_prepare::manifest(&inventory,&candidate,&valid,&out,Some(&resources),None,false).is_ok());
 }
+
+#[test]
+fn workflow_manifest_cli_preflights_without_freezing_a_rejected_candidate() {
+    use std::{io::Write, process::Command};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let work = root.join("工作 workflow");
+    let caller = root.join("outside-working-directory");
+    let resources = root.join("资源 resources");
+    fs::create_dir(&caller).unwrap();
+    fs::create_dir(&resources).unwrap();
+    let source = root.join("源 source.docx");
+    {
+        let mut zip = zip::ZipWriter::new(fs::File::create(&source).unwrap());
+        for (name, data) in [
+            ("[Content_Types].xml", r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#),
+            ("_rels/.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="main" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#),
+            ("word/document.xml", r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>一个实际来源。</w:t></w:r></w:p></w:body></w:document>"#),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(data.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    let request_path = root.join("request.json");
+    let exe = std::env::var_os("Z2O_WORKFLOW_TEST_CLI").unwrap_or_else(|| env!("CARGO_BIN_EXE_z2o").into());
+    let invoke = |op: &str, args: Value, kwargs: Value| {
+        save(&request_path, &json!({"schema_version":1,"operation":op,"args":args,"kwargs":kwargs}));
+        Command::new(&exe).args(["invoke", request_path.to_str().unwrap()])
+            .current_dir(&caller).env("PATH","").output().unwrap()
+    };
+    let get = |p: &Path| -> Value { serde_json::from_slice(&fs::read(p).unwrap()).unwrap() };
+    let passed = |out: std::process::Output| -> Value {
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone()
+    };
+    let candidate = root.join("候选 note.md");
+    let skills = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let run = passed(invoke("complete_workflow.initialize_workflow", json!([]), json!({
+        "skills_root":skills, "work_root":work, "sources":{"main":source},
+        "source_roles":{"main":"main"}, "candidate_path":candidate,
+        "resource_root":resources, "translation_required":false, "run_id":"manifest-transaction"
+    })));
+    let run = Path::new(run.as_str().unwrap());
+    let data = get(run);
+    let checks = Path::new(data["records"]["checks"].as_str().unwrap());
+    let manifest = Path::new(data["records"]["delivery_manifest"].as_str().unwrap());
+    let checks_before = fs::read(checks).unwrap();
+    let work = run.parent().unwrap();
+    let write = |deliveries:Value|invoke("complete_workflow.write_manifest",json!([run,deliveries]),json!({}));
+
+    fs::write(&candidate, "# Rejected draft\n").unwrap();
+    let failed = write(json!([{"unit":"missing","assets":[{"path":"not-present.png"}]}]));
+    assert!(!failed.status.success());
+    assert_eq!(files::digest(&fs::read(checks).unwrap()), files::digest(&checks_before), "A missing asset must not freeze the rejected candidate");
+    assert!(!manifest.exists());
+
+    fs::write(manifest, "Keep unrelated existing evidence.\n").unwrap();
+    let failed = write(json!([]));
+    assert!(!failed.status.success());
+    assert_eq!(fs::read(checks).unwrap(), checks_before);
+    assert_eq!(fs::read(manifest).unwrap(), b"Keep unrelated existing evidence.\n");
+
+    let other = root.join("unrelated-checks.json");
+    fs::write(&other, &checks_before).unwrap();
+    let mut wrong = data.clone(); wrong["records"]["checks"] = json!(other);
+    save(run, &wrong);
+    let failed = invoke("complete_workflow.bind_candidate", json!([run]), json!({}));
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("Inventory must select"));
+    assert_eq!(fs::read(&other).unwrap(), checks_before);
+    assert_eq!(fs::read(checks).unwrap(), checks_before);
+
+    // Relative paths are relative to the selected run, not the caller.
+    let mut relative = data.clone();
+    relative["records"]["checks"] = json!("checks.json");
+    relative["records"]["source_inventory"] = json!("evidence/source-inventory.json");
+    relative["records"]["delivery_manifest"] = json!("final/manifest.json");
+    save(run, &relative);
+    let run_before_retry = fs::read(run).unwrap();
+    let final_manifest = work.join("final/manifest.json");
+    let good_candidate = b"# Accepted forensic fixture\n\nActual Markdown bytes.\n";
+    fs::write(&candidate, good_candidate).unwrap();
+    let binding = passed(write(json!([])));
+    assert_eq!(Path::new(binding.as_str().unwrap()), files::canonical(&final_manifest).unwrap());
+    let bound_ledger = get(checks);
+    assert_eq!(bound_ledger["bindings"]["candidates"][0]["sha256"], files::digest(good_candidate));
+    assert_eq!(get(&final_manifest)["checks"], z2o_native::check_ledger::bind_file(checks).unwrap());
+    assert_eq!(get(&final_manifest)["figure_edge_reviews_required"], true);
+    assert_eq!(get(&final_manifest)["translation_review"], Value::Null);
+    assert_eq!(get(&final_manifest)["candidate"]["sha256"], files::digest(good_candidate));
+    let stable = fs::read(checks).unwrap();
+    assert_eq!(passed(write(json!([]))), binding);
+    assert_eq!(passed(invoke("complete_workflow.bind_candidate", json!([run]), json!({})))["sha256"],
+        files::digest(good_candidate));
+    assert_eq!(fs::read(checks).unwrap(), stable, "An exact retry must not rewrite the ledger");
+
+    fs::write(&candidate, "# New candidate version\n").unwrap();
+    assert!(!write(json!([])).status.success());
+    assert_eq!(fs::read(checks).unwrap(), stable);
+    assert_eq!(fs::read(manifest).unwrap(), b"Keep unrelated existing evidence.\n");
+    assert_eq!(fs::read(run).unwrap(), run_before_retry);
+    let inspect = passed(invoke("complete_workflow.inspect_workflow", json!([run]), json!({})));
+    assert_eq!(inspect["records_ready"], false);
+    assert_eq!(inspect["source_fidelity"], "not_assessed");
+}

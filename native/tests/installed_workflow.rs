@@ -77,6 +77,10 @@ fn installed_mixed_source_workflow_without_path() {
     let exe = skills.join(name);
     let binary_digest = digest(&exe);
     assert_eq!(package["files"][name]["sha256"], binary_digest);
+    let verified = passed(cli(&exe, &["verify-install", manifest.to_str().unwrap(),
+        &manifest_digest, skills.to_str().unwrap()]));
+    assert_eq!(verified["qualified"], false);
+    assert_eq!(verified["runtime_sha256"], binary_digest);
     let desc = passed(cli(&exe, &["describe"]));
     assert_eq!(desc["engine"], "rust-native");
     assert_eq!(desc["system_python_required"], false);
@@ -140,6 +144,7 @@ fn installed_mixed_source_workflow_without_path() {
         "schema_version": 1, "boundary": "Installed artifact smoke only; not complete acceptance or clean host qualification.",
         "checkout": env::var("GITHUB_SHA").ok(), "host_os": env::consts::OS, "host_arch": env::consts::ARCH,
         "package_manifest_sha256": manifest_digest, "installed_runtime_sha256": binary_digest,
+        "installed_payload_verified": true, "installed_file_count": verified["file_count"],
         "installed_workflow_run_sha256": digest(run_path), "source_inventory_sha256": digest(source_path),
         "main_pdf_sha256": original[0], "supplement_docx_sha256": original[1], "markdown_input_sha256": original[2],
         "normalized_markdown_sha256": normalized["sha256"], "mechanical_status": r["status"],

@@ -43,6 +43,72 @@ impl Fixture{
     fn validate(&self)->Value{maps::validate(&self.inventory,&self.candidate,&self.paths,&self.expected,|_,_,_|{}).unwrap()}
     fn map(&self,name:&str)->PathBuf{PathBuf::from(self.paths[name].as_str().unwrap())}
 }
+
+fn invoke_rerun(f:&Fixture,destination:&Path,deliveries:&Value)->std::process::Output{
+    let request=f.root.path().join("rerun-request.json");
+    save(&request,&json!({"schema_version":1,"operation":"mapping_rerun.record_mapping_rerun",
+        "args":[f.run,deliveries,destination]}));
+    std::process::Command::new(env!("CARGO_BIN_EXE_z2o")).arg("invoke").arg(request)
+        .env("PATH","").env_remove("PYTHONPATH").output().unwrap()
+}
+
+#[test]
+fn real_cli_reruns_unversioned_legacy_manifest_and_keeps_prior_bytes(){
+    let f=Fixture::new();assert_eq!(f.write()["records_ready"],true);
+    let mut run=pipeline::read_json(&f.run).unwrap();
+    run.as_object_mut().unwrap().remove("schema_version");
+    save(&f.run,&run);
+    let before=[&f.run,&f.candidate,&f.inventory,&f.map("source_map"),&f.map("si_map"),&f.map("link_map")]
+        .into_iter().map(|p|(p.clone(),fs::read(p).unwrap())).collect::<Vec<_>>();
+
+    let destination=f.root.path().join("legacy-rerun");
+    let output=invoke_rerun(&f,&destination,&f.deliveries);
+    assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+    let payload:Value=serde_json::from_slice(&output.stdout).unwrap();
+    let report=PathBuf::from(payload["result"].as_str().unwrap());
+    assert_eq!(report,files::canonical(&destination.join("rerun-comparison.json")).unwrap());
+    let r=pipeline::read_json(&report).unwrap();
+    assert_eq!(r["mapping_equal"],true);assert_eq!(r["actual_rerun_performed"],true);
+    assert_eq!(r["baseline_validated"],true);assert_eq!(r["rerun_validated"],true);
+    assert_eq!(r["source_fidelity"],"not_assessed");assert_eq!(r["acceptance_status_written"],false);
+    for (path,bytes) in before{
+        assert_eq!(fs::read(path).unwrap(),bytes);
+    }
+
+    let report_before=fs::read(&report).unwrap();
+    let output=invoke_rerun(&f,&destination,&f.deliveries);
+    assert!(!output.status.success(),"existing evidence must not be replaced");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Use a new mapping rerun directory"));
+    assert_eq!(fs::read(&report).unwrap(),report_before);
+
+    run["schema_version"]=json!(2);save(&f.run,&run);
+    let rejected=f.root.path().join("unsupported-schema");
+    let output=invoke_rerun(&f,&rejected,&f.deliveries);
+    assert!(!output.status.success(),"unknown explicitly versioned manifests must be rejected");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("MAP_SCHEMA_VERSION"));
+    assert!(!rejected.exists());
+}
+
+#[test]
+fn rerun_does_not_recapture_a_valid_baseline_edited_during_source_loading(){
+    let f=Fixture::new();assert_eq!(f.write()["records_ready"],true);
+    let prior=f.map("link_map");
+    let mut changed=pipeline::read_json(&prior).unwrap();
+    changed["review_status"]=json!("checked");
+    let mut edit_performed=false;
+    let output=f.root.path().join("racing-baseline");
+    let result=mapping_compare::record_mapping_rerun(&f.run,&f.deliveries,&output,|_,_,label|{
+        if !edit_performed&&label=="actual source bindings and block inventory"{
+            save(&prior,&changed);edit_performed=true;
+        }
+    });
+    assert!(edit_performed&&f.validate()["records_ready"]==true,"changed metadata is independently valid");
+    let error=result.expect_err("pre-validation baseline bytes were not frozen");
+    assert!(format!("{error:#}").contains("MAP_INPUT_CHANGED"),"{error:#}");
+    assert_eq!(pipeline::read_json(&prior).unwrap(),changed);
+    assert!(!output.exists(),"do not generate evidence from the newly captured baseline");
+}
+
 #[test]
 fn native_generation_validation_and_actual_rerun(){
     let f=Fixture::new();let r=f.write();assert_eq!(r["records_ready"],true,"{r}");
@@ -76,9 +142,20 @@ fn preflight_preserves_complete_map_group(){
 fn actual_rerun_records_selector_change(){
     let f=Fixture::new();let r=f.write();assert_eq!(r["records_ready"],true,"{r}");
     let mut d=f.deliveries.clone();d[0]["target"]=json!({"quote":"正文 [1](#^ref-a)\n^body"});
-    let p=mapping_compare::record_mapping_rerun(&f.run,&d,&f.root.path().join("changed"),|_,_,_|{}).unwrap();
+    d[3]["target"]=json!({"quote":"补充材料 ^si-body"});
+    let destination=f.root.path().join("changed");
+    let output=invoke_rerun(&f,&destination,&d);
+    assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+    let payload:Value=serde_json::from_slice(&output.stdout).unwrap();
+    let p=PathBuf::from(payload["result"].as_str().unwrap());
     let r=pipeline::read_json(&p).unwrap();assert_eq!(r["actual_rerun_performed"],true);
     assert_eq!(r["mapping_equal"],false);assert!(!r["differences"].as_array().unwrap().is_empty());
+    let ordered=r["differences"].as_array().unwrap().iter()
+        .map(|row|(&row["map"],&row["collection"],&row["id"])).collect::<Vec<_>>();
+    assert_eq!(ordered,vec![(&json!("source_map"),&json!("units"),&json!("body")),
+        (&json!("si_map"),&json!("units"),&json!("si-body"))]);
+    assert_eq!(r["differences"][0]["previous"]["target"],json!({"anchor":"body"}));
+    assert_eq!(r["differences"][1]["rerun"]["target"],json!({"quote":"补充材料 ^si-body"}));
 }
 
 

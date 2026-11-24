@@ -934,6 +934,44 @@ class NativeDeliveryPreparationComparison(unittest.TestCase):
         self.assertEqual(self.invoke("validate_delivery.scan_markdown_links",text),
                          [asdict(v) for v in delivery.scan_markdown_links(text)])
 
+    def test_header_note_uses_actual_visible_blockquote_context(self):
+        import test_delivery_evidence as suite
+        cases = (
+            ("partial-quote", "日期说明：来源载明在线日期。", "> 日期说明：来源载明在线日期。", True),
+            ("math-quote", "> 通讯说明", "$$\n> 通讯说明\n$$", False),
+            ("inline-marker", "> 通讯说明", "正文内的 > 通讯说明", False),
+            ("quoted-continuation", "来源说明。\n> 第二行。", "> 来源说明。\n> 第二行。", True),
+            ("unquoted-continuation", "> 来源说明。\n遗漏引用符的下一行。", "> 来源说明。\n遗漏引用符的下一行。", False),
+        )
+        for name, selector, markdown, expected in cases:
+            with self.subTest(case=name):
+                fixture = suite.DeliveryEvidenceTests(
+                    methodName="test_consistent_evidence_never_claims_semantic_acceptance")
+                fixture.setUp()
+                try:
+                    fixture.add_header_note(selector, markdown)
+                    if name == "partial-quote":
+                        # Verify that byte-accurate context survives CRLF and Chinese text.
+                        raw = fixture.note.read_bytes()
+                        fixture.note.write_bytes(raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+                    fixture.bind()
+                    original = fixture.manifest_path.read_bytes()
+                    reference = suite.checker.validate_delivery(fixture.manifest_path)
+                    reference_codes = {f.code for f in reference.findings if f.object_id == "header-note"}
+                    self.assertEqual("HEADER_NOTE_LAYOUT" not in reference_codes, expected, reference_codes)
+                    actual = self.invoke("validate_delivery.validate_delivery", str(fixture.manifest_path))
+                    findings = [f for f in actual["findings"] if f["object_id"] == "header-note"]
+                    self.assertEqual(not findings, expected, findings)
+                    if not expected:
+                        self.assertEqual({f["code"] for f in findings}, {"HEADER_NOTE_LAYOUT"})
+                    self.assertFalse(actual["structurally_consistent"])
+                    self.assertEqual(actual["source_fidelity"], "not_assessed")
+                    self.assertTrue(actual["independent_review_required"])
+                    self.assertIn("NATIVE_DELIVERY_PARITY_PENDING", {f["code"] for f in actual["findings"]})
+                    self.assertEqual(fixture.manifest_path.read_bytes(), original)
+                finally:
+                    fixture.doCleanups()
+
 
 
 class NativeSourceProvenanceComparison(unittest.TestCase):
@@ -1363,6 +1401,36 @@ class NativeHandoffGenerationComparison(unittest.TestCase):
         rerun = suite.read(receipt)
         self.assertTrue(rerun["actual_rerun_performed"])
         self.assertTrue(rerun["mapping_equal"], rerun)
+
+    def test_unversioned_legacy_baseline_produces_same_ordered_rerun_differences(self):
+        from copy import deepcopy
+        import mapping_rerun as reference
+        import test_mapping_rerun as suite
+
+        fixture = suite.MappingRerunTests()
+        self.addCleanup(fixture.doCleanups)
+        fixture.setUp()
+        self.assertNotIn("schema_version", fixture.run)
+        changed = deepcopy(fixture.fixture.deliveries)
+        replacements = {
+            "main-body": "The main sample has an orange marker.\n^main-body",
+            "si-body": "The extra sample has a green marker.\n^si-body",
+        }
+        for delivery in changed:
+            if delivery["unit"] in replacements:
+                delivery["target"] = {"quote": replacements[delivery["unit"]]}
+        expected = suite.read(reference.record_mapping_rerun(
+            fixture.run_path, changed, self.root.joinpath("python-rerun")))
+        path = self.invoke("mapping_rerun.record_mapping_rerun", str(fixture.run_path), changed,
+                           str(self.root.joinpath("rust-rerun")))
+        actual = suite.read(Path(path))
+        self.assertTrue(actual["actual_rerun_performed"])
+        self.assertFalse(actual["mapping_equal"])
+        self.assertEqual([(row["map"], row["id"]) for row in actual["differences"]],
+                         [("source_map", "main-body"), ("si_map", "si-body")])
+        for field in ("inputs", "baseline_counts", "mapping_equal", "differences",
+                      "source_fidelity", "acceptance_status_written"):
+            self.assertEqual(actual[field], expected[field], field)
 
 
     def test_historical_optional_empty_handoff_collections(self):

@@ -182,6 +182,8 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 
 ### 原生 handoff maps 与实际 mapping rerun
 
+实际 rerun 可读取未写 `schema_version` 的旧版任务清单；显式不受支持的版本仍拒绝。原运行清单、清单内来源、候选 Markdown 和基线映射在验证前就绑定到具体文件和 SHA-256，同一文件在验证期间被重新保存也不能被当作原始基线。差异依主文献、补充材料、链接以及对应记录组顺序输出，组内按身份排序。只读取两个现成文件集的 `compare_bound_maps` 仍不视为实际 rerun。
+
 新增 `handoff_maps.write_handoff_maps`、`handoff_maps.validate_handoff_maps`、`mapping_rerun.record_mapping_rerun` 原生候选实现。真实绑定来源清单、候选 Markdown、显式 delivery selector 及源块身份，生成主文献/补充材料/链接视图；检查来源集合、块覆盖、排除、引用目标及资源哈希。支持 anchor、唯一 LF quote、LF 行范围 SHA-256；输出原始 Unicode code-point、CRLF 和精确 snippet 哈希。枚举 Markdown、Wiki、reference、HTML、autolink、裸 URL 和 Rich Table v2/v3 scalar links；表格保留 JSON pointer 和 value SHA-256，不能唯一恢复序列化位置时要求明确完整 fence 归属。未支持的多行引用定义、HTML 媒体等显式阻断。生成记录保持 pending/extracted，无真实库匹配或观察推断。校验重新从实际绑定输入与保留的 delivery 推导预期记录并检查全部分类集合；旧版手工精简/合并块表示及复杂 locator 尚未全部迁移。实际 rerun 创建新目录、重新生成并校验映射，再比较稳定字段，保留原映射和实际输入绑定，不写验收通过。新增合成 PDF、CRLF/Unicode、覆盖缺失、篡改、真正 rerun 与 Python 主/补充材料稳定投影差分测试。尚待编译及历史回归，全部正式发布门禁保持。
 
 ### 原生草稿后工作流审查与交付验收候选

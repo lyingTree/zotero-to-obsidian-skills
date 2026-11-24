@@ -238,6 +238,7 @@ pub const OPERATIONS: &[&str] = &[
     "deterministic_stage_checks.record_file_checks",
     "native_runtime.package",
     "native_runtime.inspect_bundle",
+    "native_runtime.verify_install",
     "native_runtime.install",
     "zotero_local.inspect_item",
     "zotero_local.catalog",
@@ -1410,13 +1411,15 @@ pub fn invoke(request: Value) -> Result<Value> {
             let source=path(&c.positional("source_root")?)?;let dest=path(&c.positional("destination")?)?;
             c.finish()?;native_install::package(&source,&dest,runtime_reports::progress_line)?
         }
-        "native_runtime.inspect_bundle" | "native_runtime.install" => {
+        "native_runtime.inspect_bundle" | "native_runtime.install" | "native_runtime.verify_install" => {
             let manifest=path(&c.positional("package_manifest")?)?;
             let sha=string(&c.positional("expected_package_sha256")?,"expected_package_sha256")?;
-            if op.ends_with(".install"){
+            if op=="native_runtime.inspect_bundle"{c.finish()?;native_install::inspect_bundle(&manifest,&sha)?}
+            else{
                 let root=path(&c.positional("skills_root")?)?;c.finish()?;
-                native_install::install(&manifest,&sha,&root,runtime_reports::progress_line)?
-            }else{c.finish()?;native_install::inspect_bundle(&manifest,&sha)?}
+                if op=="native_runtime.verify_install"{native_install::verify_install(&manifest,&sha,&root)?}
+                else{native_install::install(&manifest,&sha,&root,runtime_reports::progress_line)?}
+            }
         }
         "draft_queue.progress_bar" |
         "handoff_maps.progress_bar" |

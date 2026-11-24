@@ -263,6 +263,9 @@ impl Candidate{
     pub(crate) fn visible_target(&self,span:Span)->Result<&str>{
         self.visible.target.get(span.start..span.end).context("Invalid visible candidate target")
     }
+    pub(crate) fn visible_prose(&self,span:Span)->Result<&str>{
+        self.visible.prose.get(span.start..span.end).context("Invalid visible candidate prose range")
+    }
     pub(crate) fn table_records(&self)->Result<Vec<(Span,Value)>>{
         let mut out=Vec::new();
         for t in &self.visible.tables{

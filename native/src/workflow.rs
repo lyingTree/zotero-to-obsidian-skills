@@ -12,7 +12,7 @@ fn actual_path(v:&Value,base:&Path,label:&str)->Result<PathBuf>{
 }
 
 // Canonicalize existing ancestors without creating the future destination.
-fn resolve_future(p:&Path)->Result<PathBuf>{
+pub(crate) fn resolve_future(p:&Path)->Result<PathBuf>{
     let p=std::path::absolute(p)?;
     if p.exists(){return files::canonical(&p);}
     if p.is_symlink(){anyhow::bail!("Refusing a dangling output symlink: {}",p.display());}
@@ -184,6 +184,56 @@ pub fn initialize_with_ocr(opt:Initialize<'_>,ocr:Option<&crate::pdf_inventory::
     output.persist_noclobber(&run).map_err(|e|anyhow::anyhow!("Cannot exclusively publish run: {}",e.error))?;
     ensure!(pipeline::read_json(&run)?==run_data,"Workflow record did not round-trip");
     Ok(run)
+}
+
+// A final candidate and its ledger are selected by one pinned run and
+// inventory, never by a fresh lookup partway through a publication.
+pub(crate) struct CandidateRun{
+    pub data:Value,
+    pub run:Value,
+    pub inventory:Value,
+    pub candidate:Value,
+    pub checks:PathBuf,
+}
+impl CandidateRun{
+    pub fn open(run_path:&Path)->Result<Self>{
+        let (raw,run)=files::read_bound(run_path)?;
+        let data=crate::parse_json(std::str::from_utf8(&raw)?)?;
+        ensure!(data["schema_version"].as_u64()==Some(1)&&data["workflow_profile"]==PROFILE,
+            "Actual complete workflow run required");
+        let base=Path::new(run["path"].as_str().unwrap()).parent().context("Workflow directory")?;
+        let records=data["records"].as_object().context("Workflow records must be an object")?;
+        let inventory_path=actual_path(&data["records"]["source_inventory"],base,"source inventory")?;
+        let (raw,inventory)=files::read_bound(&inventory_path)?;
+        let inv=crate::parse_json(std::str::from_utf8(&raw)?)?;
+        let checks=actual_path(&data["records"]["checks"],base,"check ledger")?;
+        check_write::no_link(&checks)?;
+        let checks=files::canonical(&checks)?;
+        let inventory_base=Path::new(inventory["path"].as_str().unwrap()).parent().context("Inventory directory")?;
+        let inventory_checks=actual_path(&inv["checks_path"],inventory_base,"inventory check ledger")?;
+        ensure!(files::canonical(&inventory_checks)?==checks,
+            "Inventory must select the exact workflow check ledger");
+        let candidate=check_ledger::bind_file(&actual_path(&data["config"]["candidate_path"],base,"candidate")?)?;
+        let checks_text=path_text(&checks)?;
+        ensure!(run["path"]!=checks_text&&inventory["path"]!=checks_text&&candidate["path"]!=checks_text,
+            "Workflow check ledger aliases the run, inventory, or candidate");
+        let candidate_path=path(&candidate["path"])?;
+        ensure!(candidate["path"]!=run["path"],"Workflow candidate aliases the run record");
+        for (name,v) in records{
+            if name=="checks"{continue;}
+            let Some(raw)=v.as_str().filter(|s|!s.trim().is_empty()) else{continue;};
+            let other=resolve_future(&base.join(raw))?;
+            ensure!(other!=checks&&other!=candidate_path,"Candidate or check ledger aliases workflow record {name}");
+        }
+        Ok(Self{data,run,inventory,candidate,checks})
+    }
+    pub fn base(&self)->&Path{Path::new(self.run["path"].as_str().unwrap()).parent().unwrap()}
+    pub fn verify(&self)->Result<()>{
+        for b in [&self.run,&self.inventory,&self.candidate]{
+            ensure!(check_ledger::bind_file(&path(&b["path"])?)?==*b,"Workflow input changed: {}",b["path"]);
+        }
+        Ok(())
+    }
 }
 
 pub fn resume(run_path:&Path)->Result<Value>{

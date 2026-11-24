@@ -29,6 +29,10 @@
 | `validate_delivery.validate_delivery` | 实际 manifest_path | 无 |
 | `lint_presentation.lint_file` | 实际候选路径 | 无 |
 | `complete_workflow.resume_workflow` | 实际 run_path | 无 |
+| `complete_workflow.bind_candidate` | 实际 run_path | 无 |
+| `complete_workflow.write_manifest` | 实际 run_path、deliveries | 无 |
+
+仅在候选版本固定后绑定。写交付索引前，原生入口检查实际附件、目标路径，以及来源清单引用的验收台账；未通过的预检不改动台账。相对路径以各自记录所在目录解析。首次绑定与写索引分别原子落盘，不是跨文件原子操作；如中断，保留台账目录中 `.z2o-workflow-manifest-*` 的恢复记录，按 `plan.json` 对照实际哈希后再处理，不覆盖期间的外部修改。
 
 完整工作流尚未资格通过，不得把局部机械结果替代完整交付验收。先核定实际来源和独立合同，再调用；旧 schema 不兼容时保留原始记录并阻断，不以旧脚本恢复。
 
