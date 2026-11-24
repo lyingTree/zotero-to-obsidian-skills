@@ -764,3 +764,30 @@ fn ledger_preparation_inventory_writeback_and_recovery_preimages(){
     assert!(check_ledger::prepare_with_inventory(&skill,&candidate,options(),None,true,|_,_,_|{}).is_err());
     assert_eq!(fs::read(&candidate).unwrap(),b"candidate\n");
 }
+
+
+#[test]
+fn visible_text_edits_preserve_original_unicode_offsets_and_declarations(){
+    use z2o_native::{visible_edits,check_ledger};
+    let root=tempdir().unwrap();let text=root.path().join("原文.txt");let page=root.path().join("page.svg");
+    let original="中文 🌊 micro-\u{ad}\u{2010}mesh; micro-\u{ad}\u{2010}mesh; alpha--beta; 6−2\r\n";
+    fs::write(&text,original).unwrap();fs::write(&page,"<svg>micro-mesh</svg>").unwrap();
+    let binding=check_ledger::bind_file(&text).unwrap();
+    let page_file=check_ledger::bind_file(&page).unwrap();
+    let expected="-\u{ad}\u{2010}";
+    let occurrences:Vec<_>=original.match_indices(expected).map(|(i,_)|original[..i].chars().count()).collect();
+    let make=|id:&str,start:usize|json!({"id":id,"start":start,"end":start+3,"expected_text":expected,
+        "visible_page":{"file":page_file,"page":1,"bbox":[0,0,10,10],"coordinate_system":"rendered_image_pixels","text":"-"},
+        "decision":{"status":"resolved","selected_text":"-","reason":"Explicit synthetic reading","reviewer":"fixture","observed":true}});
+    let a=make("a",occurrences[0]);let b=make("b",occurrences[1]);
+    let result=visible_edits::apply(&binding,&json!([b,a])).unwrap();
+    assert_eq!(result["text"],original.replace(expected,"-"));
+    assert_eq!(result["text_visual_conflicts"][0]["id"],"a");
+    assert_eq!(result["observation_certified"],false);
+    assert_eq!(result["semantic_review"]["status"],"not_assessed");
+    assert_eq!(fs::read(&text).unwrap(),original.as_bytes());
+    let mut invalid=a.clone();invalid["decision"]["observed"]=json!(false);
+    assert!(visible_edits::apply(&binding,&json!([invalid])).is_err());
+    fs::write(&page,"changed").unwrap();
+    assert!(visible_edits::apply(&binding,&json!([a])).is_err());
+}

@@ -26,6 +26,7 @@ pub mod check_ledger;
 pub mod check_validate;
 pub mod check_write;
 pub mod check_scope;
+pub mod visible_edits;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -58,6 +59,8 @@ pub const OPERATIONS: &[&str] = &[
     "format_helpers.validate_naming_plan",
     "format_helpers.new_figure_table_anchor",
     "format_helpers.build_figure_block",
+    "format_helpers.starts_with_bold_source_label",
+    "format_helpers.apply_visible_text_edits",
     "format_helpers.plan_supplement_figure_caption",
     "source_url_inventory.scan_source_url_occurrences",
     "source_url_inventory.source_url_coverage",
@@ -601,6 +604,14 @@ pub fn invoke(request: Value) -> Result<Value> {
             let inventory=path(&c.positional("inventory_path")?)?;let candidate=path(&c.positional("candidate_path")?)?;
             let deliveries=c.positional("deliveries")?;let ids=c.required("unit_ids")?;c.finish()?;
             check_scope::from_deliveries(&inventory,&candidate,&deliveries,&ids)?
+        }
+        "format_helpers.starts_with_bold_source_label" => {
+            let input=c.positional("text")?;c.finish()?;
+            json!(input.as_str().is_some_and(figures::bold_label))
+        }
+        "format_helpers.apply_visible_text_edits" => {
+            let file=c.required("text_file")?;let edits=c.required("edits")?;c.finish()?;
+            visible_edits::apply(&file,&edits)?
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

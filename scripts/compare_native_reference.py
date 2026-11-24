@@ -778,5 +778,37 @@ class NativeAtomicWriterComparison(unittest.TestCase):
             fixture.doCleanups()
 
 
+
+import test_format_helpers as format_suite
+
+class NativeVisibleTextEditComparison(format_suite.VisibleTextEditTests):
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        reference_apply = format_suite.helpers.apply_visible_text_edits
+
+        def apply(*, text_file, edits):
+            with tempfile.TemporaryDirectory() as directory:
+                request = Path(directory).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version":1,
+                    "operation":"format_helpers.apply_visible_text_edits",
+                    "kwargs":{"text_file":text_file,"edits":edits}}, ensure_ascii=False),
+                    encoding="utf-8")
+                result = subprocess.run([str(BINARY),"invoke",str(request)],
+                    capture_output=True, encoding="utf-8", timeout=90)
+                try:
+                    expected = reference_apply(text_file=text_file, edits=edits)
+                except ValueError:
+                    self.assertNotEqual(result.returncode,0,result.stdout)
+                    raise
+                self.assertEqual(result.returncode,0,result.stderr)
+                actual=json.loads(result.stdout)["result"]
+                self.assertEqual(actual,expected)
+                return expected
+        patcher=patch.object(format_suite.helpers,"apply_visible_text_edits",apply)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
