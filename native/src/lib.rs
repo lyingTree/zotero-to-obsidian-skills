@@ -14,6 +14,7 @@ pub mod yaml_nodes;
 pub mod validate;
 pub mod source_urls;
 pub mod glossary;
+pub mod pipeline;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -60,6 +61,11 @@ pub const OPERATIONS: &[&str] = &[
     "glossary_candidates.search",
     "glossary_candidates.suggest",
     "glossary_candidates.prepare_glossary_candidates",
+    "note_pipeline.read_json",
+    "note_pipeline.build_contract",
+    "note_pipeline.prepare_content_job",
+    "note_pipeline.replay_changes",
+    "note_pipeline.rebase_rendering",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -358,6 +364,22 @@ pub fn invoke(request: Value) -> Result<Value> {
             let output=path(&c.positional("output_path")?)?;c.finish()?;
             let dest=glossary::prepare(&inv,&terms,&output,|i,n|if i%128==0||i==n{eprintln!("[{i}/{n}] source glossary search leads");})?;
             json!(path_text(&dest)?)
+        }
+        "note_pipeline.read_json" => {
+            let p=path(&c.positional("path")?)?;c.finish()?;pipeline::read_json(&p)?
+        }
+        "note_pipeline.build_contract" | "note_pipeline.prepare_content_job" => {
+            let plan=c.positional("plan")?;let sources=c.positional("sources")?;
+            if op.ends_with("build_contract"){c.finish()?;pipeline::build_contract(&plan,&sources)?}
+            else{let root=path(&c.positional("output_root")?)?;c.finish()?;pipeline::prepare(&plan,&sources,&root)?}
+        }
+        "note_pipeline.replay_changes" => {
+            let original=c.positional("original")?;let changes=c.positional("changes")?;c.finish()?;
+            json!(pipeline::replay(original.as_str().context("original must be a string")?,&changes)?)
+        }
+        "note_pipeline.rebase_rendering" => {
+            let rendering=c.positional("rendering")?;let normalized=c.positional("normalized")?;c.finish()?;
+            pipeline::rebase(&rendering,&normalized)?
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

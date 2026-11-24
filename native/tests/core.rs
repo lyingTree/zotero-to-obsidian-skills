@@ -396,3 +396,36 @@ fn glossary_index_and_source_binding(){
     fs::write(&g,"| T1 | a term | 术语 |\n| T1 | duplicate | 重复 |").unwrap();
     assert!(Glossary::new(&g).is_err());
 }
+
+#[test]
+fn native_contract_job_and_replay_preserve_evidence(){
+    use z2o_native::pipeline;
+    let dir=tempdir().unwrap();let source=dir.path().join("论文.txt");fs::write(&source,b"source").unwrap();
+    let plan=json!({"schema_version":1,"properties":{"type":"article"},"units":[
+        {"unit_id":"p","kind":"paragraph","source":{"source_id":"main","locator":"p1"},"scope":"main"}]});
+    let sources=json!({"main":source});
+    let contract=pipeline::build_contract(&plan,&sources).unwrap();
+    assert_eq!(contract["sources"]["main"]["sha256"],files::digest(b"source"));
+    assert!(pipeline::build_contract(&plan,&json!({"different":source})).is_err());
+    let out=dir.path().join("jobs");
+    let receipt=pipeline::prepare(&plan,&sources,&out).unwrap();
+    let job=Path::new(receipt["directory"].as_str().unwrap());let filled=job.join("content.json");
+    fs::write(&filled,b"model output").unwrap();
+    assert_eq!(pipeline::prepare(&plan,&sources,&out).unwrap(),receipt);
+    assert_eq!(fs::read(&filled).unwrap(),b"model output");
+    fs::write(&source,b"new source").unwrap();
+    assert_ne!(pipeline::prepare(&plan,&sources,&out).unwrap()["job_id"],receipt["job_id"]);
+    let p=dir.path().join("receipt.bin");
+    std::thread::scope(|scope|for _ in 0..8{let p=&p;scope.spawn(move||pipeline::publish(p,b"complete").unwrap());});
+    assert_eq!(fs::read(&p).unwrap(),b"complete");assert!(pipeline::publish(&p,b"wrong").is_err());
+    let original="🌊旧文\n第二行";
+    let changes=json!([{"start":1,"end":2,"before":"旧","after":"新"}]);
+    assert_eq!(pipeline::replay(original,&changes).unwrap(),"🌊新文\n第二行");
+    assert!(pipeline::replay(original,&json!([{"start":1,"end":2,"before":"错","after":"新"}])).is_err());
+    let raw=json!({"text":original,"mapping":[{"unit_id":"p","start_offset":0,"end_offset":3,"sha256":files::digest("🌊旧文".as_bytes())}]});
+    let normalized=json!({"text":"🌊新文\n第二行","changes":changes,"input_sha256":files::digest(original.as_bytes())});
+    let r=pipeline::rebase(&raw,&normalized).unwrap();assert_eq!(r["mapping"][0]["sha256"],files::digest("🌊新文".as_bytes()));
+    assert_eq!(r["mapping"][0]["start_line"],1);assert_eq!(r["mapping"][0]["end_line"],1);
+    let broken=json!({"text":"🌊新第二行","changes":[{"start":1,"end":4,"before":"旧文\n","after":"新"}],"input_sha256":files::digest(original.as_bytes())});
+    assert!(pipeline::rebase(&raw,&broken).is_err());
+}

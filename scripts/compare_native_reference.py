@@ -301,5 +301,37 @@ class NativeGlossaryComparison(unittest.TestCase):
                          json.loads(expected.read_text(encoding="utf-8")))
 
 
+class NativePipelineComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_plan_contract_replay_and_mapping(self):
+        import test_note_pipeline as suite
+        source = self.root.joinpath("source.txt")
+        source.write_bytes(b"source")
+        plan = {"schema_version": 1, "properties": {"type": "article"}, "units": [
+            {"unit_id": "title", "kind": "header", "original_title": "A source", "translated": True,
+             "authors": ["Author"], "affiliations": ["Institute"],
+             "source": {"source_id": "main", "locator": "title"}, "scope": "main"},
+            {"unit_id": "p", "kind": "paragraph", "source": {"source_id": "main", "locator": "p1"}, "scope": "main"}]}
+        content = {"title": {"translated_title": "来源"}, "p": {"text": "每60 min观测，变化7.00%。"}}
+        expected = suite.pipeline.build_contract(plan, {"main": source})
+        actual = self.invoke("note_pipeline.build_contract", plan, {"main": str(source)})
+        self.assertEqual(actual, expected)
+        rendered = self.invoke("render_note.render_note", plan, content)
+        normalized = self.invoke("normalize_note.normalize_note", rendered["text"])
+        self.assertEqual(self.invoke("note_pipeline.replay_changes", rendered["text"], normalized["changes"]),
+                         suite.pipeline.replay_changes(rendered["text"], normalized["changes"]))
+        self.assertEqual(self.invoke("note_pipeline.rebase_rendering", rendered, normalized),
+                         suite.pipeline.rebase_rendering(rendered, normalized))
+        job = self.invoke("note_pipeline.prepare_content_job", plan, {"main": str(source)}, str(self.root.joinpath("jobs")))
+        d = Path(job["directory"])
+        self.assertEqual(json.loads(d.joinpath("contract.json").read_text(encoding="utf-8")), expected)
+        self.assertEqual(json.loads(d.joinpath("content-template.json").read_text(encoding="utf-8")),
+                         renderer.content_template(plan))
+        self.assertEqual(self.invoke("note_pipeline.read_json", str(d.joinpath("request.json")))["engine"]["engine"],
+                         "rust-native")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
