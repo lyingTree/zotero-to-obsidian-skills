@@ -97,3 +97,7 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 ### 原生逐来源起草队列
 
 新增 draft_queue.prepare_draft_queue 及 DraftQueue 的全部公开状态操作，原生入口按每次调用重新加载冻结来源、保留源对象与 DOCX 顺序、绑定原始哈希、逐对象登记和分组、保存不可变片段及附件、独占组装候选与真实行范围映射。调用 open 返回实际队列 SHA-256，修改时可传 expected_sha256 保护旧会话；协作锁和旧字节比较拒绝并发覆盖。PDF 页边界优先使用已冻结图件清单，缺失时从实际 PDF 页树读取未旋转媒体/裁切范围及 UserUnit；该几何候选仍需专门差分，完整 PDF 图件引擎不是本模块的能力。已接入原有 DraftQueueTests 通过实际二进制执行及原生负例测试。开发态进度函数不构成发布资格，完整编排、来源交付及翻译审计仍未完成。
+
+### PDF 与交付准备增量
+
+新增真实 PDF 页树、未旋转坐标、Do 调用及嵌套 Form 遍历、原始流哈希、遮罩引用与图形状态记录；仅生成结构证据，不能替代原来的页面图像/文本清单。index_page_structure 与 prepare_pdf_structure_evidence 明示 not_rendered，不授予原始 ImageObjectIndexer 或完整提取资格。prepare_sources 对 DOCX 保持现有实现，对 PDF 仍阻断。新增真实文件绑定的交付清单、Markdown 链接位置、来源单元结构和稳定投影对照；对照不是实际 rerun，保留 original record_mapping_rerun 阻断，直到真实地图生成与验证迁移完成。候选实现待完整差分与跨平台 CI。

@@ -904,5 +904,35 @@ class NativeDraftQueueComparison(draft_suite.DraftQueueTests):
             self.addCleanup(patcher.stop)
 
 
+
+class NativeDeliveryPreparationComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_manifest_and_source_unit_against_reference(self):
+        import validate_delivery as delivery
+        import handoff_maps as maps
+        inventory=self.root.joinpath("inventory.json")
+        candidate=self.root.joinpath("candidate.md")
+        asset=self.root.joinpath("figure.png")
+        inventory.write_text('{"schema_version":1,"sources":[],"units":[]}',encoding="utf-8")
+        candidate.write_text("图注。",encoding="utf-8")
+        asset.write_bytes(b"fixture")
+        evidence=[{"page":1,"bbox":[0,0,10,10]}]
+        fields={"original_number":"S1","contains_table":False}
+        expected=maps.make_source_unit("figure","main","figure",evidence,**fields)
+        actual=self.invoke("handoff_maps.make_source_unit","figure","main","figure",evidence,**fields)
+        self.assertEqual(actual,expected)
+        rows=[{"unit":"figure","target":{"anchor":"fig-1"},"assets":[{"path":"figure.png"}]}]
+        py=self.root.joinpath("python.json");rs=self.root.joinpath("rust.json")
+        delivery.write_delivery_manifest(inventory,candidate,rows,py,resource_root=self.root,figure_edge_reviews_required=True)
+        self.invoke("validate_delivery.write_delivery_manifest",str(inventory),str(candidate),rows,str(rs),resource_root=str(self.root),figure_edge_reviews_required=True)
+        self.assertEqual(json.loads(py.read_text(encoding="utf-8")),json.loads(rs.read_text(encoding="utf-8")))
+        from dataclasses import asdict
+        text="中文 [标签](<a b.md> \"title\") ![图](image.png)"
+        self.assertEqual(self.invoke("validate_delivery.scan_markdown_links",text),
+                         [asdict(v) for v in delivery.scan_markdown_links(text)])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

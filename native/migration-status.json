@@ -18,9 +18,9 @@
     "check_records": "implementation_candidate",
     "complete_workflow": "partial",
     "draft_queue": "implementation_candidate",
-    "handoff_maps": "not_started",
-    "mapping_rerun": "not_started",
-    "pdf_image_objects": "not_started",
+    "handoff_maps": "partial",
+    "mapping_rerun": "partial",
+    "pdf_image_objects": "partial",
     "prepare_source_inventory": "partial",
     "prepare_translation_review": "implementation_candidate",
     "translation_review_tasks": "not_started",
@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "PDF page/object/coordinate, mask, extraction and crop parity"
+      "blocker": "Structural page geometry and image-call candidate implemented; decoded pixels, masks, crop boundaries, complete page rendering and parity remain"
     },
     "docx_source_qualification": {
       "qualified": false,
@@ -42,7 +42,7 @@
     },
     "source_delivery_mapping_and_review_ledger": {
       "qualified": false,
-      "blocker": "Atomic ledger and source scope operations have native candidates; source/delivery handoff maps, end-to-end transaction recovery and qualification remain"
+      "blocker": "Native manifest preparation, source-unit validation and stable projections implemented; actual handoff map generation and complete delivery validation remain"
     },
     "translation_review_lifecycle": {
       "qualified": false,

@@ -832,3 +832,50 @@ fn draft_queue_preserves_frozen_objects_and_cross_page_fragments(){
     assert_eq!(report["source_fidelity"],"not_assessed");
     assert!(run("assemble",json!({"output_path":out.to_str().unwrap()}),Value::Null).is_err());
 }
+
+
+#[test]
+fn native_delivery_manifest_and_stable_projection_preserve_actual_bindings(){
+    use z2o_native::{delivery_prepare,mapping_compare,check_ledger,pipeline};
+    let tmp=tempdir().unwrap();let root=tmp.path();
+    let inv=root.join("inventory.json");let note=root.join("candidate.md");let asset=root.join("figure.png");let dest=root.join("delivery.json");
+    fs::write(&inv,b"{\"schema_version\":1,\"sources\":[],\"units\":[]}\n").unwrap();
+    fs::write(&note,"文献 [标签](<a b.md>)\n").unwrap();fs::write(&asset,b"fixture asset").unwrap();
+    delivery_prepare::manifest(&inv,&note,&json!([{"unit":"f","target":{"anchor":"fig-1"},"assets":[{"path":"figure.png"}]}]),&dest,Some(root),None,true).unwrap();
+    let m=pipeline::read_json(&dest).unwrap();
+    assert_eq!(m["inventory"],check_ledger::bind_file(&inv).unwrap());
+    assert_eq!(m["deliveries"][0]["assets"][0],check_ledger::bind_file(&asset).unwrap());
+    assert!(delivery_prepare::manifest(&inv,&note,&json!([]),&inv,Some(root),None,false).is_err());
+    let links=delivery_prepare::links("中文 [标签](<a b.md>)");
+    assert_eq!(links[0]["start"],3);
+    assert_eq!(links[0]["href"],"a b.md");
+    let a=json!({"source_map":{"units":[{"unit":"p","source_id":"main","review_status":"pending"}]},"link_map":{}});
+    let mut b=a.clone();b["source_map"]["units"][0]["review_status"]=json!("reviewed");
+    assert_eq!(mapping_compare::compare(&a,&b).unwrap()["mapping_equal"],true);
+    b["source_map"]["units"][0]["source_id"]=json!("si");
+    let compared=mapping_compare::compare(&a,&b).unwrap();
+    assert_eq!(compared["mapping_equal"],false);
+    assert_eq!(compared["actual_rerun_performed"],false);
+}
+#[test]
+fn structural_pdf_index_tracks_two_calls_and_actual_encoded_stream(){
+    use lopdf::{Document,Object,Stream,dictionary};
+    use z2o_native::pdf_structure;
+    let tmp=tempdir().unwrap();let path=tmp.path().join("fixture.pdf");
+    let mut doc=Document::with_version("1.5");
+    let pages=doc.new_object_id();
+    let image=doc.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Image","Width"=>1,"Height"=>1,"ColorSpace"=>"DeviceRGB","BitsPerComponent"=>8},vec![1,2,3]));
+    let contents=doc.add_object(Stream::new(dictionary!{},b"q 20 0 0 10 30 40 cm /Im Do Q q 5 0 0 7 60 10 cm /Im Do Q".to_vec()));
+    let page=doc.add_object(dictionary!{"Type"=>"Page","Parent"=>pages,"Contents"=>contents,"Resources"=>dictionary!{"XObject"=>dictionary!{"Im"=>image}}});
+    doc.objects.insert(pages,Object::Dictionary(dictionary!{"Type"=>"Pages","Kids"=>vec![Object::Reference(page)],"Count"=>1,"MediaBox"=>vec![0.into(),0.into(),100.into(),200.into()]}));
+    let catalog=doc.add_object(dictionary!{"Type"=>"Catalog","Pages"=>pages});doc.trailer.set("Root",catalog);
+    doc.save(&path).unwrap();
+    let r=pdf_structure::index_page(&path,1).unwrap();
+    assert_eq!(r["occurrences"].as_array().unwrap().len(),2,"{r}");
+    assert_eq!(r["occurrences"][0]["image_xref"],image.0);
+    assert_eq!(r["occurrences"][0]["bbox"],json!([30.0,150.0,50.0,160.0]));
+    assert_eq!(r["objects"].as_array().unwrap().len(),1);
+    assert_eq!(r["objects"][0]["encoded_stream_sha256"],z2o_native::files::digest(&[1,2,3]));
+    assert_eq!(r["render_status"],"not_rendered");
+    assert!(pdf_structure::index_page(&path,2).is_err());
+}

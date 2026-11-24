@@ -28,6 +28,9 @@ pub mod check_write;
 pub mod check_scope;
 pub mod visible_edits;
 pub mod draft_queue;
+pub mod delivery_prepare;
+pub mod mapping_compare;
+pub mod pdf_structure;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -98,6 +101,16 @@ pub const OPERATIONS: &[&str] = &[
     "lint_presentation.lint_presentation",
     "lint_presentation.lint_file",
     "validate_delivery.check_merges",
+    "validate_delivery.scan_markdown_links",
+    "validate_delivery.write_delivery_manifest",
+    "handoff_maps.make_source_unit",
+    "mapping_rerun.compare_stable_projections",
+    "pdf_image_objects.index_page_structure",
+    "prepare_source_inventory.prepare_pdf_structure_evidence",
+    "prepare_source_inventory.file_record",
+    "prepare_source_inventory.sha256_file",
+    "prepare_source_inventory.prepare_sources",
+    "complete_workflow.write_manifest",
     "accept_note.accept_note",
     "docx_source_inventory.read_docx",
     "docx_source_inventory.prepare_docx_source",
@@ -538,7 +551,7 @@ pub fn invoke(request: Value) -> Result<Value> {
             json!(path_text(&translation_prepare::prepare(&inv,&candidate,&output,&ids,glossary.as_deref(),&targets,
                 |i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?)?)
         }
-        "prepare_source_inventory.prepare_docx_sources" => {
+        "prepare_source_inventory.prepare_docx_sources" | "prepare_source_inventory.prepare_sources" => {
             let sources=c.positional("source_pdfs")?;
             let root=path(&c.positional("work_directory")?)?;
             let roles=c.option("source_roles",Value::Null);
@@ -659,6 +672,42 @@ pub fn invoke(request: Value) -> Result<Value> {
             for (name,default) in optional{params.insert((*name).into(),c.option(name,default.clone()));}
             c.finish()?;
             draft_queue::operate(&p,action,&Value::Object(params),&expected,|i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?
+        }
+        "validate_delivery.scan_markdown_links" => {
+            let text=c.positional("text")?;c.finish()?;delivery_prepare::links(text.as_str().context("text must be a string")?)
+        }
+        "handoff_maps.make_source_unit" => {
+            let id=string(&c.positional("unit_id")?,"unit_id")?;let source=string(&c.positional("source_id")?,"source_id")?;
+            let kind=string(&c.positional("kind")?,"kind")?;let evidence=c.positional("evidence")?;
+            ensure!(c.args.is_empty(),"unexpected positional argument");delivery_prepare::unit(&id,&source,&kind,&evidence,c.kwargs)?
+        }
+        "validate_delivery.write_delivery_manifest" => {
+            let inv=path(&c.positional("inventory_path")?)?;let candidate=path(&c.positional("candidate_path")?)?;
+            let deliveries=c.positional("deliveries")?;let dest=path(&c.positional("manifest_path")?)?;
+            let root=c.option("resource_root",Value::Null);let root=if root.is_null(){None}else{Some(path(&root)?)};
+            let translation=c.option("translation_review_path",Value::Null);let translation=if translation.is_null(){None}else{Some(path(&translation)?)};
+            let edges=c.option("figure_edge_reviews_required",json!(false)).as_bool().context("figure_edge_reviews_required must be a bool")?;
+            c.finish()?;json!(path_text(&delivery_prepare::manifest(&inv,&candidate,&deliveries,&dest,root.as_deref(),translation.as_deref(),edges)?)?)
+        }
+        "complete_workflow.write_manifest" => {
+            let run=path(&c.positional("run_path")?)?;let deliveries=c.positional("deliveries")?;c.finish()?;
+            json!(path_text(&delivery_prepare::write_workflow_manifest(&run,&deliveries)?)?)
+        }
+        "mapping_rerun.compare_stable_projections" => {
+            let a=c.positional("baseline")?;let b=c.positional("current")?;c.finish()?;mapping_compare::compare(&a,&b)?
+        }
+        "pdf_image_objects.index_page_structure" => {
+            let p=path(&c.positional("source_pdf")?)?;let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
+            c.finish()?;pdf_structure::index_page(&p,page)?
+        }
+        "prepare_source_inventory.prepare_pdf_structure_evidence" => {
+            let p=path(&c.positional("source_pdf")?)?;let dest=path(&c.positional("destination")?)?;c.finish()?;
+            json!(path_text(&pdf_structure::prepare_structure(&p,&dest,|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
+        }
+        "prepare_source_inventory.file_record" | "prepare_source_inventory.sha256_file" => {
+            let p=path(&c.positional("path")?)?;c.finish()?;
+            let binding=check_ledger::bind_file(&p)?;
+            if op.ends_with("sha256_file"){binding["sha256"].clone()}else{binding}
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };
