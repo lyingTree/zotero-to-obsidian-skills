@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "Native page/region OCR, table hypotheses, opt-in experimental FormulaNet and deterministic bound OCR review; actual CPU/model and all-platform qualification plus legacy inventory/figure parity remain"
+      "blocker": "PdfCraft render, bounded native JPEG/sample/SMask export and geometric crop candidate; Linux x86_64 bilingual CPU OCR passed at 1364743. Full codec/painted-text parity, source inventory, remaining real model targets and source review remain"
     },
     "docx_source_qualification": {
       "qualified": false,

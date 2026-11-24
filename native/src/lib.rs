@@ -34,6 +34,7 @@ pub mod workflow;
 pub mod mapping_compare;
 pub mod handoff_conflicts;
 pub mod pdf_structure;
+pub mod pdf_boundary;
 pub mod pdfcraft_backend;
 pub mod ocr_backend;
 pub mod ocr_pdf;
@@ -120,6 +121,9 @@ pub const OPERATIONS: &[&str] = &[
     "mapping_rerun.compare_stable_projections",
     "mapping_rerun.compare_bound_maps",
     "pdf_image_objects.index_page_structure",
+    "pdf_image_objects.export_image_object",
+    "pdf_image_objects.inspect_crop_boundaries",
+    "pdf_image_objects.render_page_region",
     "pdf_image_objects.render_pdfcraft_page",
     "pdf_image_objects.render_pdfcraft_region",
     "pdf_image_objects.extract_pdfcraft_text",
@@ -905,6 +909,36 @@ pub fn invoke(request: Value) -> Result<Value> {
                         c.finish()?;pdfcraft_backend::render_page(&p,page,dpi,&dest,expected.as_deref())?
                     }
                 }
+            }
+        }
+        "pdf_image_objects.export_image_object" => {
+            let source=path(&c.positional("source_pdf")?)?;
+            let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
+            let xref=u32::try_from(c.required("image_xref")?.as_u64().context("image_xref must be an integer")?)?;
+            let dest=path(&c.required("destination")?)?;
+            let e=c.option("expected_source_sha256",Value::Null);
+            let e=if e.is_null(){None}else{Some(string(&e,"expected_source_sha256")?)};
+            c.finish()?;pdf_structure::export_image_object(&source,page,xref,&dest,e.as_deref())?
+        }
+        "pdf_image_objects.inspect_crop_boundaries" | "pdf_image_objects.render_page_region" => {
+            let source=path(&c.positional("source_pdf")?)?;
+            let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
+            let bbox=c.required("bbox")?;let coords=c.required("coordinate_system")?;
+            let context_margin=c.option("context_margin_pt",json!(36.0)).as_f64().context("Invalid context margin")?;
+            let e=c.option("expected_source_sha256",Value::Null);
+            let e=if e.is_null(){None}else{Some(string(&e,"expected_source_sha256")?)};
+            if op.ends_with("inspect_crop_boundaries"){
+                let dest=path(&c.required("context_destination")?)?;let dpi=c.option("dpi",json!(144)).as_u64().context("Invalid dpi")?;
+                c.finish()?;pdf_boundary::inspect_crop_boundaries(&source,page,&bbox,&coords,&dest,context_margin,dpi,e.as_deref())?
+            }else{
+                let dest=path(&c.required("destination")?)?;let dpi=c.option("dpi",json!(300)).as_u64().context("Invalid dpi")?;
+                let margin=c.option("margin_pt",json!(6.0)).as_f64().context("Invalid margin")?;
+                let context=c.option("context_destination",Value::Null);
+                let context=if context.is_null(){None}else{Some(path(&context)?)};
+                let context_dpi=c.option("context_dpi",json!(144)).as_u64().context("Invalid context dpi")?;
+                c.finish()?;
+                pdf_boundary::render_page_region(&source,pdf_boundary::RegionOptions{page,bbox:&bbox,coordinate_system:&coords,destination:&dest,
+                    margin,dpi,expected:e.as_deref(),context:context.as_deref(),context_margin,context_dpi})?
             }
         }
         "pdf_image_objects.index_page_structure" => {

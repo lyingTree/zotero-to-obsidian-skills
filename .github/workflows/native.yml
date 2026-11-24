@@ -92,19 +92,21 @@ jobs:
           python-version: '3.12'
       - name: Install reference-only dependencies
         run: python -m pip install -r requirements-dev.txt
-      - name: Build Rust reference-comparison target
-        run: cargo +1.95.0 build --locked --manifest-path native/Cargo.toml
+      - name: Build optimized Rust reference-comparison target
+        run: cargo +1.95.0 build --release --locked --manifest-path native/Cargo.toml
       - name: Record resolved dependency lockfile
         run: |
           echo Z2O_CARGO_LOCK_BEGIN
           cat native/Cargo.lock
           echo Z2O_CARGO_LOCK_END
-      - name: Compare Python 1.1.0 and native operations
+      - name: Compare Python 1.1.0 and native operations (unchanged deadline)
+        env:
+          Z2O_REFERENCE_BINARY: native/target/release/z2o
         run: python scripts/compare_native_reference.py
       - name: Check native release qualification policy
         run: |
           python -m unittest discover -s tests -p test_native_release_gate.py
-          python scripts/check_native_release.py
+          python scripts/check_native_release.py --binary native/target/release/z2o
 
   # Real weights and the official CPU runtime are test-only resources. The
   # regular six-platform jobs require neither an OCR model nor a GPU SDK.

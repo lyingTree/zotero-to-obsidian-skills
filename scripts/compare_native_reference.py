@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -20,7 +21,7 @@ sys.path.insert(0, str(ROOT.joinpath('tests')))
 from test_render_note import fixture as render_fixture
 import test_normalize_note as normalize_suite
 
-BINARY = ROOT.joinpath("native", "target", "debug", "z2o.exe" if sys.platform == "win32" else "z2o")
+BINARY = Path(os.environ["Z2O_REFERENCE_BINARY"]).resolve() if "Z2O_REFERENCE_BINARY" in os.environ else ROOT.joinpath("native", "target", "debug", "z2o.exe" if sys.platform == "win32" else "z2o")
 
 
 def encoded(data: bytes) -> dict:

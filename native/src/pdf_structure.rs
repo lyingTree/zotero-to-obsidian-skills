@@ -299,3 +299,180 @@ pub fn prepare_structure(p:&Path,dest:&Path,mut progress:impl FnMut(usize,usize,
         "boundary":"Structural PDF evidence only; not a full source-inventory.json and not a rendering or extraction pass."});
     let mut bytes=serde_json::to_vec_pretty(&v)?;bytes.push(b'\n');pipeline::publish(&dest,&bytes)?;Ok(dest)
 }
+
+
+// Use the already-pinned PdfCraft core codecs, bounded by actual declared
+// image geometry and a cumulative work budget. Unsupported display effects
+// must go through the actual page renderer.
+use craft_pdf::filters::{self,Filter,Params};
+use image::{ImageDecoder,ImageEncoder,ExtendedColorType,codecs::{jpeg::JpegDecoder,png::PngEncoder}};
+use std::io::Cursor;
+fn img_value<'a>(doc:&'a Document,d:&'a Dictionary,key:&[u8])->Result<Option<&'a Object>>{
+    match d.get(key){Ok(v)=>{let v=deref(doc,v)?;if matches!(v,Object::Null){Ok(None)}else{Ok(Some(v))}},Err(_)=>Ok(None)}
+}
+fn img_int(doc:&Document,d:&Dictionary,key:&[u8],default:Option<i64>)->Result<i64>{
+    match img_value(doc,d,key)?{Some(Object::Integer(n))=>Ok(*n),Some(_)=>Err(anyhow!("Invalid integer {}",String::from_utf8_lossy(key))),
+        None=>default.context("Missing image integer")}
+}
+fn img_chain(doc:&Document,d:&Dictionary)->Result<Vec<(Filter,Params)>>{
+    let names=match img_value(doc,d,b"Filter")?{
+        None=>vec![],Some(Object::Name(n))=>vec![Filter::from_name(n)],
+        Some(Object::Array(a))=>a.iter().map(|v|Ok(Filter::from_name(deref(doc,v)?.as_name()?))).collect::<Result<Vec<_>>>()?,
+        _=>return Err(anyhow!("Invalid filter chain")),
+    };
+    ensure!(names.len()<=filters::MAX_CHAIN,"Filter chain exceeds limit");
+    let mut parms=Vec::new();
+    match img_value(doc,d,b"DecodeParms")?{
+        None=>parms.resize(names.len(),None),
+        Some(Object::Dictionary(d))=>{ensure!(names.len()==1,"DecodeParms/filter mismatch");parms.push(Some(d));},
+        Some(Object::Array(a))=>{
+            ensure!(a.len()==names.len(),"DecodeParms/filter mismatch");
+            for v in a{match deref(doc,v)?{Object::Null=>parms.push(None),Object::Dictionary(d)=>parms.push(Some(d)),_=>return Err(anyhow!("Invalid DecodeParms"))}}
+        },
+        _=>return Err(anyhow!("Invalid DecodeParms")),
+    }
+    let mut out=Vec::new();
+    for (f,d) in names.into_iter().zip(parms){
+        let mut p=Params::default();
+        if let Some(d)=d{
+            ensure!(f.is_decodable(),"PAGE_RENDER_REQUIRED: image codec DecodeParms");
+            ensure!(d.iter().all(|(k,_)|matches!(k.as_slice(),b"Predictor"|b"Colors"|b"BitsPerComponent"|b"Columns"|b"EarlyChange")),
+                "PAGE_RENDER_REQUIRED: unknown DecodeParms");
+            p.predictor=img_int(doc,d,b"Predictor",Some(1))?;
+            p.colors=img_int(doc,d,b"Colors",Some(1))?;
+            p.bits_per_component=img_int(doc,d,b"BitsPerComponent",Some(8))?;
+            p.columns=img_int(doc,d,b"Columns",Some(1))?;
+            p.early_change=img_int(doc,d,b"EarlyChange",Some(1))?;
+            ensure!(matches!(p.predictor,1|2|10..=15)&&matches!(p.colors,1|3)&&p.bits_per_component==8&&
+                (1..=20_000_000).contains(&p.columns)&&matches!(p.early_change,0|1),"PAGE_RENDER_REQUIRED: unsupported predictor");
+        }
+        out.push((f,p));
+    }
+    Ok(out)
+}
+struct Samples{w:u32,h:u32,channels:usize,bytes:Vec<u8>,jpeg:bool,filters:Vec<String>}
+fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>{
+    let d=&stream.dict;
+    let w=u32::try_from(img_int(doc,d,b"Width",None)?)?;let h=u32::try_from(img_int(doc,d,b"Height",None)?)?;
+    ensure!(w>0&&h>0&&u64::from(w)*u64::from(h)<=20_000_000,"Image exceeds pixel budget");
+    let channels=match img_value(doc,d,b"ColorSpace")?.context("Missing ColorSpace")?.as_name().ok(){
+        Some(b"DeviceRGB")=>3,Some(b"DeviceGray")=>1,_=>return Err(anyhow!("PAGE_RENDER_REQUIRED: ICC, CMYK, indexed or resource-defined ColorSpace")),
+    };
+    ensure!(!mask||channels==1,"PAGE_RENDER_REQUIRED: non-gray SMask");
+    ensure!(img_int(doc,d,b"BitsPerComponent",None)?==8,"PAGE_RENDER_REQUIRED: non-8-bit samples");
+    for key in [b"Mask".as_slice(),b"Matte",b"OC",b"Alternates"]{
+        ensure!(img_value(doc,d,key)?.is_none(),"PAGE_RENDER_REQUIRED: {}",String::from_utf8_lossy(key));
+    }
+    ensure!(img_int(doc,d,b"SMaskInData",Some(0))?==0&&matches!(img_value(doc,d,b"ImageMask")?,None|Some(Object::Boolean(false))),
+        "PAGE_RENDER_REQUIRED: SMaskInData or ImageMask");
+    let invert=match img_value(doc,d,b"Decode")?{
+        None=>false,Some(v) if mask=>{let a=array::<2>(doc,v)?;ensure!(a==[0.,1.]||a==[1.,0.],"PAGE_RENDER_REQUIRED: SMask Decode");a==[1.,0.]},
+        _=>return Err(anyhow!("PAGE_RENDER_REQUIRED: explicit Decode")),
+    };
+    if mask{if let Some(v)=img_value(doc,d,b"SMask")?{ensure!(v.as_name().ok()==Some(b"None".as_slice()),"PAGE_RENDER_REQUIRED: nested SMask");}}
+    ensure!(stream.content.len()<=128*1024*1024,"Encoded image exceeds byte budget");
+    let chain=img_chain(doc,d)?;
+    let names=chain.iter().map(|(f,_)|f.name().to_owned()).collect::<Vec<_>>();
+    let size=(w as usize)*(h as usize)*channels;
+    let jpeg=chain.len()==1&&chain[0].0==Filter::Dct;
+    let mut bytes=if jpeg{
+        ensure!(img_value(doc,d,b"DecodeParms")?.is_none(),"PAGE_RENDER_REQUIRED: JPEG DecodeParms");
+        let mut dec=JpegDecoder::new(Cursor::new(&stream.content))?;
+        ensure!(dec.dimensions()==(w,h),"JPEG dimensions differ from PDF dictionary");
+        ensure!(dec.icc_profile()?.is_none()&&dec.orientation()?==image::metadata::Orientation::NoTransforms,
+            "PAGE_RENDER_REQUIRED: JPEG ICC profile or orientation");
+        let expected=if channels==1{image::ColorType::L8}else{image::ColorType::Rgb8};
+        ensure!(dec.color_type()==expected&&dec.total_bytes()==size as u64,"JPEG colors differ from PDF dictionary");
+        let mut data=vec![0u8;size];dec.read_image(&mut data)?;data
+    }else{
+        ensure!(chain.iter().all(|(f,_)|f.is_decodable()),"PAGE_RENDER_REQUIRED: unsupported image codec");
+        let mut work=512u64*1024*1024;
+        filters::decode_within(&chain,&stream.content,size.checked_add(h as usize).context("Sample budget overflow")?,&mut work)?
+    };
+    ensure!(bytes.len()==size,"Decoded sample size differs from actual PDF image dimensions");
+    if invert{for b in &mut bytes{*b=255-*b;}}
+    Ok(Samples{w,h,channels,bytes,jpeg,filters:names})
+}
+fn image_png(s:&Samples,alpha:Option<&[u8]>)->Result<Vec<u8>>{
+    let mut out=Vec::new();
+    if let Some(alpha)=alpha{
+        ensure!(alpha.len()==(s.w as usize)*(s.h as usize),"SMask dimensions differ");
+        let mut pixels=Vec::with_capacity(alpha.len()*(s.channels+1));
+        for (p,a) in s.bytes.chunks_exact(s.channels).zip(alpha){pixels.extend_from_slice(p);pixels.push(*a);}
+        let ty=if s.channels==1{ExtendedColorType::La8}else{ExtendedColorType::Rgba8};
+        PngEncoder::new(&mut out).write_image(&pixels,s.w,s.h,ty)?;
+    }else{
+        let ty=if s.channels==1{ExtendedColorType::L8}else{ExtendedColorType::Rgb8};
+        PngEncoder::new(&mut out).write_image(&s.bytes,s.w,s.h,ty)?;
+    }
+    Ok(out)
+}
+/// Actual occurrence/XRef validation, strict bounded sample decoding, original
+/// JPEG preservation and non-premultiplied alpha composition.
+pub fn export_image_object(source:&Path,page:u64,xref:u32,dest:&Path,expected:Option<&str>)->Result<Value>{
+    ensure!(xref>0,"Invalid image_xref");
+    let before=check_ledger::bind_file(source)?;
+    if let Some(hash)=expected{ensure!(before["sha256"]==hash,"Source PDF hash differs from selected inventory");}
+    let pdf=Pdf::open(source)?;let doc=&pdf.doc;let index=pdf.index(page)?;
+    let issues=index["issues"].as_array().context("Missing index issues")?;
+    ensure!(index["status"]=="structurally_indexed"||(!issues.is_empty()&&issues.iter().all(|r|r["code"]=="FORM_UNRESOLVED")),
+        "PAGE_RENDER_REQUIRED: unresolved page image calls");
+    let locations:Vec<_>=index["occurrences"].as_array().context("Missing occurrences")?.iter()
+        .filter(|r|r["image_xref"].as_u64()==Some(u64::from(xref))).cloned().collect();
+    ensure!(!locations.is_empty(),"image_xref is not actually invoked on the selected PDF page");
+    ensure!(locations.iter().all(|r|r["context_effects"].as_array().is_some_and(|a|a.is_empty())),"PAGE_RENDER_REQUIRED: clipping or graphics state");
+    let generation=locations[0]["generation"].as_u64().context("Missing generation")?;
+    ensure!(locations.iter().all(|r|r["generation"].as_u64()==Some(generation)),"Ambiguous image generation");
+    let stream=pdf.raw_object(xref,u16::try_from(generation)?)?;
+    ensure!(img_value(doc,doc.catalog()?,b"OCProperties")?.is_none(),"PAGE_RENDER_REQUIRED: optional-content configuration");
+    let s=image_samples(doc,stream,false)?;let geo=pdf.geometry(page)?;
+    for l in &locations{
+        let a=l["transform"].as_array().filter(|a|a.len()==6).context("Missing transform")?;
+        let mut m=[0.;6];for (i,x) in a.iter().enumerate(){m[i]=x.as_f64().filter(|n|n.is_finite()).context("Invalid transform")?;}
+        let m=mul(m,geo.rotated);
+        ensure!(m[0]>0.&&m[3]>0.&&m[1].abs()<=0.0001&&m[2].abs()<=0.0001,"PAGE_RENDER_REQUIRED: rotated, mirrored or skewed appearance");
+        let (sx,sy)=(m[0]/f64::from(s.w),m[3]/f64::from(s.h));
+        ensure!((sx-sy).abs()<=0.0001*sx.abs().max(sy.abs()),"PAGE_RENDER_REQUIRED: nonuniform image scale");
+    }
+    let mut alpha=None;let mut mask=json!({"image_xref":0,"status":"absent"});
+    if let Some(v)=img_value(doc,&stream.dict,b"SMask")?{
+        if v.as_name().ok()!=Some(b"None".as_slice()){
+            let id=match stream.dict.get(b"SMask")?{Object::Reference(id)=>*id,_=>return Err(anyhow!("PAGE_RENDER_REQUIRED: SMask must be indirect"))};
+            ensure!(id!=(xref,u16::try_from(generation)?),"Recursive SMask");
+            let ms=pdf.raw_object(id.0,id.1)?;let a=image_samples(doc,ms,true)?;
+            ensure!((a.w,a.h)==(s.w,s.h),"PAGE_RENDER_REQUIRED: differing SMask dimensions");
+            let lo=*a.bytes.iter().min().context("Empty SMask")?;let hi=*a.bytes.iter().max().context("Empty SMask")?;
+            mask=json!({"image_xref":id.0,"generation":id.1,"status":if lo==255{"opaque"}else{"nonopaque"},
+                "width":a.w,"height":a.h,"alpha_min":lo,"alpha_max":hi,"pdf_stream_sha256":files::digest(&ms.content),
+                "decoded_alpha_sha256":files::digest(&a.bytes),"filters":a.filters});
+            if lo!=255{alpha=Some(a.bytes);}
+        }
+    }
+    let png=if s.jpeg&&alpha.is_none(){None}else{Some(image_png(&s,alpha.as_deref())?)};
+    let (data,ext,method)=match png.as_ref(){
+        Some(b)=>(b.as_slice(),"png",if alpha.is_some(){"smask_composited_png"}else{"lossless_sample_png"}),
+        None=>(stream.content.as_slice(),"jpeg","original_extracted_bytes"),
+    };
+    let target=match dest.extension(){
+        None=>dest.with_extension(ext),
+        Some(x)=>{let x=x.to_str().context("Invalid extension")?.to_ascii_lowercase();ensure!(x==ext||(ext=="jpeg"&&x=="jpg"),"Destination extension must match actual encoding");dest.to_owned()}
+    };
+    let parent=target.parent().filter(|p|!p.as_os_str().is_empty()).unwrap_or_else(||Path::new("."));
+    fs::create_dir_all(parent)?;
+    let target=files::canonical(parent)?.join(target.file_name().context("Missing output filename")?);
+    ensure!(path_text(&target)?!=before["path"],"Cannot replace source PDF");
+    ensure!(check_ledger::bind_file(source)?==before,"Source PDF changed during extraction");
+    pipeline::publish(&target,data)?;
+    let asset=check_ledger::bind_file(&target)?;
+    ensure!(asset["sha256"]==files::digest(data)&&check_ledger::bind_file(source)?==before,"Source or output changed");
+    Ok(json!({"schema_version":1,"source_file":before,"page":page,"image_xref":xref,"source_locations":locations,
+        "source_index_status":index["status"],"source_index_issues":issues,"page_rotation":geo.rotation,
+        "page_to_rotated_page_transform":geo.rotated,"coordinate_system":index["coordinate_system"],
+        "source_object":{"image_xref":xref,"generation":generation,"width":s.w,"height":s.h,"bits_per_component":8,
+            "pdf_colorspace":if s.channels==3{"/DeviceRGB"}else{"/DeviceGray"},"filters":s.filters,
+            "original_encoded_extension":if s.jpeg{Some("jpeg")}else{None},"pdf_stream_sha256":files::digest(&stream.content),
+            "decoded_samples_sha256":files::digest(&s.bytes),"smask":mask,"figure_completeness":"not_assessed"},
+        "asset":asset,"output_extension":ext,"method":method,"orientation":"native_image_samples",
+        "visual_review":{"status":"pending","figure_completeness":"not_assessed"},"source_fidelity":"not_assessed",
+        "evidence_boundary":"Actual invoked image samples, not proof of visible ink or complete figure membership. Overlay, text, vector and unsupported display effects require page rendering and independent review."}))
+}

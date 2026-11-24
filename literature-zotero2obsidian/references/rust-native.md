@@ -167,3 +167,9 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 新增 `audit_ocr_evidence(primary_record, expected_primary_sha256=..., comparison_record=..., expected_comparison_sha256=...)`：重新读取并绑定原 PNG、源 PDF（存在时）、模型包及实际权重；仅比较同一实际栅格的候选，双向唯一几何匹配保留原始文字、分数、坐标，记录数值、希腊字母、正负号、上下标及低分，所有文本和特殊版面区域均生成待复核任务；不因两份结果一致而验收通过，不假装调用 Jev，未匹配文本不丢弃。当前接受原生 OCR 证据格式，独立增强模型还需要统一输出适配。
 
 新增显式 `recognize_ocr_formula_png`、`recognize_pdf_formula_region`，复用同一固定 ppocr-rs 的实验性 `PP-FormulaNet_plus-L` 识别器（`auxiliary.formula={architecture,model,tokenizer}`，架构值为 `PP-FormulaNet_plus-L`）。仅在用户/调用方显式选择一处公式时运行，不随正文自动加载；CPU 内存保护暂定总内存 16 GiB、可用内存 6 GiB，限制模型、词表及裁剪尺寸，要求真实 tokenizer 并禁止隐式 fallback。原始公式图、PDF 坐标、候选 LaTeX、模型分数及资源哈希分别记录；上游 decoder 最多 2560 步，终止完整性、线程限制、实际模型精度和运行时上限仍未验证，不执行或自动写入 LaTeX。该轻量集成是明确的可选备选方案，不替代尚待集成的 MiniCPM-OCR/Jev。
+
+### 原生图像导出与裁剪边界候选
+
+新增 `pdf_image_objects.export_image_object`、`inspect_crop_boundaries`、`render_page_region`。复用同一已锁定 craft-pdf filters 严格解码、限制实际像素和工作量；实际调用 XRef/generation、页面矩阵、原文件哈希、原 JPEG 字节、8-bit RGB/Gray 样本及同尺寸灰度 SMask（含反转 Decode）均留证。未知色彩空间、特殊显示状态、显式 Mask/Matte/Decode、旋转、非均匀缩放及未支持编码要求页面渲染。边界检查使用实际 PdfCraft glyph 行和图像调用几何，输出独立原始上下文与红/绿标注，建议裁剪框不自动应用，四边待审。glyph 几何不等于 painted ink，不能声称与旧 PyMuPDF 完全一致。新增原始字节、Alpha、错误扩展名、未调用 XRef、覆盖及实际 crop 负例。锁文件复用现有 craft-pdf 节点，仅加入 root 依赖边，仍以 CI --locked 验证。
+
+1364743：真实 Linux x86_64 CPU OCR（中英文和数字）通过，7.22 秒；原生五平台通过，macOS ARM64 被取消；差分 264/265 通过，唯一错误是 debug process_markdown 超时。改用 release 二进制差分与发布门禁，保留 45 秒超时及完整原用例。新图像候选尚未获得编译和实际回归资格。MiniCPM/Jev、GPU 回退和完整自动下载仍待实现。

@@ -59,3 +59,55 @@ fn pdfcraft_headless_pixels_glyphs_and_rotated_crop(){
     assert!(backend::render_page(&pdf,1,72,&dir.join("full.png"),None).is_err());
     assert_eq!(fs::read(dir.join("full.png")).unwrap(),b"keep existing");
 }
+
+
+#[test]
+fn strict_native_image_extraction_preserves_bytes_and_alpha(){
+    use image::ImageEncoder;
+    use z2o_native::pdf_structure::export_image_object;
+    let tmp=tempfile::tempdir().unwrap();let root=tmp.path();let pdf=root.join("image.pdf");
+    let mut doc=Document::with_version("1.5");let pages=doc.new_object_id();
+    let rgb=[20u8,100,200,200,30,80];let mut jpeg=Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg,95).write_image(&rgb,2,1,image::ExtendedColorType::Rgb8).unwrap();
+    let j=doc.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Image","Width"=>2,"Height"=>1,"ColorSpace"=>"DeviceRGB","BitsPerComponent"=>8,"Filter"=>"DCTDecode"},jpeg.clone()));
+    let m=doc.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Image","Width"=>2,"Height"=>1,"ColorSpace"=>"DeviceGray","BitsPerComponent"=>8,"Decode"=>vec![1.into(),0.into()]},vec![255,127]));
+    let f=doc.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Image","Width"=>2,"Height"=>1,"ColorSpace"=>"DeviceRGB","BitsPerComponent"=>8,"Filter"=>"FlateDecode","SMask"=>m},craft_pdf::filters::encode_flate(&rgb)));
+    let unused=doc.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Image","Width"=>2,"Height"=>1,"ColorSpace"=>"DeviceRGB","BitsPerComponent"=>8},rgb.to_vec()));
+    let content=doc.add_object(Stream::new(dictionary!{},b"q 20 0 0 10 5 50 cm /J Do Q q 20 0 0 10 40 50 cm /F Do Q".to_vec()));
+    let page=doc.add_object(dictionary!{"Type"=>"Page","Parent"=>pages,"Contents"=>content,"Resources"=>dictionary!{"XObject"=>dictionary!{"J"=>j,"F"=>f,"Unused"=>unused}}});
+    doc.objects.insert(pages,Object::Dictionary(dictionary!{"Type"=>"Pages","Kids"=>vec![Object::Reference(page)],"Count"=>1,"MediaBox"=>vec![0.into(),0.into(),100.into(),100.into()]}));
+    let catalog=doc.add_object(dictionary!{"Type"=>"Catalog","Pages"=>pages});doc.trailer.set("Root",catalog);doc.save(&pdf).unwrap();
+    let original=fs::read(&pdf).unwrap();
+    let a=export_image_object(&pdf,1,j.0,&root.join("jpeg"),None).unwrap();
+    assert_eq!(a["method"],"original_extracted_bytes");assert_eq!(fs::read(root.join("jpeg.jpeg")).unwrap(),jpeg);
+    let b=export_image_object(&pdf,1,f.0,&root.join("alpha"),None).unwrap();
+    assert_eq!(b["method"],"smask_composited_png");assert_eq!(b["source_object"]["smask"]["alpha_min"],0);
+    let img=image::open(root.join("alpha.png")).unwrap().into_rgba8();
+    assert_eq!(img.get_pixel(0,0).0,[20,100,200,0]);assert_eq!(img.get_pixel(1,0).0,[200,30,80,128]);
+    assert!(export_image_object(&pdf,1,unused.0,&root.join("unused"),None).is_err());
+    assert!(export_image_object(&pdf,1,f.0,&root.join("wrong.jpg"),None).is_err());
+    assert!(export_image_object(&pdf,1,j.0,&root.join("changed"),Some(&"0".repeat(64))).is_err());
+    assert_eq!(fs::read(&pdf).unwrap(),original);
+    fs::write(root.join("jpeg.jpeg"),b"keep").unwrap();
+    assert!(export_image_object(&pdf,1,j.0,&root.join("jpeg"),None).is_err());
+    assert_eq!(fs::read(root.join("jpeg.jpeg")).unwrap(),b"keep");
+}
+#[test]
+fn native_crop_with_context_keeps_four_pending_edges(){
+    use z2o_native::pdf_boundary::{self,RegionOptions};
+    let tmp=tempfile::tempdir().unwrap();let root=tmp.path();let pdf=root.join("fixture.pdf");fixture(&pdf);
+    let original=fs::read(&pdf).unwrap();let dest=root.join("crop.png");
+    let coords=json!({"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"});
+    let bbox=json!([5,5,45,25]);
+    let result=pdf_boundary::render_page_region(&pdf,RegionOptions{page:1,bbox:&bbox,coordinate_system:&coords,destination:&dest,margin:0.,
+        dpi:72,expected:None,context:None,context_margin:20.,context_dpi:72}).unwrap();
+    assert_eq!(result["rendered_bbox"],json!([5.,5.,45.,25.]));
+    assert_eq!(result["boundary_check"]["suggestion_applied"],false);
+    assert_eq!(result["boundary_check"]["full_page_review_required"],true);
+    assert!(result["edge_reviews"].as_array().unwrap().iter().all(|e|e["status"]=="pending"));
+    for b in [&result["asset"],&result["boundary_check"]["context"]["asset"],&result["boundary_check"]["context"]["annotated_asset"]]{
+        assert_eq!(files::snapshot(Path::new(b["path"].as_str().unwrap())).unwrap()["sha256"],b["sha256"]);
+    }
+    assert_eq!(image::open(&dest).unwrap().width(),40);assert_eq!(fs::read(&pdf).unwrap(),original);
+    assert!(pdf_boundary::inspect_crop_boundaries(&pdf,1,&json!([0,0,201,100]),&coords,&root.join("bad.png"),20.,72,None).is_err());
+}

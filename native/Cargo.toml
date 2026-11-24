@@ -37,6 +37,8 @@ zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 # Headless PdfCraft core, not the application, GUI or MCP service.
 pdfcraft-render = { git = "https://github.com/storytold/pdfcraft", rev = "6e910675c68dd5092e889065cfe8d0274c1b2742", default-features = false }
 
+craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844", default-features = false, features = ["filters"] }
+
 # In-process PP-OCRv6, explicitly lazy-loaded CPU ONNX Runtime. No runtime
 # download or linkage to a vendor GPU SDK. Upstream enables optional EP APIs
 # by target, but z2o registers CPU only.

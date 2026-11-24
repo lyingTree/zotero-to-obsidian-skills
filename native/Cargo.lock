@@ -3203,6 +3203,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
+ "craft-pdf",
  "dunce",
  "fancy-regex",
  "fs2",

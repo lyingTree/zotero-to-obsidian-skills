@@ -110,7 +110,7 @@ impl Backend{
         ensure!(check_ledger::bind_file(&self.source_path)?==self.source,"Source PDF changed during evidence preparation");
         Ok(())
     }
-    fn geometry(&self,page:u64)->Result<(usize,Value,[f64;4],[f64;6])>{
+    pub(crate) fn geometry(&self,page:u64)->Result<(usize,Value,[f64;4],[f64;6])>{
         let n=usize::try_from(page).ok().filter(|n|*n>=1&&*n<=self.len())
             .context("page_number must name an actual PDF page, starting at 1")?;
         let geometry=self.structural.geometry_record(page)?;
