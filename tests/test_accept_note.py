@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from hashlib import sha256
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -106,10 +107,10 @@ class TestAccept(unittest.TestCase):
     def test_absent_file_traversal_symlink_and_url_punctuation(self):
         outside = self.root.parent.joinpath("outside.png")
         self.root.joinpath("escape.png").symlink_to(outside)
-        literal = "a#b?c%20.png"
-        self.root.joinpath(literal).write_bytes(b"x")
-        self.path.write_text(HEAD + "![](<a%23b%3Fc%2520.png?size=2#view>)", encoding="utf-8")
+        self.root.joinpath("a#b c%20.png").write_bytes(b"x")
+        self.path.write_text(HEAD + "![](<a%23b%20c%2520.png?size=2#view>)", encoding="utf-8")
         self.assertFalse(self.failures(self.audit(None)))
+        self.assert_question_mark_resource("a#b?c%20.png", "![](<a%23b%3Fc%2520.png?size=2#view>)")
         for href, code in [("../outside.png", "RESOURCE_BOUNDARY"), ("%2e%2e/x", "RESOURCE_BOUNDARY"),
                            ("escape.png", "RESOURCE_BOUNDARY"), ("missing.png", "RESOURCE_FILE")]:
             with self.subTest(href=href):
@@ -118,7 +119,7 @@ class TestAccept(unittest.TestCase):
 
     def test_real_line_mapping_and_false_claims(self):
         text = HEAD + "first\n\nsecond\n"
-        self.path.write_text(text, encoding="utf-8")
+        self.path.write_bytes(text.encode("utf-8"))
         units = [dict(unit_id=uid, kind="paragraph", source={"source_id": "s", "locator": uid},
                       scope=scope) for uid, scope in [("p", "main"), ("q", "supplement:B")]]
         contract = {k: self.contract[k] for k in ("schema_version", "sources")}
@@ -134,7 +135,7 @@ class TestAccept(unittest.TestCase):
             copy = deepcopy(rendering)
             copy["mapping"][1][field] = bad
             self.assertIn(code, self.failures(self.audit(contract, rendering=copy)))
-        self.path.write_text(text.replace("first", "forged"), encoding="utf-8")
+        self.path.write_bytes(text.replace("first", "forged").encode("utf-8"))
         self.assertTrue({"UNIT_HASH", "OUTPUT_HASH"} <= self.failures(self.audit(contract, rendering=rendering)))
         units[1]["unit_id"] = "p"
         self.assertIn("UNIQUE_UNIT_IDS", self.failures(self.audit(contract, rendering=rendering)))
@@ -170,10 +171,20 @@ class TestAccept(unittest.TestCase):
         unit.update(anchor_typo="fig-A", kind="figrue")
         self.assertTrue({"SCHEMA", "UNIT_FIELDS"} <= self.failures(self.audit(contract, rendering=rendering)))
 
-    def test_wiki_embed_uses_literal_percent_and_question_mark(self):
-        self.root.joinpath("panel%20name?.png").write_bytes(b"ok")
-        self.path.write_text(HEAD + "![[panel%20name?.png|preview]]", encoding="utf-8")
+    def assert_question_mark_resource(self, filename, embed):
+        self.path.write_text(HEAD + embed, encoding="utf-8")
+        if os.name == "nt":
+            # Win32 disallows a literal '?' in a filename, even if the URI encodes it.
+            self.assertTrue({"RESOURCE_FILE", "RESOURCE_READ"} & self.failures(self.audit(None)))
+            return
+        self.root.joinpath(filename).write_bytes(b"ok")
         self.assertFalse(self.failures(self.audit(None)))
+
+    def test_wiki_embed_uses_literal_percent_and_question_mark(self):
+        self.root.joinpath("panel%20name space.png").write_bytes(b"ok")
+        self.path.write_text(HEAD + "![[panel%20name space.png|preview]]", encoding="utf-8")
+        self.assertFalse(self.failures(self.audit(None)))
+        self.assert_question_mark_resource("panel%20name?.png", "![[panel%20name?.png|preview]]")
 
     def test_canonical_format_original_and_normalized(self):
         original = HEAD + "# Original title\n\n中文标题\n作者：甲\n\n" + r"持续60min，占31.$2\%$。" + "\n"

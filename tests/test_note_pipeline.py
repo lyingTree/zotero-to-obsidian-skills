@@ -149,7 +149,7 @@ class PipelineTests(unittest.TestCase):
         result = pipeline.process_content(plan, content, self.output, contract=contract,
                                           resource_root=self.root, progress=None)
         root = Path(result["directory"])
-        self.assertEqual(result["status"], "mechanical_pass", root.joinpath("acceptance.json").read_text())
+        self.assertEqual(result["status"], "mechanical_pass", root.joinpath("acceptance.json").read_text(encoding="utf-8"))
         note = root.joinpath("normalized.md").read_text(encoding="utf-8")
         self.assertIn("# A source\n来源\n\nAuthor", note)
         self.assertIn(r"$60\,\mathrm{min}$", note)
@@ -194,7 +194,7 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(pipeline.PipelineConflictError):
             pipeline.process_content(plan, content, self.output, contract=contract,
                                      resource_root=self.root, progress=None)
-        self.assertEqual(mapping.read_text(), "user edited mapping")
+        self.assertEqual(mapping.read_text(encoding="utf-8"), "user edited mapping")
 
     def test_hot_reloaded_version_cannot_label_cached_code_as_new(self):
         changed = deepcopy(pipeline._IMPORTED_ENGINE)
