@@ -19,6 +19,7 @@ pub mod presentation;
 pub mod grid;
 pub mod inventory;
 pub mod acceptance;
+pub mod docx;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -76,6 +77,13 @@ pub const OPERATIONS: &[&str] = &[
     "lint_presentation.lint_file",
     "validate_delivery.check_merges",
     "accept_note.accept_note",
+    "docx_source_inventory.read_docx",
+    "docx_source_inventory.prepare_docx_source",
+    "docx_source_inventory.valid_native_locator",
+    "docx_source_inventory.native_evidence_errors",
+    "docx_source_inventory.source_native_text",
+    "docx_source_inventory.resolve_native_locator",
+    "docx_source_inventory.native_figure_location",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -429,6 +437,26 @@ pub fn invoke(request: Value) -> Result<Value> {
             let root=if root.is_null(){None}else{Some(path(&root)?)};
             let rendering=c.option("rendering",Value::Null);c.finish()?;
             acceptance::accept(&candidate,&contract,root.as_deref(),&rendering)?
+        }
+        "docx_source_inventory.read_docx" | "docx_source_inventory.prepare_docx_source" => {
+            let p=path(&c.positional("path")?)?;let id=string(&c.positional("source_id")?,"source_id")?;
+            if op.ends_with(".read_docx"){c.finish()?;docx::read_docx(&p,&id,|i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?}
+            else{let directory=path(&c.positional("directory")?)?;c.finish()?;docx::prepare_docx_source(&p,&id,&directory,|i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?}
+        }
+        "docx_source_inventory.valid_native_locator" => {
+            let v=c.positional("value")?;c.finish()?;json!(docx::valid_locator(&v))
+        }
+        "docx_source_inventory.native_evidence_errors" | "docx_source_inventory.source_native_text" | "docx_source_inventory.native_figure_location" => {
+            let source=c.positional("source")?;let location=c.positional("location")?;c.finish()?;
+            match op.as_str(){
+                "docx_source_inventory.native_evidence_errors"=>json!(docx::evidence_errors(&source,&location)),
+                "docx_source_inventory.source_native_text"=>json!(docx::source_text(&source,&location)?),
+                _=>docx::figure_location(&source,&location)?,
+            }
+        }
+        "docx_source_inventory.resolve_native_locator" => {
+            let p=path(&c.positional("path")?)?;let location=c.positional("locator")?;c.finish()?;
+            json!(docx::NativeDocument::new(&p)?.resolve(&location)?)
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

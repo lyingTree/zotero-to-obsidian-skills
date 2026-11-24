@@ -27,6 +27,8 @@ unicode-casefold = "0.2"
 tempfile = "3"
 html-escape = "0.2"
 percent-encoding = "2"
+roxmltree = "0.20"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 lto = "thin"

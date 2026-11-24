@@ -523,3 +523,32 @@ fn complete_native_mechanical_pipeline_preserves_receipts_and_rejects_changed_ev
     });
     assert!(attempt.is_err());assert!(fs::read_dir(&changed).unwrap().all(|e|!e.unwrap().path().join("result.json").exists()));
 }
+
+#[test]
+fn native_docx_inventory_preserves_xml_order_embedded_bytes_and_pending_objects(){
+    use z2o_native::docx;
+    use std::io::Write;
+    use zip::{ZipWriter,write::SimpleFileOptions};
+    let dir=tempdir().unwrap();let source=dir.path().join("补充材料.docx");
+    let xml=r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><w:body><w:p><w:r><w:t>中文</w:t><w:noBreakHyphen/><w:t>🌊</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><a:blip r:embed="rImage"/></w:r></w:p></w:tc></w:tr></w:tbl><w:p><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></w:p><w:sectPr/></w:body></w:document>"#;
+    let rels=r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rImage" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image.png"/></Relationships>"#;
+    let types=r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>"#;
+    let mut z=ZipWriter::new(fs::File::create(&source).unwrap());
+    for (name,data) in [("word/document.xml",xml.as_bytes()),("[Content_Types].xml",types.as_bytes()),("word/_rels/document.xml.rels",rels.as_bytes()),("word/media/image.png",b"original media".as_slice())]{
+        z.start_file(name,SimpleFileOptions::default()).unwrap();z.write_all(data).unwrap();
+    }z.finish().unwrap();
+    let evidence=dir.path().join("实际证据");
+    let r=docx::prepare_docx_source(&source,"si",&evidence,|_,_,_|{}).unwrap();
+    assert_eq!(r["native_blocks"][0]["text"],"中文‑🌊");assert_eq!(r["native_blocks"][1]["rows"][0]["cells"][0]["grid_span"],"2");
+    assert_eq!(r["native_blocks"].as_array().unwrap().len(),3);assert_eq!(r["native_issues"][0]["kind"],"math");
+    assert!(r["page_count"].is_null());assert_eq!(r["pages"],json!([]));
+    assert_eq!(r["media_calls"][0]["status"],"resolved");assert!(r["media_calls"][0]["figure_number"].is_null());
+    assert_eq!(fs::read(evidence.join("document.xml")).unwrap(),xml.as_bytes());assert_eq!(fs::read(evidence.join("media-0001.png")).unwrap(),b"original media");
+    let block=&r["native_blocks"][0];let loc=json!({"basis":"native","native_locator":block["locator"],"blocks":[block["id"]],"quote":"中文"});
+    assert!(docx::evidence_errors(&r,&loc).is_empty());assert_eq!(docx::source_text(&r,&loc).unwrap(),"中文‑🌊");
+    let doc=docx::NativeDocument::new(&source).unwrap();assert_eq!(doc.resolve(&block["locator"]).unwrap(),"中文‑🌊");
+    let call=&r["media_calls"][0];let location=json!({"basis":"native","native_locator":call["locator"],"blocks":[call["block_id"]],"media_call":call["id"]});
+    assert_eq!(docx::figure_location(&r,&location).unwrap()["source_media"]["sha256"],files::digest(b"original media"));
+    assert!(docx::prepare_docx_source(&source,"si",&evidence,|_,_,_|{}).is_err());
+    let mut invalid=loc;invalid["page"]=json!(1);assert!(!docx::evidence_errors(&r,&invalid).is_empty());
+}

@@ -446,5 +446,95 @@ class NativeEndToEndComparison(unittest.TestCase):
                                      Path(expected["directory"]).joinpath(name).read_bytes())
 
 
+import test_docx_source_inventory as docx_suite
+
+class NativeDocxComparison(docx_suite.NativeDocxTests):
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        module = docx_suite.native
+        read_reference = module.read_docx
+        prepare_reference = module.prepare_docx_source
+        native_document = module.NativeDocument
+        errors_reference = module.native_evidence_errors
+
+        def invoke(operation, *args):
+            with tempfile.TemporaryDirectory() as folder:
+                request = Path(folder).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version": 1,
+                    "operation": "docx_source_inventory." + operation,
+                    "args": args}, ensure_ascii=False), encoding="utf-8")
+                completed = subprocess.run([str(BINARY), "invoke", str(request)],
+                    capture_output=True, encoding="utf-8", check=True, timeout=90)
+                return json.loads(completed.stdout)["result"]
+
+        def read(path, source_id, *, progress=None):
+            try:
+                expected = read_reference(path, source_id, progress=progress)
+            except ValueError:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    invoke("read_docx", str(path), source_id)
+                raise
+            actual = invoke("read_docx", str(path), source_id)
+            self.assertEqual(actual, expected)
+            return actual
+
+        def prepare(path, source_id, directory, *, progress=None):
+            with tempfile.TemporaryDirectory() as folder:
+                expected_dir = Path(folder).joinpath("reference")
+                expected = prepare_reference(path, source_id, expected_dir, progress=progress)
+                if Path(directory).joinpath("document.xml").exists():
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        invoke("prepare_docx_source", str(path), source_id, str(directory))
+                    raise FileExistsError(str(directory))
+                actual = invoke("prepare_docx_source", str(path), source_id, str(directory))
+                def compare_records(a, b):
+                    if isinstance(a, dict) and isinstance(b, dict):
+                        self.assertEqual(set(a), set(b))
+                        for key in a:
+                            if key == "path":
+                                self.assertEqual(Path(a[key]).name, Path(b[key]).name)
+                                self.assertEqual(Path(a[key]).read_bytes(), Path(b[key]).read_bytes())
+                            else:
+                                compare_records(a[key], b[key])
+                    elif isinstance(a, list) and isinstance(b, list):
+                        self.assertEqual(len(a), len(b))
+                        for x, y in zip(a, b):
+                            compare_records(x, y)
+                    else:
+                        self.assertEqual(a, b)
+                compare_records(actual, expected)
+                return actual
+
+        def errors(source, location):
+            actual = invoke("native_evidence_errors", source, location)
+            self.assertEqual(actual, errors_reference(source, location))
+            return actual
+
+        test = self
+        class NativeDocument:
+            def __init__(self, path):
+                self.path = path
+                self.reference = native_document(path)
+                self.inventory = invoke("read_docx", str(path), "native")
+                test.assertEqual(self.inventory, self.reference.inventory)
+            def resolve_native_locator(self, locator):
+                try:
+                    expected = self.reference.resolve_native_locator(locator)
+                except ValueError:
+                    with test.assertRaises(subprocess.CalledProcessError):
+                        invoke("resolve_native_locator", str(self.path), locator)
+                    raise
+                actual = invoke("resolve_native_locator", str(self.path), locator)
+                test.assertEqual(actual, expected)
+                return actual
+
+        for name, replacement in (("read_docx", read), ("prepare_docx_source", prepare),
+            ("native_evidence_errors", errors), ("NativeDocument", NativeDocument)):
+            patcher = patch.object(module, name, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
