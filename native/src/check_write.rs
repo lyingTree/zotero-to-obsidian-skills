@@ -17,7 +17,18 @@ pub(crate) fn no_link(p:&Path)->Result<()>{
     }
     Ok(())
 }
-pub(crate) fn lock_target(path:&Path)->Result<File>{
+#[derive(Debug)]
+pub(crate) struct TargetLock(File);
+impl Drop for TargetLock{
+    fn drop(&mut self){
+        // On Unix flock is attached to the open file description. A child
+        // spawned in another thread can briefly inherit it before exec;
+        // explicitly unlock at scope exit instead of waiting for that last
+        // descriptor to close. Still keep the stable lock file in place.
+        let _=FileExt::unlock(&self.0);
+    }
+}
+pub(crate) fn lock_target(path:&Path)->Result<TargetLock>{
     let file_name=path.file_name().context("ledger file name")?.to_string_lossy();
     let lock_path=path.with_file_name(format!(".{file_name}.z2o-lock"));
     match fs::symlink_metadata(&lock_path){
@@ -29,10 +40,15 @@ pub(crate) fn lock_target(path:&Path)->Result<File>{
     // deleting a lock file while another process opens it can split the lock.
     let file=OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&lock_path)?;
     no_link(&lock_path)?;
-    FileExt::try_lock_exclusive(&file).context("Another native process is updating this ledger")?;
-    Ok(file)
+    if let Err(e)=FileExt::try_lock_exclusive(&file){
+        if e.raw_os_error()==fs2::lock_contended_error().raw_os_error(){
+            return Err(e).context("Another native process is updating this ledger");
+        }
+        return Err(e).with_context(||format!("Cannot acquire native lock: {}",lock_path.display()));
+    }
+    Ok(TargetLock(file))
 }
-fn lock(path:&Path)->Result<(PathBuf,File)>{
+fn lock(path:&Path)->Result<(PathBuf,TargetLock)>{
     no_link(path)?;
     let path=files::canonical(path)?;
     let file=lock_target(&path)?;
@@ -297,4 +313,27 @@ pub fn record_file_checks(checks:&Path,report:&Path,opt:AuditOptions<'_>)->Resul
         replace(&p,&before,&ledger)?;
     }
     Ok(json!(decisions.iter().map(|d|d["id"].clone()).collect::<Vec<_>>()))
+}
+
+#[cfg(all(test,unix))]
+mod lock_tests{
+    use super::*;
+
+    #[test]
+    fn released_target_lock_does_not_wait_for_inherited_description_to_close(){
+        let temp=tempfile::tempdir().unwrap();
+        let path=temp.path().join("checks.json");
+        let holder=lock_target(&path).unwrap();
+        // dup shares the same open file description, just as a concurrent
+        // spawn/fork can before close-on-exec. A distinct writer still uses a
+        // separate open file description and must be rejected while live.
+        let inherited=holder.0.try_clone().unwrap();
+        let blocked=lock_target(&path).unwrap_err();
+        assert!(blocked.to_string().contains("Another native process"));
+        drop(holder);
+        let reopened=lock_target(&path).unwrap();
+        drop(inherited);
+        drop(reopened);
+        assert!(lock_target(&path).is_ok());
+    }
 }

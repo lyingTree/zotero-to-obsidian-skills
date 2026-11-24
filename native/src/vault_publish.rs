@@ -222,7 +222,7 @@ fn copy_resource(src:&Path,h:&str,dst:&Path)->Result<Value>{
     tmp.persist_noclobber(dst).map_err(|e|anyhow::anyhow!("Asset already exists or publication failed: {}",e.error))?;
     let b=check_ledger::bind_file(dst)?;ensure!(b["sha256"]==h,"Asset readback differs");Ok(b)
 }
-fn tx_lock(vault:&Path,backup:&Path)->Result<fs::File>{
+fn tx_lock(vault:&Path,backup:&Path)->Result<crate::check_write::TargetLock>{
     ensure!(!backup.starts_with(vault)&&!vault.starts_with(backup),"Use a separate existing backup root outside vault");
     crate::check_write::lock_target(&backup.join(format!("vault-{}",files::digest(path_text(vault)?.as_bytes()))))
 }
