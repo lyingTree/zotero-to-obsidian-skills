@@ -568,6 +568,27 @@ sheets:
         self.assertIn("CITATION_REFERENCE_TARGET", codes)
         self.assertIn("CITATION_MAPPING", codes)
 
+    def test_table_scalar_citations_keep_real_offsets_with_yaml_wrappers(self):
+        original = self.note.read_text(encoding="utf-8")
+        citation = "[Source 2024](<#^ref-1>)"
+        self.units.append({"id": "table-citation", "kind": "citation", "source": "main",
+                           "evidence": [self.evidence], "references": ["reference"]})
+        self.deliveries.append({"unit": "table-citation", "target": {"quote": citation}})
+        table = TABLE.replace("a: B", "a: '" + citation + "'")
+        variants = (
+            table,
+            table.replace("```rich-table\n", "```rich-table\n\n"),
+            table.replace("\n---\n", "\n--- # document wrapper\n"),
+            table.replace("\n---\n", "\n"),
+        )
+        for index, variant in enumerate(variants):
+            with self.subTest(variant=index):
+                self.note.write_text(original.replace(TABLE, variant), encoding="utf-8")
+                codes = self.codes()
+                self.assertNotIn("CITATION_MAPPING", codes)
+                self.assertNotIn("TABLE_CITATION_COVERAGE", codes)
+                self.assertNotIn("TABLE_CITATION_UNMAPPED", codes)
+
     def test_unmapped_output_citation_is_detected(self):
         self.units[:] = [item for item in self.units if item["id"] != "citation"]
         self.deliveries[:] = [item for item in self.deliveries if item["unit"] != "citation"]

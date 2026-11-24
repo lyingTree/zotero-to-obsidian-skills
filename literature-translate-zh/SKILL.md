@@ -7,11 +7,14 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 
 ## 必要输入
 
-- item.json、source.md、source-map.json、术语表。
+- item.json、实际源块文字及来源定位、术语表。完整任务可使用来源库存与产出队列；独立翻译任务可使用已有 source.md 和来源映射。
+- 复核已有候选时另带实际候选及其对应的 source-map.json；候选尚未生成时不依赖这份交付映射。
 - 读取[交接约定](../literature-zotero2obsidian/references/pipeline-contract.md)；涉及项目路径、模板、工具或阻断级别时读取[项目配置](../literature-zotero2obsidian/references/project-profile.md)。
-- 开始翻译前完整读取[逐段翻译复核操作](references/translation-review.md)。
+- 进入已有译文的逐段复核时完整读取[逐段翻译复核操作](references/translation-review.md)。
 
-逐段记录先用[待办入口](references/translation-review.md#逐段待办与范围计划)取得当前段落，再用 [ReviewWriter 短入口](references/translation-review.md#逐段短入口与增量保存)填写。它把明确的单项判断展开为完整台账，避免反复手写相同文件哈希与位置。先读[短调用的完整虚构示例](references/compact_review_example.py)，实际任务仍逐段依据自己的来源填写。
+从零生成全文时，先使用[逐块产出队列](../literature-zotero2obsidian/references/draft-queue.md)按实际来源写完整中文片段，直到全部范围内内容已产出并组装为候选；记录产出时发现的术语和来源疑点。此时不调用需要已有候选的 `next_review_task()`。
+
+候选存在后，逐段复核先用[待办入口](references/translation-review.md#逐段待办与范围计划)取得当前段落，再用 [ReviewWriter 短入口](references/translation-review.md#逐段短入口与增量保存)填写。它把明确的单项判断展开为完整台账，避免反复手写相同文件哈希与位置。需要填写时读[短调用的完整虚构示例](references/compact_review_example.py)，实际任务仍逐段依据自己的来源填写。
 
 ## 执行步骤
 
@@ -143,6 +146,10 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 `covered_units` 登记已完成术语核对的正文、章节、图题注、表格、题名和题头说明单元。全部相应单元完成后将 `review_status` 改为 `reviewed`。若没有未收录术语，用 `no_unlisted_reason` 记录实际检索依据，不以空列表代替核对。交付检查会绑定本次记录的文件哈希，但不会自动判定术语译义正确。
 
 ### 翻译复核记录
+
+复核方法段时保留原文对设备、传感器、测量方法和数据集来源的具体称呼。两处描述似乎冲突时，分别保留并按源定位登记疑点；不要用“数据”“点位”等更宽泛词替代特定的来源名称来消除冲突。
+
+成对或成组量值先逐个绑定其名称，再组织中文句子。例如原文依次给出中位数与均值时，中文若改成“均值与中位数”，数值也必须随各自名称对应。复核时分别核对每个数值、单位、对应对象与限定词，不能只核对同一组数字是否都出现。需要解释源内差异时，译注单独成引用块。
 
 使用[准备函数](scripts/prepare_translation_review.py)生成来源块骨架，或按同一结构手工记录。骨架不自动选择应译范围，不自动提取术语，不填写语义通过。完整操作、逐表达式定位、状态条件及各验收 ID 的 JSON 位置见[逐段翻译复核操作](references/translation-review.md)。
 

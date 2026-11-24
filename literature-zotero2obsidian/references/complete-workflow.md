@@ -2,7 +2,7 @@
 
 从 PDF、原生 DOCX 或两者的组合新建整篇笔记时，使用 `complete_workflow.py` 的完整入口。局部修复仍使用对应子技能。单独的 `validate_note` 或 `validate_delivery` 没有检查整套工作记录是否齐全，不能替代这里的收尾检查。
 
-执行顺序是：实际来源材料 → 来源块与阅读顺序 → 完整内容片段 → 候选组装 → 对源核对与记录 → 最终交付。`next_review_task()` 是已有译文的复核入口；尚无正文时，从[逐块产出队列](draft-queue.md)的 `DraftQueue.next_task()` 开始。
+执行顺序是：实际来源材料 → 来源块与阅读顺序 → 完整内容片段 → 候选组装 → 对源核对与记录 → 最终交付。初始化及每次恢复都使用 `resume_workflow(run_path)`。尚有内容未写时，它先返回[逐块产出队列](draft-queue.md)的当前动作；`next_review_task()` 是已有译文的复核入口。
 
 ## 结束条件
 
@@ -21,6 +21,7 @@
 
 ```python
 from pathlib import Path
+import json
 import sys
 
 TASK_ROOT = Path("/本次任务的绝对路径")
@@ -30,7 +31,7 @@ OUTPUT_ROOT = TASK_ROOT.joinpath("output")
 SCRIPTS = SKILLS_ROOT.joinpath("literature-zotero2obsidian", "scripts")
 sys.path.insert(0, str(SCRIPTS))
 
-from complete_workflow import initialize_workflow
+from complete_workflow import initialize_workflow, resume_workflow
 from prepare_source_inventory import progress_bar
 
 RUN_PATH = initialize_workflow(
@@ -47,9 +48,12 @@ RUN_PATH = initialize_workflow(
     translation_required=True,
     progress=progress_bar,
 )
+
+# 下一项是真实来源任务；先完成它，再回到同一恢复入口。
+print(json.dumps(resume_workflow(RUN_PATH), ensure_ascii=False, indent=2))
 ```
 
-没有 SI 时从两个映射中同时去掉对应来源。中文原文确实无需翻译时，将 `translation_required` 设为 `False`，并在语言分流记录中保存依据。初始化会保存来源材料、来源哈希、全量验收骨架及 `run.json`；它不会把任何内容判断填成通过。恢复任务时读取已有 `run.json`，不要重新初始化或覆盖旧记录。
+没有 SI 时从两个映射中同时去掉对应来源。中文原文确实无需翻译时，将 `translation_required` 设为 `False`，并在语言分流记录中保存依据。初始化会保存来源材料、来源哈希、全量验收骨架、产出队列及 `run.json`；`run.records.draft_queue` 指向该实际队列。它不会把任何内容判断填成通过。恢复任务时将已有 `run.json` 传给 `resume_workflow()`，不要重新初始化或覆盖旧记录。
 
 PDF 来源含实际页图和文字块；DOCX 来源含 `native_blocks`、`media_calls`、`native_media` 与 `native_issues`。DOCX 没有固定页码，不向 PDF 解析器传入 DOCX，也不填写虚构的 `page` 或 `bbox`。段落和表格按 XML 顺序定位，媒体按实际 relationship 绑定。一个逻辑图可以对应多次媒体调用；媒体文件名、relationship 编号和图号不是同一概念。
 
@@ -58,6 +62,10 @@ PDF 来源含实际页图和文字块；DOCX 来源含 `native_blocks`、`media_
 提供术语表时，初始化另存 `run.json.records.glossary_candidates` 指向的逐块检索线索。翻译每块前读取它的完整短语命中和核心词线索。词族行只提供原术语表的解释，不代表整个命中短语就是本次概念；按[术语检索步骤](../../literature-translate-zh/references/translation-review.md#自动取得检索线索)决定是否采用。原术语表保持不变。
 
 ## 中间阶段：按对象保存实际判断
+
+`resume_workflow()` 为只读入口，返回 `phase`、分项计数和一个 `next_action`。`draft` 阶段直接展示当前页或当前来源单元；不会在正文尚未写出时先展示全量收尾诊断。全部片段就绪而候选尚不存在时，返回 `assemble`；候选存在后返回现有完整检查中的一个具体文件目标。每次实际保存后重新调用，直到当前阶段没有可继续的本地缺项。完整诊断仍由 `inspect_workflow()` 保存，不删减任何验收目标。
+
+旧 `run.json` 没有队列指针时，恢复入口返回 `register_draft_queue`。先查看实际工作目录：存在旧队列时登记其真实路径，不存在时才从本次来源库存准备，再登记 `records.draft_queue`。入口不自动迁移、覆盖或清空旧队列。队列来源身份不符、源文件变化或片段被改写时保留实际异常并处理该文件，不能另建空队列掩盖问题。
 
 先按[逐块产出队列](draft-queue.md)确认阅读顺序并写内容片段。所有实际来源块都要登记到明确单元，或逐块说明排除理由；跨页的同一段可以合并，来源块身份仍各自保留。每个单元保存完整译文、原有引文和对应对象。下一项有尚未写入的正文时，继续该正文；摘要、结论、补充材料已经写出不表示整篇内容完成。
 
@@ -68,8 +76,8 @@ PDF 来源含实际页图和文字块；DOCX 来源含 `native_blocks`、`media_
 | 记录 | 在哪个阶段完成 | 核对目标 |
 |---|---|---|
 | `run.json.naming` | 来源题头核定后 | 拟用文件名有明确来源与变换依据 |
-| `source-map.json` | 主文提取后 | 主文每个块能回到来源 |
-| `si-map.json` | SI 提取后 | SI 每个对象能回到独立来源 |
+| `source-map.json` | 来源盘点、候选和交付位置均存在后 | 主文每个块能回到来源及实际候选 |
+| `si-map.json` | SI 盘点、候选和交付位置均存在后 | SI 每个对象能回到独立来源及实际候选 |
 | `link-map.json` | 链接组装后 | 每处调用能回到实际目标 |
 | `translation-review.json` | 逐段自核后 | 每个译文源块有独立核对记录 |
 | `checks.json` | 各阶段持续填写 | 每个验收 ID 有自己的判断 |
@@ -231,6 +239,8 @@ completed_records = require_completed_records(RUN_PATH, progress=progress_bar)
 ```
 
 这一入口使用与 `inspect_workflow()` 相同的验收范围。它不会补写任何状态，也不替代实际对源比较。
+
+`resume_workflow()` 提供下一项行动，`require_completed_records()` 拒绝给未齐全的记录返回就绪结果；两者都不能拦截助手的聊天最终答复。若宿主要强制续跑，必须另行实现任务派发和终止控制，不能把这里的 Python 异常称为宿主硬门。
 
 `WORKFLOW_RECORD_MISSING` 表示需要补对应记录。`WORKFLOW_CHECK_PENDING` 表示需要完成该单项目标。`WORKFLOW_MANIFEST_BINDING` 表示报告引用了另一份文件或旧版本。翻译记录中的 `TRN_PENDING`、`TRN_UNRESOLVED` 等逐项提示同样保留其具体目标位置，可据此回到对应段落或术语记录。先处理实际缺项，再运行收尾检查。
 

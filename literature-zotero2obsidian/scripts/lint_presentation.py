@@ -110,6 +110,7 @@ def _sibling(name: str):
 
 note_checks = _sibling("validate_note")
 delivery_checks = _sibling("validate_delivery")
+formatting = _sibling("format_helpers")
 
 
 def _replace_links(text: str, *, keep_labels: bool) -> str:
@@ -537,6 +538,64 @@ def _front_material_positions(events: list[tuple[str, int, str]]) -> list[Prompt
     return findings
 
 
+def _is_standalone_image(line: str) -> bool:
+    match = STANDALONE_IMAGE.fullmatch(line)
+    if match is None:
+        return False
+    if match["markdown"] is not None:
+        return True
+    target = match["wiki"].split("|", 1)[0].split("#", 1)[0]
+    return Path(target).suffix.lower() in IMAGE_SUFFIXES
+
+
+def _figure_block_prompts(events: list[tuple[str, int, str]]) -> list[Prompt]:
+    """Check visible image groups, including figures without printed numbers.
+
+    These remain source-review prompts: an image used as non-figure decoration
+    must be classified from its actual source, never given an invented caption.
+    """
+    findings = []
+    index = 0
+    while index < len(events):
+        kind, line, text = events[index]
+        if kind != "text" or not _is_standalone_image(text):
+            index += 1
+            continue
+        end = index
+        while end + 1 < len(events):
+            following = events[end + 1]
+            if following[0] != "text" or following[1] != events[end][1] + 1 or not _is_standalone_image(following[2]):
+                break
+            end += 1
+        cursor = end + 1
+        while cursor < len(events) and events[cursor][0] == "blank":
+            cursor += 1
+        caption = events[cursor] if cursor < len(events) else None
+        has_caption = caption is not None and caption[0] == "text" and formatting.starts_with_bold_source_label(caption[2])
+        if not has_caption:
+            findings.append(Prompt("BODY-C93", events[end][1], "FIGURE_CAPTION_MISSING", events[end][2],
+                                   "独占行图像组后没有题注；对照来源确认图件身份。文献图（含无编号图）紧接来源支持的粗体题注或标签，不编造说明。"))
+            findings.append(Prompt("LINK-C126", events[end][1], "FIGURE_ANCHOR_MISSING", events[end][2],
+                                   "图像组未形成图片、题注、独占行图锚的完整块；文献图的图锚不以是否有正文调用为前提。"))
+            index = end + 1
+            continue
+        if caption[1] != events[end][1] + 1:
+            findings.append(Prompt("BODY-C93", caption[1], "FIGURE_CAPTION_GAP", caption[2],
+                                   "所属题注紧接最后一行图片；图块内不留空行。"))
+        cursor += 1
+        while cursor < len(events) and events[cursor][0] == "blank":
+            cursor += 1
+        anchor = events[cursor] if cursor < len(events) else None
+        if anchor is None or anchor[0] != "anchor":
+            findings.append(Prompt("LINK-C126", caption[1], "FIGURE_ANCHOR_MISSING", caption[2],
+                                   "所属题注后缺独占一行的图锚；未编号图同样需要完整图块。"))
+        elif anchor[1] != caption[1] + 1:
+            findings.append(Prompt("LINK-C71", anchor[1], "FIGURE_ANCHOR_GAP", anchor[2],
+                                   "图锚紧接题注下一行，图块内不留空行。"))
+        index = end + 1
+    return findings
+
+
 def lint_presentation(text: str) -> list[Prompt]:
     """Return review prompts, including visible values in every Rich Table sheet.
 
@@ -664,24 +723,24 @@ def lint_presentation(text: str) -> list[Prompt]:
             rule = "BODY-C96" if caption["number"].lower().startswith("s") else "BODY-C95"
             findings.append(Prompt(rule, position + 1, "FIGURE_CAPTION_SPACE", line,
                                    "粗体图号标签闭合后保留模板中的空格，再接题注正文。"))
-        image_match = STANDALONE_IMAGE.fullmatch(line)
         # Wiki embeds can target PDFs, videos or Markdown blocks. Only an
         # actual image resource belongs to the standalone-figure rule.
-        image_target = image_match["wiki"].split("|", 1)[0].split("#", 1)[0] if image_match and image_match["wiki"] else ""
-        is_image = image_match and (image_match["markdown"] is not None
-                                   or Path(image_target).suffix.lower() in IMAGE_SUFFIXES)
-        if is_image and not raw.endswith("  "):
+        if _is_standalone_image(line) and not raw.endswith("  "):
             findings.append(Prompt("BODY-C92", position + 1, "IMAGE_HARD_BREAK", line.strip(),
                                    "图片独占行的末尾使用两个空格硬换行；所属题注紧接下一行。"))
         if re.fullmatch(r" {0,3}##\s+Zotero原条目(?:\s+#+)?\s*", _visible(line)) and last_visible != ("text", "---"):
             findings.append(Prompt("LINK-C120", position + 1, "ZOTERO_SEPARATOR_MISSING", line,
                                    "文献内容与末尾 Zotero 原条目标题之间应有独立的 --- 分隔线。"))
         findings.extend(_scan(line, position + 1))
+        if kind == "text" and re.search(r"译注\s*[:：]", _visible(line)) and not re.match(r"^ {0,3}>[ \t]+译注\s*[:：]", line):
+            findings.append(Prompt("BODY-C40", position + 1, "TRANSLATOR_NOTE_INLINE", line,
+                                   "核对显式译注标签；实际译注单独写为 > 译注：…，保留原文句子和说明内容，不静默删注。"))
         last_visible = (kind, line.strip())
     findings.extend(_heading_spacing(events))
     findings.extend(_paragraph_spacing(events))
     findings.extend(_letter_list_structure(events))
     findings.extend(_front_material_positions(events))
+    findings.extend(_figure_block_prompts(events))
     return list(dict.fromkeys(findings))
 
 

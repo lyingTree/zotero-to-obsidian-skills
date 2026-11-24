@@ -1507,15 +1507,10 @@ class _Audit:
                 continue
             body = self.table_visible[opening.end():opening.end() + closing.start()]
             payload = note_checks._rich_table_payload(body.splitlines())
-            body_lines = body.splitlines(keepends=True)
-            first, last = 0, len(body_lines)
-            while first < last and not body_lines[first].strip():
-                first += 1
-            while last > first and not body_lines[last - 1].strip():
-                last -= 1
-            if last - first >= 2 and body_lines[first].strip() == body_lines[last - 1].strip() == "---":
-                first += 1
-            payload_start = opening.end() + sum(map(len, body_lines[:first]))
+            # _rich_table_payload retains leading blank lines and the opening
+            # document marker. YAML node marks are relative to that full body;
+            # skipping the wrapper again shifts every visible scalar location.
+            payload_start = opening.end()
             try:
                 data = yaml.load(payload, Loader=note_checks._UniqueKeyLoader)
                 node = yaml.compose(payload, Loader=note_checks._UniqueKeyLoader)

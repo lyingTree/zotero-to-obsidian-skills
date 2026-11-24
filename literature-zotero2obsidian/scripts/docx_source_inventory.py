@@ -36,6 +36,11 @@ UNSUPPORTED = {
     "fldSimple": "field", "numPr": "generated_list_number",
     "AlternateContent": "alternate_content", "pict": "legacy_drawing",
 }
+_NON_CONTENT_MARKERS = frozenset(f"{{{W}}}{name}" for name in
+                                 ("bookmarkStart", "bookmarkEnd", "proofErr", "permStart", "permEnd"))
+_TABLE_PROPERTIES = frozenset({f"{{{W}}}tblPr", f"{{{W}}}tblGrid"})
+_ROW_PROPERTIES = frozenset({f"{{{W}}}trPr", f"{{{W}}}tblPrEx"})
+_CELL_PROPERTIES = frozenset({f"{{{W}}}tcPr"})
 
 
 def _local(tag: str) -> str:
@@ -198,6 +203,10 @@ def read_docx(path: Path, source_id: str, *, progress: Progress | None = None) -
                     chunks.append(value)
                     events.append({"kind": "text", "text": value, "locator": locator})
                     return
+                if current.tag == f"{{{W}}}noBreakHyphen":
+                    chunks.append("\u2011")
+                    events.append({"kind": "noBreakHyphen", "text": "\u2011", "locator": locator})
+                    return
                 if current.tag == f"{{{W}}}hyperlink":
                     relation_id = current.get(f"{{{R}}}id")
                     relationship = relation_map.get(relation_id)
@@ -262,13 +271,25 @@ def read_docx(path: Path, source_id: str, *, progress: Progress | None = None) -
                 blocks.append(base)
                 return
             if node.tag == f"{{{W}}}tbl":
-                rows, table_calls = [], []
+                rows, table_calls, unparsed = [], [], []
+
+                def pending_content(element, element_path, container, *, kind="table_content_container"):
+                    locator = _locator(element_path)
+                    pending = issue(kind, locator, block_id=block_id,
+                                    detail=f"Unsupported {_local(element.tag)} content in a {container}; inspect the original XML before resolving source coverage.")
+                    unparsed.append({"issue": pending, "container": container,
+                                     "locator": locator, "xml": ET.tostring(element, encoding="unicode")})
+
                 for row_index, row in enumerate(node):
                     if row.tag != f"{{{W}}}tr":
+                        if row.tag not in _TABLE_PROPERTIES and row.tag not in _NON_CONTENT_MARKERS:
+                            pending_content(row, (*position, row_index), "table")
                         continue
                     cells = []
                     for cell_index, cell in enumerate(row):
                         if cell.tag != f"{{{W}}}tc":
+                            if cell.tag not in _ROW_PROPERTIES and cell.tag not in _NON_CONTENT_MARKERS:
+                                pending_content(cell, (*position, row_index, cell_index), "row")
                             continue
                         cell_path = (*position, row_index, cell_index)
                         paragraphs = []
@@ -278,8 +299,9 @@ def read_docx(path: Path, source_id: str, *, progress: Progress | None = None) -
                                 paragraphs.append({"locator": _locator((*cell_path, child_index)), **item})
                                 table_calls.extend(item["media_calls"])
                             elif child.tag == f"{{{W}}}tbl":
-                                issue("nested_table", _locator((*cell_path, child_index)), block_id=block_id,
-                                      detail="Nested table content requires explicit inspection; it is not flattened into an inferred cell layout.")
+                                pending_content(child, (*cell_path, child_index), "cell", kind="nested_table")
+                            elif child.tag not in _CELL_PROPERTIES and child.tag not in _NON_CONTENT_MARKERS:
+                                pending_content(child, (*cell_path, child_index), "cell")
                         span = cell.find(f"{{{W}}}tcPr/{{{W}}}gridSpan")
                         merge = cell.find(f"{{{W}}}tcPr/{{{W}}}vMerge")
                         cells.append({"locator": _locator(cell_path), "paragraphs": paragraphs,
@@ -289,6 +311,8 @@ def read_docx(path: Path, source_id: str, *, progress: Progress | None = None) -
                     rows.append({"cells": cells})
                 base.update(kind="table", rows=rows, media_calls=table_calls,
                             text="\n".join("\t".join(cell["text"] for cell in row["cells"]) for row in rows))
+                if unparsed:
+                    base["unparsed_content"] = unparsed
                 blocks.append(base)
                 return
             issue("body_container", _locator(position), block_id=block_id,

@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
 
@@ -100,6 +101,91 @@ class NativeDocxTests(unittest.TestCase):
         self.assertEqual(block["rows"][0]["cells"][0]["grid_span"], "2")
         self.assertEqual(block["text"], "Joined heading\nx\t")
         self.assertEqual(result["media_calls"][0]["block_id"], block["id"])
+
+    def test_cell_content_control_keeps_an_explicit_pending_xml_record(self):
+        controlled = ('<w:sdt><w:sdtPr/><w:sdtContent>'
+                      + paragraph("The retained tracer concentration is 37 mg/L.")
+                      + image_call("rHidden") + '</w:sdtContent></w:sdt>')
+        original = make_docx(self.path, '<w:tbl><w:tr><w:tc>' + paragraph("Before.") + controlled
+                             + paragraph("After.") + '</w:tc></w:tr></w:tbl>',
+                             relationships=[image_relation("rHidden", "media/hidden.png")],
+                             media={"word/media/hidden.png": PNG})
+        source = native.read_docx(self.path, "si")
+        block = source["native_blocks"][0]
+        self.assertEqual(block["text"], "Before.\nAfter.")
+        pending = next(row for row in source["native_issues"] if row["kind"] == "table_content_container")
+        self.assertEqual(pending["status"], "pending")
+        self.assertEqual(pending["block_id"], block["id"])
+        raw = block["unparsed_content"][0]
+        self.assertEqual(raw["issue"], pending["id"])
+        self.assertEqual(raw["locator"], pending["locator"])
+        element = ET.fromstring(original)
+        for index in raw["locator"]["element_path"]:
+            element = element[index]
+        self.assertEqual(element.tag, f"{{{native.W}}}sdt")
+        self.assertEqual(raw["xml"], ET.tostring(element, encoding="unicode"))
+        self.assertIn("37 mg/L", raw["xml"])
+        self.assertIn("rHidden", raw["xml"])
+        self.assertTrue(any(row["kind"] == "unresolved_media_use" for row in source["native_issues"]))
+
+    def test_unknown_table_row_and_cell_containers_remain_pending(self):
+        sentence = paragraph("Do not silently omit this source content.")
+        cases = {
+            "table": '<w:tbl><w:customXml><w:tr><w:tc>' + sentence + '</w:tc></w:tr></w:customXml></w:tbl>',
+            "row": '<w:tbl><w:tr><w:sdt><w:sdtContent><w:tc>' + sentence + '</w:tc></w:sdtContent></w:sdt></w:tr></w:tbl>',
+            "cell": '<w:tbl><w:tr><w:tc><w:customXml>' + sentence + '</w:customXml></w:tc></w:tr></w:tbl>',
+        }
+        for container, body in cases.items():
+            with self.subTest(container=container):
+                make_docx(self.path, body)
+                source = native.read_docx(self.path, "si")
+                self.assertEqual(len(source["native_issues"]), 1)
+                issue = source["native_issues"][0]
+                self.assertEqual(issue["kind"], "table_content_container")
+                self.assertEqual(issue["status"], "pending")
+                record = source["native_blocks"][0]["unparsed_content"][0]
+                self.assertEqual(record["container"], container)
+                self.assertIn("Do not silently omit", record["xml"])
+
+    def test_table_properties_and_bookmarks_are_not_content_failures(self):
+        body = ('<w:tbl><w:tblPr/><w:tblGrid/><w:bookmarkStart w:id="1" w:name="table"/>'
+                '<w:tr><w:tblPrEx/><w:trPr/><w:bookmarkEnd w:id="1"/><w:tc><w:tcPr/>'
+                '<w:proofErr w:type="spellStart"/>' + paragraph("A complete ordinary cell.")
+                + '</w:tc></w:tr></w:tbl>')
+        make_docx(self.path, body)
+        source = native.read_docx(self.path, "si")
+        self.assertEqual(source["native_issues"], [])
+        self.assertEqual(source["native_blocks"][0]["text"], "A complete ordinary cell.")
+
+    def test_nonbreaking_hyphen_keeps_character_event_and_exact_xml_locator(self):
+        for left, right in (("4", "7 units"), ("ID", "17"), ("storm", "driven")):
+            with self.subTest(left=left, right=right):
+                original = make_docx(self.path, '<w:p><w:r><w:t>' + left
+                                     + '</w:t><w:noBreakHyphen/><w:t>' + right + '</w:t></w:r></w:p>')
+                source = native.read_docx(self.path, "si")
+                block = source["native_blocks"][0]
+                self.assertEqual(block["text"], left + "\u2011" + right)
+                self.assertEqual(source["native_issues"], [])
+                event = block["inline_content"][1]
+                self.assertEqual(event["kind"], "noBreakHyphen")
+                self.assertEqual(event["text"], "\u2011")
+                self.assertEqual(event["locator"], {"part": native.DOCUMENT_PART, "element_path": [0, 0, 0, 1]})
+                element = ET.fromstring(original)
+                for index in event["locator"]["element_path"]:
+                    element = element[index]
+                self.assertEqual(element.tag, f"{{{native.W}}}noBreakHyphen")
+                self.assertEqual(native.NativeDocument(self.path).resolve_native_locator(block["locator"]), left + "\u2011" + right)
+
+    def test_permission_range_markers_do_not_create_unparsed_table_content(self):
+        markers = '<w:permStart w:id="1" w:edGrp="everyone"/><w:permEnd w:id="1"/>'
+        body = ('<w:tbl>' + markers + '<w:tr>' + markers + '<w:tc>' + markers
+                + paragraph("Visible scientific content.") + '</w:tc></w:tr></w:tbl>')
+        make_docx(self.path, body)
+        source = native.read_docx(self.path, "si")
+        self.assertEqual(source["native_issues"], [])
+        block = source["native_blocks"][0]
+        self.assertEqual(block["text"], "Visible scientific content.")
+        self.assertNotIn("unparsed_content", block)
 
     def test_missing_external_and_traversal_relationships_are_explicit(self):
         make_docx(self.path, image_call("missing") + image_call("external") + image_call("escape"),

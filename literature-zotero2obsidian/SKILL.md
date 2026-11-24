@@ -9,21 +9,23 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，不审查应用界面，不要求点击交互、阅读视图、插件显示或原生缓存检查。
 
-完整生成任务先读[完整候选的开始与收尾](references/complete-workflow.md)，用 `initialize_workflow()` 建立实际来源材料与全量待核清单。该入口支持 PDF 与原生 DOCX 混合输入。接着使用[逐块产出队列](references/draft-queue.md)构建完整正文，再沿[分阶段执行路线](references/execution-plan.md)核对、排版及收尾。具体内容规则仍以对应子技能为准。
+完整生成任务先读[完整候选的开始与收尾](references/complete-workflow.md)，用 `initialize_workflow()` 建立实际来源材料、全量待核清单和已注册的产出队列。该入口支持 PDF 与原生 DOCX 混合输入。初始化后及每次保存实际进度后调用 `resume_workflow(run_path)`，按返回的唯一 `next_action` 继续[逐块产出](references/draft-queue.md)，再沿[分阶段执行路线](references/execution-plan.md)核对、排版及收尾。具体内容规则仍以对应子技能为准。
 
 ## 完整任务的完成入口
 
-1. 从实际来源库存建立[逐块产出队列](references/draft-queue.md)。
+1. 用 `resume_workflow(run_path)` 取得已注册[逐块产出队列](references/draft-queue.md)的当前动作。
 2. 按源页确认 PDF 的阅读顺序。
 3. 将同一语义段的来源块归入一个内容单元。
 4. 将当前单元的完整中文内容保存为片段。
-5. 持续处理队列中的下一项，直至范围内内容片段齐全。
+5. 保存当前动作后重新调用 `resume_workflow()`，直至范围内内容片段齐全。
 6. 按已确认的来源顺序组装候选。
 7. 使用[逐段复核入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)核对实际译文。
 8. 用 `record_decision_rows()` 保存已经核对的逐 ID 结果。
 9. 写最终完成报告前运行 `require_completed_records()`。
 
 内容产出与译文复核是两个入口：`DraftQueue.next_task()` 能在尚无候选时指出下一块实际来源；`next_review_task()` 需要已有候选和来源单元，用于后续核对。不能把后者当作从零写全文的任务队列。不要先只写摘要、结论后便进入最终报告；剩余正文是当前任务的一部分。
+
+统一恢复入口优先显示尚未写出的来源任务；只有片段齐全且候选存在后，才返回完整检查中的一个实际缺项。它不改写记录，也不能阻止聊天最终答复；其 `records_ready` 和 `draft_ready` 都不代表译义通过。原有全量收尾检查仍须完成。
 
 写片段时保留实际发现的术语、数值与来源疑点，候选固定后再绑定其最终位置。每段的独立目标仍分别判定。队列完成只说明登记的来源块已有片段或明确排除理由，不证明译义正确。遇到队列或收尾报告的本地缺项，继续处理该目标。记录数量较多不构成外部阻断；用户没有要求中止时，不因已经生成部分 Markdown 或已经花费一段时间而自行结束。
 

@@ -24,7 +24,11 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 
 Rich Table 使用 `literature-zotero2obsidian/scripts/format_helpers.py` 的 `build_rich_table_block(table_data, anchor=actual_anchor)` 生成完整数据块。`table_data` 来自已逐格核对的源表；显式提供 v2/v3、每张表的 `locked=True`、`theme="grid"`、完整 `columns` 与 `rows`。函数保留单元格、公式字符串、合并关系和锚 ID，生成块状 YAML 后读回比较；不要改用 `json.dumps()` 输出 flow 数组。表题中的“表N”保留纯文本，正文调用再链接到该表锚。
 
+每幅逻辑图使用[图块组装入口](references/figure-blocks.md)生成图片、图下题注和图锚，包含无编号图及图形摘要。源图只有类别标签时，题注保留该标签，不编造图号或说明。图上方的标题不能替代图下题注；没有正文调用也不省略图锚。
+
 候选组装后运行 `validate_note()` 与 `lint_presentation()`。列、行样式和题注自链的诊断分别处理。前置材料位置提示须回到来源核对：原文摘要前的亮点、图形摘要仍置于摘要前；摘要后直接进入正文。普通正文讨论“研究亮点”不据此移动。
+
+处理 `FIGURE_CAPTION_MISSING`、`FIGURE_ANCHOR_MISSING` 和图块间距提示时，先确认实际资源确属文献图。处理 `TRANSLATOR_NOTE_INLINE` 时保留原文及译注内容，将真正的译注单独写为 `> 译注：…`；普通正文讨论“译注”这个词不自动改写。
 
 ## 约束
 

@@ -2,6 +2,59 @@
 
 逐幅执行。复用图采用相同标准。每个 ID 单独记录结果及证据。
 
+## 先运行源页边界取证
+
+只有图像对象的 bbox 会遗漏 PDF 另外绘制的文字，甚至只截掉一个起首字母。开始裁剪时先把拟用的框交给 `inspect_crop_boundaries(...)`；它读取来源 PDF 的文字绘制记录，逐边列出**与当前框相交、但有部分内容留在框外的文字**，并生成能看到框外区域的上下文图。无需先自填四边通过状态。
+
+将下面内容保存为自己的工作脚本，并让 `pdf_image_objects.py` 所在的 `scripts` 目录可导入。页码和候选框从本次源页或实际对象索引读取；这里不预填任何论文坐标。
+
+```python
+import json
+from pathlib import Path
+
+from pdf_image_objects import PDF_BBOX_COORDINATES, inspect_crop_boundaries
+
+WORK = Path("work")
+SOURCE_ID = "main"
+PAGE_NUMBER: int | None = None
+CANDIDATE_BBOX: list[float] | None = None
+
+if PAGE_NUMBER is None or CANDIDATE_BBOX is None:
+    raise ValueError("从本次来源填写页码与未旋转 PDF 点坐标的候选框")
+
+inventory = json.loads(WORK.joinpath("source-inventory.json").read_text(encoding="utf-8"))
+source = next(row for row in inventory["sources"] if row["id"] == SOURCE_ID)
+check = inspect_crop_boundaries(
+    Path(source["path"]),
+    page_number=PAGE_NUMBER,
+    bbox=CANDIDATE_BBOX,
+    coordinate_system=PDF_BBOX_COORDINATES,
+    context_destination=WORK.joinpath("candidate-context.png"),
+    expected_source_sha256=source["sha256"],
+)
+with WORK.joinpath("candidate-boundaries.json").open("x", encoding="utf-8") as stream:
+    json.dump(check, stream, ensure_ascii=False, indent=2)
+
+print(json.dumps({"edges": check["edges"], "suggested_bbox": check["suggested_bbox"],
+                  "context": check["context"]}, ensure_ascii=False, indent=2))
+```
+
+先看返回记录中的 `edges`，再打开 `context.asset.path` 和 `context.annotated_asset.path`：前者保留原样源页像素，后者用**红框表示当前裁框、绿框表示尚未采用的建议框**。上下文默认向外扩 36 pt；检测到较长的跨界文字时，还会扩到能显示该文字的范围，受源页边界限制。`context.page_to_pixel_transform` 明确记录未旋转 PDF 坐标到该上下文图像素的变换，旋转页面也适用。框已覆盖整页时，`outside_crop_pt` 为零，表示源页之外没有可提供的内容。
+
+| 返回字段 | 用途与判断边界 |
+| --- | --- |
+| `edges[边].crossing_text` | 真实提取文字、文字 bbox、绘制顺序、字号、向外伸出多少点，以及被排除的字符位置。`boundary_crossing_characters` 专门列出字符自身被裁框切过的情况。 |
+| `edges[边].nearby_external_text` | 附近完整位于框外的文字，仅供复核其是否属于图件；不会自动并入建议框。 |
+| `suggested_bbox` | 当前框与跨界文字包围框的并集，仅在跨界边增加 2 pt，限制在页面内。无跨界文字时为 `null`；它不是已确认的实际图框。 |
+| `text_extraction` | 提取方式、隐形文字排除数量和未决错误。不可见文字模式、零透明度文字不当作可见文字线索。 |
+| `visual_review` | 始终保留 `pending` / `not_assessed`；没有检测到跨界文字也不会自动通过。 |
+
+这些文字框依据字符几何与字号，不是精确的可见笔画轮廓；裁切路径、遮挡及混合效果可能进一步改变文字的实际显示。文字按基线和定位间隔分成几何连续段，不能据此推断其语义角色。**转成矢量轮廓的文字、图片中的文字，以及未能提取的标注，仍必须查看完整源页。**完整外置的面板号或轴标题可能属于图件，附近正文也可能不属于；工具保留二者为复核线索，不能替人判断。
+
+已使用 `render_page_region(...)` 的脚本会自动获得同样的 `record["boundary_check"]`，检查的是**实际输出框 `rendered_bbox`，包含调用者设置的安全边距**。默认在最终 PNG 旁生成 `文件名-context.png` 与 `文件名-context-boundaries.png`，也可显式传入 `context_destination`。函数保持原来的裁剪坐标和边距，不自动采用 `suggested_bbox`。发现风险后，在上下文和完整源页上确认归属，选择新框，用新文件名重新渲染并复核。
+
+来源 PDF 和所有上下文图片均绑定 SHA-256。来源哈希变化会拒绝操作；相同输出允许复用，不同内容不能覆盖已有文件。建议框、上下文和返回记录都是来源取证，四边检查及 FIG-A 验收仍需记录实际观察。
+
 ## 定位与提取约束
 
 - [FIG-C01] 按图号确认来源附件。
@@ -148,7 +201,7 @@ PDF Form 的 BBox 可用任意一对对角点表示，工具先规范化坐标�
 
 PDF 中存在旋转、镜像、斜切或非等比显示时，独立原编码图片可能改变图件的显示方式，导出函数也会明确要求页面渲染。`render_page_region(...)` 的输入仍使用未旋转 PDF 点坐标，输出图片保留源页实际显示方向。
 
-当图由多个对象组成，或独立导出不能保留 PDF 的显示效果时，先在完整源页上确定全部图件内容。以完整对象 bbox 为起点；对象外仍有属于图件的标注时，扩展到这些标注的实际边界。然后使用 `render_page_region(...)` 渲染已经确认的页面范围。函数要求明确的未旋转 PDF 点坐标，默认向四周各加 6 pt 安全边距，实际边距受页面边界限制并逐边登记。这个默认值只是起点，不能代替目视核对。
+当图由多个对象组成，或独立导出不能保留 PDF 的显示效果时，先按本文开头运行边界取证，并在完整源页上确定全部图件内容。以完整对象 bbox 为起点；对象外仍有属于图件的标注时，扩展到这些标注的实际边界。然后使用 `render_page_region(...)` 渲染已经确认的页面范围。函数要求明确的未旋转 PDF 点坐标，默认向四周各加 6 pt 安全边距，实际边距受页面边界限制并逐边登记。这个默认值只是起点，不能代替目视核对；返回的 `boundary_check` 会对实际输出范围继续做来源检查。
 
 ```python
 from pdf_image_objects import PDF_BBOX_COORDINATES, render_page_region
@@ -176,7 +229,7 @@ record = render_page_region(
 3. **下边缘**：沿整条下边缘核对下方刻度、轴标题、脚标及图内表格的末行，确认底部没有被裁掉。
 4. **左边缘**：沿整条左边缘核对左侧刻度、单位、轴标题及线条起点，确认左侧要素完整保留。
 
-发现线条、字符或面板在边缘被截断时，依据源页扩展该边，重新输出并重新检查受影响的边。边距不足时继续扩展；加入了相邻正文或题注时，在保留图件全部要素的前提下修正边界。`render_page_region` 的 `edge_reviews` 为四条边各留一个 `pending` 记录，作为提取时的创建记录保留。实际比较后的观察统一写入最终 `figure-reviews.json`，不需要修改这份历史提取记录。核对依据必须能看到裁框外的源内容，只有裁框内的像素比较无法发现被排除的部分。
+发现线条、字符或面板在边缘被截断时，依据源页扩展该边，重新输出并重新检查受影响的边。边距不足时继续扩展；加入了相邻正文或题注时，在保留图件全部要素的前提下修正边界。`render_page_region` 的 `edge_reviews` 为四条边各留一个 `pending` 记录，作为提取时的创建记录保留；`boundary_check.edges` 则保存工具从源页读取的跨界文字和外置线索，二者不可相互替代。实际比较后的观察统一写入最终 `figure-reviews.json`，不需要修改这份历史提取记录。核对依据必须能看到裁框外的源内容，只有裁框内的像素比较无法发现被排除的部分。
 
 四边检查后继续执行现有 FIG-A 项，核对面板、文字、轴线、刻度、单位、图例、色标及图内表格。将最终输出文件的哈希绑定到逐图台账；任何后续修改按修复后的图片重新核对。
 

@@ -23,6 +23,7 @@ _LINK_AMBIGUOUS = frozenset("[]#^|")
 _TOKEN = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\Z")
 _ANCHOR_TOKEN = re.compile(r"[A-Za-z0-9]+\Z")
 _SHA256 = re.compile(r"[0-9a-fA-F]{64}\Z")
+_BOLD_SOURCE_LABEL = re.compile(r"^ {0,3}\*\*(?:\\[^\r\n]|[^*\\\r\n])+\*\*")
 _RESERVED = frozenset({"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
     f"{prefix}{number}" for prefix in ("COM", "LPT") for number in "123456789¹²³"
 })
@@ -580,6 +581,50 @@ def build_rich_table_block(
     fence = "`" * max(3, longest + 1)
     block = f"{fence}rich-table\n{payload}{fence}\n^{anchor.removeprefix('^')}\n"
     return block if newline == "\n" else block.replace("\n", newline)
+
+
+def starts_with_bold_source_label(text: str) -> bool:
+    """Recognize an explicit bold label, including escaped literal punctuation."""
+    return isinstance(text, str) and _BOLD_SOURCE_LABEL.match(text) is not None
+
+
+def build_figure_block(
+    images: Sequence[Mapping[str, str]], *, caption: str, anchor: str, newline: str = "\n",
+) -> str:
+    """Build one contiguous image/caption/anchor block from explicit content.
+
+    Unnumbered figures use a source-supported label supplied in caption. The
+    helper invents neither a figure number nor descriptive caption text and
+    does not inspect image bytes or certify source completeness.
+    """
+    if isinstance(images, (str, bytes)) or not isinstance(images, Sequence) or not images:
+        raise ValueError("images must be a nonempty sequence of target/alt mappings")
+    if not isinstance(anchor, str) or not re.fullmatch(r"\^?[A-Za-z0-9-]+", anchor):
+        raise ValueError("anchor must be an explicit valid block ID")
+    if newline not in {"\n", "\r\n"}:
+        raise ValueError("newline must be LF or CRLF")
+    if not isinstance(caption, str) or caption != caption.strip() or "\n" in caption or "\r" in caption:
+        raise ValueError("caption must be one explicitly supplied Markdown line")
+    if not starts_with_bold_source_label(caption):
+        raise ValueError("caption must start with its explicit bold source label")
+    lines = []
+    for item in images:
+        if not isinstance(item, Mapping) or set(item) != {"target", "alt"}:
+            raise ValueError("each image must contain exactly target and alt")
+        target = _text(item["target"], "image target")
+        alt = _text(item["alt"], "image alt", allow_empty=True)
+        if any(char in target for char in "<>\r\n") or target != target.strip():
+            raise ValueError("supply an unwrapped single-line image target")
+        if any(char in alt for char in "\r\n"):
+            raise ValueError("image alt must be one line")
+        escaped_alt = alt.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]").replace("&", "&amp;")
+        # Inputs are literal resource paths. Preserve entity-like names and
+        # URI punctuation after Markdown and URL decoding by the consumer.
+        escaped_target = (target.replace("%", "%25").replace("#", "%23").replace("?", "%3F")
+                          .replace("\\", "\\\\").replace("&", "&amp;"))
+        lines.append(f"![{escaped_alt}](<{escaped_target}>)  ")
+    lines.extend((caption, "^" + anchor.removeprefix("^")))
+    return newline.join(lines) + newline
 
 
 def plan_supplement_figure_caption(

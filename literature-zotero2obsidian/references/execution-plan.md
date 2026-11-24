@@ -8,16 +8,18 @@
 |---|---|---|---|
 | 0 范围 | 确认实际输入与输出范围 | run.json、checks.json 待填骨架 | [项目配置](project-profile.md) |
 | 1 来源 | 建立每份来源的实际材料 | source-inventory.json、PDF页图、DOCX原生块与媒体 | [来源索引说明](delivery-checks.md) |
-| 2 盘点 | 按实际阅读顺序登记内容单元 | 产出队列、source-map.json、si-map.json | [逐块产出](draft-queue.md) |
+| 2 盘点 | 按实际阅读顺序登记内容单元 | 来源清单、产出队列及来源分组 | [逐块产出](draft-queue.md) |
 | 3 译文 | 将每个单元的完整中文内容落盘 | 来源绑定的片段、translated.md、si.md | [翻译](../../literature-translate-zh/SKILL.md) |
 | 4 结构 | 组装题头与正文对象 | drafts/06 至 08 | [正文排版](../../literature-body-format/SKILL.md) |
-| 5 链接 | 按来源作用域连接对象 | drafts/09、link-map.json | [篇内链接](../../literature-internal-links/SKILL.md) |
+| 5 链接 | 按来源作用域连接对象并绑定候选位置 | drafts/09、source-map.json、si-map.json、link-map.json | [篇内链接](../../literature-internal-links/SKILL.md) |
 | 6 交付 | 固定最终候选与资源路径 | final.md、delivery-manifest.json、台账文件绑定 | [自动检查](automated-validation.md) |
 | 7 对源 | 逐页核对最终候选 | checks.json 逐验收 ID 的实际结论与证据 | [逐篇验收](acceptance.md) |
 
 ## 逐项台账贯穿各阶段
 
 完整 PDF/DOCX 任务先调用[完整流程入口](complete-workflow.md)的 `initialize_workflow()`，它保存实际来源材料并调用 [`check_records.prepare_check_records(...)`](../scripts/check_records.py)，从实际技能文件生成全量 `catalog` 与待填 `checks`。默认待填集合覆盖各技能及 references 中全部 `A` 编号验收；追踪约束时使用 `additional_ids` 明确加入，或选择 `rule_selection="all"`。每个验收 ID 从 `not_verified` 开始，不因阶段结束而整体转为通过。初始化已经生成的来源材料直接复用，不重复调用 `prepare_sources()` 覆盖。
+
+初始化同时注册真实产出队列。阶段2与3用 `resume_workflow(run_path)` 持续取得当前页或当前来源单元；原始来源定位在此时保存，绑定最终候选的三份交付映射待候选存在后再生成。全量台账仍保留，但不能把它当作尚无译文时的产出任务菜单。
 
 来源文件从准备时绑定实际哈希。最初没有候选时可暂不传候选路径；在阶段 6 前，把已存在的最终候选用 `bind_file()` 得到的路径和哈希填入 `bindings.candidates`。缺少候选绑定时校验会诊断，但这不禁止继续生成候选。每次候选变化都重新核验受影响记录，不通过更新哈希掩盖旧证据失效。已有台账默认不会被 `prepare_check_records()` 覆盖；需要重新生成时先保留旧版本及其实际结论。
 

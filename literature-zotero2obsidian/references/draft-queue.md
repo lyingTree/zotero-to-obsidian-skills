@@ -11,7 +11,7 @@
 
 ## 先产出当前内容
 
-完整任务在来源初始化后使用 `draft_queue.py`。它回答“下一块还没有写出的内容是什么”。`next_review_task()` 则用于已有译稿的语义复核，不负责从零生成正文。
+完整任务由 `initialize_workflow()` 创建并注册 `draft_queue.py` 的真实来源队列。使用 `resume_workflow(run_path)` 取得当前动作；内容尚未齐全时，它调用 `DraftQueue.next_task()`，回答“下一块还没有写出的内容是什么”。`next_review_task()` 则用于已有译稿的语义复核，不负责从零生成正文。
 
 逐页读取来源，按实际阅读顺序分组，每写完一个语义单元便保存其 Markdown 片段，再继续下一单元。一个单元可以跨文字块、跨页；不要把排版碎片当成独立段落翻译。保留来源中的引文、数值、条件和限定语，不用摘要代替未处理段落。来源支持的本地内容尚未完成时，保存进度后继续，不以一份“部分稿执行报告”替代剩余产出。
 
@@ -19,7 +19,7 @@
 
 ## 最短脚本入口
 
-将下面内容保存为本次工作目录里的 Python 脚本。只需填写现有 `run.json` 的实际绝对路径。再次运行时恢复已有队列，不重复初始化。
+将下面内容保存为本次工作目录里的 Python 脚本。只需填写现有 `run.json` 的实际绝对路径。再次运行时读取已有队列，不重复初始化。
 
 ```python
 from pathlib import Path
@@ -33,18 +33,22 @@ scripts = Path(run["config"]["skills_root"]).joinpath(
     "literature-zotero2obsidian", "scripts")
 sys.path.insert(0, str(scripts))
 
-from draft_queue import DraftQueue, prepare_draft_queue
+from complete_workflow import resume_workflow
 
-queue_path = work.joinpath("draft-queue.json")
-if not queue_path.exists():
-    prepare_draft_queue(Path(run["records"]["source_inventory"]), queue_path)
-
-queue = DraftQueue.open(queue_path)
-task = queue.next_task()
-print(json.dumps(task, ensure_ascii=False, indent=2))
+state = resume_workflow(RUN_PATH)
+task = state["next_action"]
+print(json.dumps(state, ensure_ascii=False, indent=2))
 ```
 
-该脚本显示当前真实来源及下一步，不生成译文。每完成下面的一次实际动作，重新读取 `next_task()`。不要循环给每个块填相同文本、同一个通过状态或通用排除理由。
+该脚本显示当前真实来源及下一步，不生成译文。进入 `draft` 阶段后，在调用脚本中打开已注册队列，再执行对应的实际观察或写入：
+
+```python
+from draft_queue import DraftQueue
+
+queue = DraftQueue.open(Path(run["records"]["draft_queue"]))
+```
+
+每完成下面的一次实际动作，重新调用 `resume_workflow(RUN_PATH)`。不要循环给每个块填相同文本、同一个通过状态或通用排除理由。旧运行记录返回 `register_draft_queue` 时，先按[旧队列恢复说明](complete-workflow.md#中间阶段按对象保存实际判断)登记真实队列路径；不要清空旧进度。
 
 ## 按当前任务继续
 
@@ -108,7 +112,7 @@ queue.group(
     reason=actual_paragraph_boundary_observation,
 )
 queue.write_unit(actual_unit_id, actual_complete_markdown)
-print(json.dumps(queue.next_task(), ensure_ascii=False, indent=2))
+print(json.dumps(resume_workflow(RUN_PATH), ensure_ascii=False, indent=2))
 ```
 
 同一源块不能被两个单元重复使用，不能同时分组和排除，不把主文与补充文件的源块混成一个单元。题名、正文、题注、书目、表格和公式根据它们各自的内容保存。生成表格时使用 `format_helpers` 中的实际 Rich Table 序列化入口；图像使用实际提取资源；公式按可见源文转录。

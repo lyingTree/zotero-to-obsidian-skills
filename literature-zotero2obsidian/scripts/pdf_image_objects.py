@@ -18,7 +18,7 @@ import re
 from typing import Callable, Mapping
 
 import fitz
-from PIL import Image
+from PIL import Image, ImageDraw
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 from pypdf.generic import ContentStream, DictionaryObject, IndirectObject
@@ -41,6 +41,14 @@ Progress = Callable[[int, int, str], None]
 REVIEW_BOUNDARY = (
     "A complete image object can omit figure content drawn by other PDF objects. "
     "Compare the source page and final asset; object extraction is not figure acceptance."
+)
+CROP_EDGES = ("top", "right", "bottom", "left")
+BOUNDARY_LIMITATIONS = (
+    "Text bounds and font metrics are geometric clues, not an identified figure boundary.",
+    "Invisible text rendering modes and zero-opacity text are excluded; clipping, occlusion, "
+    "blend modes and the actual ink of each glyph still require visual comparison.",
+    "Outlined/vector lettering and raster text may not be extractable. Always inspect the full source page.",
+    "Complete external text is only a review clue and is never added to the suggested bbox.",
 )
 
 
@@ -589,24 +597,11 @@ def export_image_object(source_pdf: Path, *, page_number: int, image_xref: int,
     }
 
 
-def render_page_region(source_pdf: Path, *, page_number: int, bbox: list[float],
-                       coordinate_system: Mapping[str, str], destination: Path,
-                       margin_pt: float = 6.0, dpi: int = 300,
-                       expected_source_sha256: str | None = None,
-                       progress: Progress | None = progress_bar) -> dict:
-    """Render a reviewed region with safety margin and pending four-edge checks.
-
-    This applies PDF masks, clipping and page graphics state. Input coordinates
-    are unrotated; the output retains the source page's display orientation.
-    Matching pixels inside this crop says nothing
-    about content outside it; all four source boundaries still require review.
-    """
+def _validate_region(bbox: list[float], coordinate_system: Mapping[str, str], dpi: int) -> None:
     if coordinate_system != PDF_BBOX_COORDINATES:
         raise ValueError("Declare unrotated PDF-point coordinates explicitly")
     if type(dpi) is not int or not 72 <= dpi <= 1200:
         raise ValueError("dpi must be an integer between 72 and 1200")
-    if type(margin_pt) not in (int, float) or not math.isfinite(margin_pt) or margin_pt < 0:
-        raise ValueError("margin_pt must be a finite nonnegative number")
     if not isinstance(bbox, list) or len(bbox) != 4 or any(type(v) not in (int, float) for v in bbox):
         raise ValueError("bbox must contain four finite PDF-point numbers")
     try:
@@ -615,26 +610,308 @@ def render_page_region(source_pdf: Path, *, page_number: int, bbox: list[float],
         finite = False
     if not finite:
         raise ValueError("bbox must contain four finite PDF-point numbers")
+
+
+def _validate_margin(value: float, name: str, *, positive: bool = False) -> None:
+    try:
+        valid = type(value) in (int, float) and math.isfinite(value) and (value > 0 if positive else value >= 0)
+    except OverflowError:
+        valid = False
+    if not valid:
+        qualifier = "positive" if positive else "nonnegative"
+        raise ValueError(f"{name} must be a finite {qualifier} number")
+
+
+def _crop_rectangle(bbox: list[float], geometry: dict) -> tuple[fitz.Rect, fitz.Rect]:
+    bounds, rectangle = fitz.Rect(geometry["page_bounds"]), fitz.Rect(bbox)
+    if not rectangle.is_valid or rectangle.is_empty or not bounds.contains(rectangle):
+        raise ValueError("bbox must be nonempty and fully inside the unrotated page")
+    return bounds, rectangle
+
+
+def _render_pixels(page, clip: fitz.Rect, dpi: int) -> tuple[fitz.Pixmap, fitz.Matrix]:
+    """Render without changing source bytes; return the exact page-to-pixel map."""
+    rotation = page.rotation
+    try:
+        if rotation:
+            page.set_rotation(0)
+        matrix = fitz.Matrix(dpi / 72, dpi / 72).prerotate(rotation)
+        pixels = page.get_pixmap(matrix=matrix, clip=clip, colorspace=fitz.csRGB, alpha=False)
+        pixels.set_dpi(dpi, dpi)
+    finally:
+        if rotation:
+            page.set_rotation(rotation)
+    return pixels, matrix * fitz.Matrix(1, 0, 0, 1, -pixels.x, -pixels.y)
+
+
+def _outward_extent(rectangle: fitz.Rect, outside: fitz.Rect) -> dict[str, float]:
+    return {"left": max(0.0, rectangle.x0 - outside.x0),
+            "top": max(0.0, rectangle.y0 - outside.y0),
+            "right": max(0.0, outside.x1 - rectangle.x1),
+            "bottom": max(0.0, outside.y1 - rectangle.y1)}
+
+
+def _text_runs(span: dict):
+    """Split one paint span at changed baselines or large positioning jumps.
+
+    A PDF paint span may contain several unrelated lines. Keeping its enclosing
+    bbox would incorrectly treat those complete external lines as cut text.
+    Runs remain geometric evidence; this does not infer words or figure roles.
+    """
+    direction = span["dir"]
+    dx, dy = float(direction[0]), float(direction[1])
+    size = abs(float(span["size"]))
+    gap_limit = max(size * 2, abs(float(span["spacewidth"])) * 4, 1.0)
+    baseline_tolerance = max(0.1, size * 0.05)
+    run = []
+    previous = None
+    for character in span["chars"]:
+        codepoint, _, origin, bbox = character
+        rectangle = fitz.Rect(bbox)
+        values = (*origin, *rectangle)
+        if not all(math.isfinite(value) for value in values) or not rectangle.is_valid:
+            raise ValueError("Invalid text character geometry")
+        text = chr(codepoint)
+        if previous is not None:
+            px, py = origin[0] - previous["origin"][0], origin[1] - previous["origin"][1]
+            along, across = px * dx + py * dy, -px * dy + py * dx
+            previous_box = fitz.Rect(previous["bbox"])
+            advance = abs(dx) * previous_box.width + abs(dy) * previous_box.height
+            if abs(across) > baseline_tolerance or along < -baseline_tolerance or along - advance > gap_limit:
+                if run:
+                    yield run
+                run = []
+        item = {"text": text, "bbox": list(rectangle), "origin": list(origin)}
+        run.append(item)
+        previous = item
+    if run:
+        yield run
+
+
+def _painted_text(page, bounds: fitz.Rect, search: fitz.Rect, progress: Progress | None) -> tuple[list[dict], dict]:
+    """Use paint records, excluding invisible OCR and zero-opacity text."""
+    extraction = {"method": "pymupdf_texttrace", "status": "available", "issues": [],
+                  "paint_spans": 0, "ignored_invisible_spans": 0, "runs_in_context": 0}
+    if progress:
+        progress(0, 1, "read PDF text paint records")
+    rotation = page.rotation
+    try:
+        spans = page.get_texttrace()
+    except (ValueError, RuntimeError) as error:
+        extraction.update(status="unavailable", issues=[{"code": "TEXT_TRACE_UNAVAILABLE", "reason": str(error)}])
+        return [], extraction
+    finally:
+        # Some renderer failures can occur after its temporary derotation.
+        if page.rotation != rotation:
+            page.set_rotation(rotation)
+    extraction["paint_spans"] = len(spans)
+    rows, seen = [], set()
+    for index, span in enumerate(spans):
+        if progress and index % PROGRESS_INTERVAL == 0:
+            progress(index, len(spans), "inspect PDF text paint records")
+        try:
+            if span["type"] == 3 or float(span["opacity"]) <= 0:
+                extraction["ignored_invisible_spans"] += 1
+                continue
+            if span["type"] not in (0, 1):
+                raise ValueError("Unrecognized text painting mode")
+            if not fitz.Rect(span["bbox"]).intersects(search):
+                continue
+            for run in _text_runs(span):
+                characters = [char for char in run if not char["text"].isspace()
+                              and fitz.Rect(char["bbox"]).intersects(bounds)]
+                if not characters:
+                    continue
+                rectangle = fitz.Rect(characters[0]["bbox"])
+                for character in characters[1:]:
+                    rectangle.include_rect(character["bbox"])
+                visible_box = rectangle & bounds
+                if not visible_box.intersects(search):
+                    continue
+                text = "".join(char["text"] for char in run).strip()
+                key = (text, tuple(rectangle))
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({"text": text, "bbox": list(rectangle), "page_clipped_bbox": list(visible_box),
+                             "font": span["font"], "font_size_pt": span["size"],
+                             "direction": list(span["dir"]), "paint_sequence": span["seqno"],
+                             "paint_type": span["type"], "opacity": span["opacity"],
+                             "characters": characters})
+        except (ValueError, TypeError, KeyError, IndexError, OverflowError) as error:
+            extraction["issues"].append({"code": "TEXT_SPAN_UNRESOLVED", "span_index": index,
+                                         "reason": f"{type(error).__name__}: {error}"})
+    if progress:
+        progress(len(spans), len(spans), "inspect PDF text paint records")
+    extraction["runs_in_context"] = len(rows)
+    if extraction["issues"]:
+        extraction["status"] = "partial"
+    return rows, extraction
+
+
+def _external_edges(rectangle: fitz.Rect, external: fitz.Rect) -> list[str]:
+    """Assign outside clues to the sides they face, including corner clues."""
+    positions = {"top": external.y1 <= rectangle.y0, "right": external.x0 >= rectangle.x1,
+                 "bottom": external.y0 >= rectangle.y1, "left": external.x1 <= rectangle.x0}
+    return [edge for edge in CROP_EDGES if positions[edge]]
+
+
+def _boundary_evidence(page, *, source: dict, page_number: int, rectangle: fitz.Rect,
+                       geometry: dict, context_destination: Path, context_margin_pt: float,
+                       dpi: int, progress: Progress | None) -> dict:
+    bounds = fitz.Rect(geometry["page_bounds"])
+    search = (rectangle + (-context_margin_pt, -context_margin_pt, context_margin_pt, context_margin_pt)) & bounds
+    rows, extraction = _painted_text(page, bounds, search, progress)
+    edges = {edge: {"status": "no_crossing_text_detected", "crossing_text": [],
+                    "nearby_external_text": [], "hint": "Inspect the source context and full page for non-text content."}
+             for edge in CROP_EDGES}
+    crossing = []
+    suggested = fitz.Rect(rectangle)
+    for row in rows:
+        characters = row.pop("characters")
+        text_box = fitz.Rect(row["page_clipped_bbox"])
+        intersects_character_box = any(fitz.Rect(char["bbox"]).intersects(rectangle) for char in characters)
+        if not intersects_character_box:
+            for edge in _external_edges(rectangle, text_box):
+                edges[edge]["nearby_external_text"].append(row)
+            continue
+        if rectangle.contains(text_box):
+            continue
+        extent = _outward_extent(rectangle, text_box)
+        affected = [edge for edge in CROP_EDGES if extent[edge] > 0]
+        row.update(edges=affected, outward_extent_pt={edge: extent[edge] for edge in affected},
+                   excluded_characters=[char for char in characters if not rectangle.contains(fitz.Rect(char["bbox"]) & bounds)],
+                   boundary_crossing_characters=[char for char in characters
+                                                 if fitz.Rect(char["bbox"]).intersects(rectangle)
+                                                 and not rectangle.contains(fitz.Rect(char["bbox"]) & bounds)])
+        crossing.append(row)
+        suggested.include_rect(text_box)
+        for edge in affected:
+            edges[edge]["status"] = "crossing_text_detected"
+            edges[edge]["crossing_text"].append(row)
+            edges[edge]["hint"] = (
+                f"The crop excludes part of a painted text run at its {edge} edge. "
+                "Compare the actual lettering in the context image, then choose a new bbox if it belongs to the figure."
+            )
+    suggested_bbox = None
+    if crossing:
+        # A small, explicit geometric allowance is only applied to affected sides.
+        # This suggestion never changes the caller's requested/rendered rectangle.
+        extent = _outward_extent(rectangle, suggested)
+        suggested += (-2.0 if extent["left"] else 0, -2.0 if extent["top"] else 0,
+                      2.0 if extent["right"] else 0, 2.0 if extent["bottom"] else 0)
+        suggested &= bounds
+        suggested_bbox = list(suggested)
+    context = (suggested + (-context_margin_pt, -context_margin_pt, context_margin_pt, context_margin_pt)) & bounds
+    if progress:
+        progress(0, 1, f"render page {page_number} crop boundary context")
+    pixels, transform = _render_pixels(page, context, dpi)
+    context_png = pixels.tobytes("png")
+    with Image.frombytes("RGB", (pixels.width, pixels.height), pixels.samples) as marked:
+        draw = ImageDraw.Draw(marked)
+        width = max(2, round(dpi / 72))
+        if suggested_bbox is not None:
+            draw.rectangle(tuple(suggested * transform), outline=(26, 145, 70), width=width)
+        draw.rectangle(tuple(rectangle * transform), outline=(220, 45, 55), width=width)
+        encoded = BytesIO()
+        marked.save(encoded, format="PNG", dpi=(dpi, dpi))
+        marked_png = encoded.getvalue()
+    output = _destination(context_destination, "png")
+    annotated_output = output.parent.joinpath(output.stem + "-boundaries.png")
+    _source_record(Path(source["path"]), source["sha256"])
+    context_asset = _write_once(output, context_png)
+    annotated_asset = _write_once(annotated_output, marked_png)
+    if progress:
+        progress(1, 1, f"render page {page_number} crop boundary context")
+    status = "crossing_text_detected" if crossing else "no_crossing_text_detected"
+    if not rows:
+        status = "no_extractable_painted_text_in_context"
+    if extraction["status"] != "available":
+        status = "incomplete_text_evidence"
+        for edge in edges.values():
+            if edge["status"] != "crossing_text_detected":
+                edge["status"] = "text_evidence_unresolved"
+    return {
+        "schema_version": 1, "source_file": source, "page": page_number,
+        "coordinate_system": dict(PDF_BBOX_COORDINATES), "checked_bbox": list(rectangle),
+        "page_geometry": geometry, "status": status, "edges": edges,
+        "crossing_text_count": len(crossing), "text_extraction": extraction,
+        "suggested_bbox": suggested_bbox,
+        "suggestion_basis": "Union of the current bbox and intersecting text-run bounds, plus 2 pt on crossed sides, limited to the source page.",
+        "suggestion_applied": False, "figure_membership": "not_assessed",
+        "context": {"asset": context_asset, "annotated_asset": annotated_asset,
+                    "bbox": list(context), "dpi": dpi, "pixel_size": [pixels.width, pixels.height],
+                    "page_to_pixel_transform": list(transform), "orientation": "source_page_display",
+                    "outside_crop_pt": _outward_extent(rectangle, context),
+                    "requested_context_margin_pt": context_margin_pt,
+                    "legend": {"red": "checked crop", "green": "suggested geometric bbox, when present"}},
+        "visual_review": {"status": "pending", "figure_completeness": "not_assessed"},
+        "full_page_review_required": True, "limitations": list(BOUNDARY_LIMITATIONS),
+    }
+
+
+def inspect_crop_boundaries(source_pdf: Path, *, page_number: int, bbox: list[float],
+                            coordinate_system: Mapping[str, str], context_destination: Path,
+                            context_margin_pt: float = 36.0, dpi: int = 144,
+                            expected_source_sha256: str | None = None,
+                            progress: Progress | None = progress_bar) -> dict:
+    """Inspect the source around a proposed crop without creating a final crop.
+
+    Report crossing painted text, complete outside text as separate clues, and
+    a geometric bbox suggestion. Export a lossless source context and an
+    explicitly annotated copy. Neither the suggestion nor any acceptance is
+    applied automatically. Coordinates always use the unrotated source page.
+    """
+    _validate_region(bbox, coordinate_system, dpi)
+    _validate_margin(context_margin_pt, "context_margin_pt", positive=True)
     path = Path(source_pdf).resolve(strict=True)
     source = _source_record(path, expected_source_sha256)
-    output = _destination(destination, "png")
+    _destination(context_destination, "png")
     with fitz.open(path) as document:
         page = _page(document, page_number)
         geometry = _geometry(page)
-        bounds, rectangle = fitz.Rect(geometry["page_bounds"]), fitz.Rect(bbox)
-        if not rectangle.is_valid or rectangle.is_empty or not bounds.contains(rectangle):
-            raise ValueError("bbox must be nonempty and fully inside the unrotated page")
+        _, rectangle = _crop_rectangle(bbox, geometry)
+        return _boundary_evidence(page, source=source, page_number=page_number, rectangle=rectangle,
+                                  geometry=geometry, context_destination=context_destination,
+                                  context_margin_pt=context_margin_pt, dpi=dpi, progress=progress)
+
+
+def render_page_region(source_pdf: Path, *, page_number: int, bbox: list[float],
+                       coordinate_system: Mapping[str, str], destination: Path,
+                       margin_pt: float = 6.0, dpi: int = 300,
+                       expected_source_sha256: str | None = None,
+                       context_destination: Path | None = None, context_margin_pt: float = 36.0,
+                       context_dpi: int = 144, progress: Progress | None = progress_bar) -> dict:
+    """Render the requested region and inspect its actual source boundaries.
+
+    This applies PDF masks, clipping and page graphics state. Input coordinates
+    are unrotated; the output retains the source page's display orientation.
+    ``boundary_check`` checks the final rectangle including the requested
+    margin, exports source context outside it, and never applies its suggested
+    bbox. Matching pixels within a crop cannot establish figure completeness.
+    """
+    _validate_region(bbox, coordinate_system, dpi)
+    _validate_region(bbox, coordinate_system, context_dpi)
+    _validate_margin(margin_pt, "margin_pt")
+    _validate_margin(context_margin_pt, "context_margin_pt", positive=True)
+    path = Path(source_pdf).resolve(strict=True)
+    source = _source_record(path, expected_source_sha256)
+    output = _destination(destination, "png")
+    context_output = (_destination(context_destination, "png") if context_destination is not None
+                      else output.parent.joinpath(output.stem + "-context.png"))
+    annotated_output = context_output.parent.joinpath(context_output.stem + "-boundaries.png")
+    if output.resolve() in {context_output.resolve(), annotated_output.resolve()}:
+        raise ValueError("The crop and boundary context destinations must be different")
+    with fitz.open(path) as document:
+        page = _page(document, page_number)
+        geometry = _geometry(page)
+        bounds, rectangle = _crop_rectangle(bbox, geometry)
         clip = (rectangle + (-margin_pt, -margin_pt, margin_pt, margin_pt)) & bounds
-        rotation = page.rotation
-        try:
-            if rotation:
-                page.set_rotation(0)
-            matrix = fitz.Matrix(dpi / 72, dpi / 72).prerotate(rotation)
-            pixels = page.get_pixmap(matrix=matrix, clip=clip, colorspace=fitz.csRGB, alpha=False)
-            pixels.set_dpi(dpi, dpi)
-        finally:
-            if rotation:
-                page.set_rotation(rotation)
+        boundary_check = _boundary_evidence(page, source=source, page_number=page_number, rectangle=clip,
+                                            geometry=geometry, context_destination=context_output,
+                                            context_margin_pt=context_margin_pt, dpi=context_dpi, progress=progress)
+        pixels, _ = _render_pixels(page, clip, dpi)
+        _source_record(path, source["sha256"])
         asset = _write_once(output, pixels.tobytes("png"))
     if progress:
         progress(1, 1, f"render page {page_number} region")
@@ -645,9 +922,9 @@ def render_page_region(source_pdf: Path, *, page_number: int, bbox: list[float],
         "actual_margin_pt": {"left": rectangle.x0 - clip.x0, "top": rectangle.y0 - clip.y0,
                              "right": clip.x1 - rectangle.x1, "bottom": clip.y1 - rectangle.y1},
         "dpi": dpi, "asset": asset, "method": "page_region_render", "page_geometry": geometry,
-        "orientation": "source_page_display",
+        "orientation": "source_page_display", "boundary_check": boundary_check,
         "edge_reviews": [{"edge": edge, "status": "pending", "reason": "", "evidence": []}
-                         for edge in ("top", "right", "bottom", "left")],
+                         for edge in CROP_EDGES],
         "visual_review": {"status": "pending", "figure_completeness": "not_assessed"},
         "evidence_boundary": REVIEW_BOUNDARY + " Pixel equality within the chosen crop cannot prove that nothing was cropped off.",
     }

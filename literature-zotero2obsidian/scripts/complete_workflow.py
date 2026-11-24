@@ -95,7 +95,9 @@ def initialize_workflow(
         raise ValueError("A workflow output must not replace a source attachment.")
     inventory_path = work_root.joinpath("evidence", "source-inventory.json")
     checks_path = work_root.joinpath("checks.json")
-    for path in (inventory_path, checks_path):
+    queue_path = work_root.joinpath("draft-queue.json")
+    snapshot_path = work_root.joinpath("draft-queue-source-snapshot.json")
+    for path in (inventory_path, checks_path, queue_path, snapshot_path):
         if path.exists():
             raise FileExistsError(f"Keep existing evidence: {path}")
     check_tools = _module("check_records")
@@ -110,8 +112,10 @@ def initialize_workflow(
         skills_root, checks_path, sources=resolved, inventory_path=inventory_path,
         progress=progress,
     )
+    _module("draft_queue").prepare_draft_queue(inventory_path, queue_path, progress=progress)
     records = {
         "source_inventory": str(inventory_path), "checks": str(checks_path),
+        "draft_queue": str(queue_path),
         "source_map": str(work_root.joinpath("source-map.json")),
         "link_map": str(work_root.joinpath("link-map.json")),
         "delivery_manifest": str(work_root.joinpath("delivery-manifest.json")),
@@ -152,6 +156,119 @@ def initialize_workflow(
     }
     _write_new(run_path, run)
     return run_path
+
+
+def resume_workflow(run_path: Path, *, progress: PROGRESS | None = None) -> dict:
+    """Return one current local action, prioritizing unwritten source content.
+
+    This is read-only. It never creates/migrates a missing queue, supplies prose,
+    fills decisions or intercepts an assistant's final response. The existing
+    complete-workflow checks retain their full acceptance scope.
+    """
+    run_path = Path(run_path).resolve(strict=True)
+    run = _read(run_path)
+    if run.get("workflow_profile") != PROFILE:
+        raise ValueError("Use the actual complete-workflow run record.")
+    config, records, scope = (run.get(key) for key in ("config", "records", "scope"))
+    if not all(isinstance(value, dict) for value in (config, records, scope)):
+        raise ValueError("config, records and scope must be objects.")
+    check_tools = _module("check_records")
+
+    def actual_path(value, label: str) -> Path:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Record the actual {label} path.")
+        path = Path(value)
+        return path if path.is_absolute() else run_path.parent.joinpath(path)
+
+    result = {
+        "run": check_tools.bind_file(run_path),
+        "source_fidelity": "not_assessed",
+        "boundary": "One local action, not a semantic pass or a host termination gate.",
+    }
+    if "draft_queue" not in records:
+        return {**result, "phase": "setup", "next_action": {
+            "stage": "register_draft_queue",
+            "inventory_path": str(actual_path(records.get("source_inventory"), "source inventory")),
+            "message": "Register the existing source-bound queue in run.records.draft_queue; "
+                       "if no queue exists, prepare it from this inventory without replacing old evidence.",
+        }}
+    queue_path = actual_path(records["draft_queue"], "draft queue")
+    queue = _module("draft_queue").DraftQueue.open(queue_path)
+    identity = run.get("identity")
+    original = identity.get("sources") if isinstance(identity, dict) else None
+    if (not isinstance(original, list) or not original
+            or any(not isinstance(item, dict) or not isinstance(item.get("id"), str)
+                   or not item["id"].strip() for item in original)):
+        raise ValueError("Retain the workflow's original source bindings.")
+    expected = {item["id"]: item for item in original}
+    if len(expected) != len(original) or set(expected) != set(queue.data["sources"]):
+        raise ValueError("The draft queue must retain every original workflow source exactly once.")
+    roles, declared = scope.get("source_roles"), scope.get("source_ids")
+    if (not isinstance(roles, dict) or set(roles) != set(expected)
+            or not isinstance(declared, list)
+            or any(not isinstance(item, str) or not item.strip() for item in declared)
+            or len(declared) != len(set(declared))
+            or set(declared) != set(expected)):
+        raise ValueError("Retain the original source scope and roles before resuming.")
+    for source_id, binding in expected.items():
+        source = queue.data["sources"][source_id]
+        expected_path = actual_path(binding.get("path"), "source").resolve()
+        if (Path(source["path"]).resolve() != expected_path
+                or source["sha256"] != binding.get("sha256")
+                or source["role"] != roles[source_id]):
+            raise ValueError(f"The draft queue differs from the workflow source binding: {source_id}")
+    inventory_path = actual_path(records.get("source_inventory"), "source inventory").resolve()
+    if Path(queue.data["inventory_origin"]).resolve() != inventory_path:
+        raise ValueError("The draft queue must originate from this workflow's source inventory.")
+    status = queue.status()
+    counts = {name: status[name] for name in (
+        "source_entry_count", "unit_count", "written_unit_count", "excluded_entry_count")}
+    counts.update({name + "_count": len(status[name]) for name in (
+        "unassigned_entries", "unwritten_units", "unreviewed_pdf_pages", "unresolved_source_issues")})
+    result.update(queue=check_tools.bind_file(queue_path), draft_ready=status["draft_ready"], counts=counts)
+    if not status["draft_ready"]:
+        return {**result, "phase": "draft", "next_action": queue.next_task()}
+    # A saved revision remains real only while its bytes and declared resources
+    # still match. Do not route around a missing/tampered fragment merely because
+    # another file happens to exist at candidate_path.
+    for unit in queue.data["units"].values():
+        revision = unit["revisions"][-1]
+        for binding in [revision, *revision["assets"]]:
+            path = actual_path(binding.get("path"), "draft resource")
+            current = check_tools.bind_file(path)
+            if current["sha256"] != binding.get("sha256"):
+                raise ValueError(f"The saved draft fragment or resource changed: {path}")
+    candidate = actual_path(config.get("candidate_path"), "candidate")
+    if not candidate.is_file():
+        return {**result, "phase": "assemble", "next_action": {
+            "stage": "assemble", "queue_path": str(queue_path),
+            "candidate_path": str(candidate),
+            "message": "Assemble the saved fragments to a new version with DraftQueue.assemble(), "
+                       "then format the complete candidate and continue its source checks.",
+        }}
+    report = inspect_workflow(run_path, progress=progress)
+    result.update(phase="review", records_ready=report.records_ready,
+                  record_finding_count=len(report.findings))
+    if report.records_ready:
+        return {**result, "next_action": {
+            "stage": "records_complete",
+            "message": "The existing file-record checks are complete; report only the source comparisons "
+                       "actually performed. This function has not assessed source fidelity.",
+        }}
+    finding = report.findings[0]
+    # Missing records are addressed in dependency order. Existing version or
+    # source-binding failures ahead of them retain priority.
+    if finding.code == "WORKFLOW_RECORD_MISSING":
+        missing = {item.target: item for item in report.findings if item.code == "WORKFLOW_RECORD_MISSING"}
+        for target in ("source_inventory", "source_map", "si_map", "link_map",
+                       "translation_review", "terminology", "checks", "delivery_manifest"):
+            if target in missing:
+                finding = missing[target]
+                break
+    action = {"stage": "repair_record", **asdict(finding)}
+    if finding.target in records:
+        action["record_path"] = str(actual_path(records[finding.target], finding.target))
+    return {**result, "next_action": action}
 
 
 @dataclass
