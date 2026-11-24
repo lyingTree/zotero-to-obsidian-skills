@@ -187,3 +187,7 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 ### 原生草稿后工作流审查与交付验收候选
 
 新增 `complete_workflow.write_maps`、`inspect_workflow`、`require_completed_records`、`validate_delivery.validate_delivery`。工作流审查核对原始 skill 文件集合/哈希、来源身份/角色/范围、必需记录、命名、原子检查账本、交付清单绑定、映射、翻译及版式 disposition。resume 在草稿完成且候选存在时返回实际首个待修记录；缺失记录按原依赖顺序处理。交付验证调用已迁移的来源重放/OOXML 证据、实际候选目标和映射推导，检查来源页/块/媒体覆盖、元数据有无、来源 URL、Rich Table v2/v3 worksheet/尺寸/merge、公式/图像/引用/标题目标、实际本地图像解码与资产绑定、术语、翻译、原子检查账本，并检查图件快照、来源位置、28 项原子目标及逐资产四边记录。现阶段较严格要求显式映射契约；未支持的旧版手工精简映射及一些复杂候选布局仍需补齐。`NATIVE_DELIVERY_PARITY_PENDING` 仍明确阻断完成；即使 subset 无误也不标记最终交付通过。新增缺失记录、来源空集及篡改清单的原生回归测试，所有新代码等待 CI。上一轮 27c653a 的 266/266 差分、真实 CPU OCR 和安装器检查已通过。
+
+### 补齐公开生产接口（候选）
+
+新增 ReviewWriter 的 scope/exclude/source_issues_review/terminology_review/review/unit，UnitReview 的 check/scan/occurrence/term/issue，TermReview 的 search/search_status/decide 共 14 个独立 native 操作。接口名保留原类名，调用方式为 prepared_path、已有 decisions 和各方法显式 kwargs；从冻结准备记录重放并真实执行，不接受伪造的可变 review ledger。单元 handle 重复获取保持幂等；实际 search 返回 method_result 中的真实命中，并保留完整新决策日志。新增 render_note.keys/line/digest/canonical/literal/template_fields、glossary_candidates.GlossaryIndex.search/suggest、check_records.AtomicRule.catalog_entry/location 和 prepare_source_inventory.pdf_page_rect/valid_pdf_bbox。所有接口复用当前 native 核心实现，不使用 Python。新增公开渲染辅助函数和实际旋转 PDF 几何差分测试、拒绝缺参和保护字段测试。CLI/progress、报告对象访问器、ImageObjectIndexer 的带对象目录完整行为，以及复杂 JSON 浮点规范化等仍需审查；不改正式资格和发布门禁。

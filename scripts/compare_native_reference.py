@@ -1364,5 +1364,37 @@ class NativeHandoffGenerationComparison(unittest.TestCase):
         self.assertTrue(rerun["actual_rerun_performed"])
         self.assertTrue(rerun["mapping_equal"], rerun)
 
+
+class NativePublicHelperComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_render_helper_public_api(self):
+        for value in ("海洋重力波", "1. first", "a [link] *literal* %% x", "---", "10%"):
+            self.assertEqual(self.invoke("render_note.digest", value), renderer.digest(value))
+            self.assertEqual(self.invoke("render_note.literal", value), renderer.literal(value))
+            self.assertEqual(self.invoke("render_note.line", value, "/value"), renderer.line(value, "/value"))
+        for value in ({"b": ["重力波", 2, True], "a": None}, ["x", {"a": 4}], {}):
+            self.assertEqual(self.invoke("render_note.canonical", value, "/data"), renderer.canonical(value, "/data"))
+        for unit in ({"kind": "header", "translated": True}, {"kind": "list", "count": 4},
+                     {"kind": "figure"}, {"kind": "formula"}, {"kind": "paragraph"}):
+            self.assertEqual(self.invoke("render_note.template_fields", unit), renderer.template_fields(unit))
+        self.assertIsNone(self.invoke("render_note.keys", {"a": 1}, "/v", "a"))
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("render_note.keys", {"a": 1, "extra": True}, "/v", "a")
+
+    def test_native_pdf_geometry_public_api(self):
+        import fitz
+        source = self.root.joinpath("rotated.pdf")
+        with fitz.open() as pdf:
+            p = pdf.new_page(width=200, height=100)
+            p.set_rotation(90)
+            pdf.save(source)
+        with fitz.open(source) as pdf:
+            expected = list(pdf[0].rect * pdf[0].derotation_matrix)
+        self.assertEqual(self.invoke("prepare_source_inventory.pdf_page_rect", str(source), page_number=1), expected)
+        for box, ok in [([0, 0, 200, 100], True), ([0, 0, 201, 100], False), ([10, 0, 0, 100], False), ([False, 0, 1, 2], False)]:
+            self.assertEqual(self.invoke("prepare_source_inventory.valid_pdf_bbox", box, expected), ok)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

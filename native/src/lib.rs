@@ -178,6 +178,32 @@ pub const OPERATIONS: &[&str] = &[
     "translation_review_writer.select_source",
     "translation_review_writer.select_candidate",
     "translation_review_writer.append_decision",
+    "translation_review_writer.ReviewWriter.scope",
+    "translation_review_writer.ReviewWriter.exclude",
+    "translation_review_writer.ReviewWriter.source_issues_review",
+    "translation_review_writer.ReviewWriter.terminology_review",
+    "translation_review_writer.ReviewWriter.review",
+    "translation_review_writer.ReviewWriter.unit",
+    "translation_review_writer.UnitReview.check",
+    "translation_review_writer.UnitReview.scan",
+    "translation_review_writer.UnitReview.occurrence",
+    "translation_review_writer.UnitReview.term",
+    "translation_review_writer.UnitReview.issue",
+    "translation_review_writer.TermReview.search",
+    "translation_review_writer.TermReview.search_status",
+    "translation_review_writer.TermReview.decide",
+    "render_note.keys",
+    "render_note.line",
+    "render_note.digest",
+    "render_note.canonical",
+    "render_note.literal",
+    "render_note.template_fields",
+    "prepare_source_inventory.pdf_page_rect",
+    "prepare_source_inventory.valid_pdf_bbox",
+    "check_records.AtomicRule.catalog_entry",
+    "check_records.AtomicRule.location",
+    "glossary_candidates.GlossaryIndex.search",
+    "glossary_candidates.GlossaryIndex.suggest",
     "translation_review_writer.save_decision_draft",
     "translation_review_writer.restore_decision_draft",
     "translation_review_writer.save_review",
@@ -454,6 +480,28 @@ pub fn invoke(request: Value) -> Result<Value> {
             if op.ends_with("scan_source_url_occurrences"){source_urls::scan(&inventory,&blocks,&pages)?}
             else{source_urls::coverage(&inventory,&blocks,&pages)?}
         }
+        "render_note.keys" => {
+            let v=c.positional("value")?;let p=string(&c.positional("path")?,"path")?;
+            let required=c.optional_positional("required",json!(""));let optional=c.optional_positional("optional",json!(""));
+            let required=required.as_str().context("required must be text")?;let optional=optional.as_str().context("optional must be text")?;
+            c.finish()?;render::keys(&v,&p,required,optional)?;Value::Null
+        }
+        "render_note.line" => {
+            let v=c.positional("value")?;let p=string(&c.positional("path")?,"path")?;
+            c.finish()?;json!(render::line(&v,&p)?)
+        }
+        "render_note.digest" | "render_note.literal" => {
+            let v=c.positional("value")?;
+            let s=v.as_str().context("value must be text")?;
+            c.finish()?;json!(if op.ends_with(".digest"){render::digest(s)}else{render::literal(s)})
+        }
+        "render_note.canonical" => {
+            let v=c.positional("value")?;let _p=string(&c.positional("path")?,"path")?;
+            c.finish()?;json!(render::canonical(&v))
+        }
+        "render_note.template_fields" => {
+            let v=c.positional("unit")?;c.finish()?;render::template_fields(&v)?
+        }
         "render_note.content_template" => {
             let plan = c.positional("plan")?; c.finish()?;
             render::content_template(&plan)?
@@ -491,7 +539,8 @@ pub fn invoke(request: Value) -> Result<Value> {
             let p = path(&c.positional("path")?)?;
             c.finish()?; serde_json::to_value(validate::validate_file(&p))?
         }
-        "glossary_candidates.search" | "glossary_candidates.suggest" => {
+        "glossary_candidates.search" | "glossary_candidates.suggest" |
+        "glossary_candidates.GlossaryIndex.search" | "glossary_candidates.GlossaryIndex.suggest" => {
             let p=path(&c.positional("glossary_path")?)?;
             let input=c.positional(if op.ends_with(".search"){"query"}else{"text"})?;
             let input=input.as_str().context("source or query must be a string")?;
@@ -1003,6 +1052,18 @@ pub fn invoke(request: Value) -> Result<Value> {
                     margin,dpi,expected:e.as_deref(),context:context.as_deref(),context_margin,context_dpi})?
             }
         }
+        "prepare_source_inventory.pdf_page_rect" => {
+            let p=path(&c.positional("source_pdf")?)?;let n=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
+            c.finish()?;pdf_structure::pdf_page_rect(&p,n)?
+        }
+        "prepare_source_inventory.valid_pdf_bbox" => {
+            let b=c.positional("box")?;let page=c.positional("page_rect")?;c.finish()?;
+            json!(pdf_structure::valid_pdf_bbox(&b,&page))
+        }
+        "check_records.AtomicRule.catalog_entry" | "check_records.AtomicRule.location" => {
+            let root=path(&c.positional("skills_root")?)?;let id=string(&c.required("rule_id")?,"rule_id")?;
+            c.finish()?;check_ledger::atomic_rule(&root,&id,op.ends_with(".location"),|i,n,label|eprintln!("[{i}/{n}] {label}"))?
+        }
         "pdf_image_objects.index_page_structure" => {
             let p=path(&c.positional("source_pdf")?)?;let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
             c.finish()?;pdf_structure::index_page(&p,page)?
@@ -1042,6 +1103,26 @@ pub fn invoke(request: Value) -> Result<Value> {
             let inv=if inv.is_null(){None}else{Some(path(&inv)?)};
             let candidate=if candidate.is_null(){None}else{Some(path(&candidate)?)};
             c.finish()?;translation_validate::validate(&p,inv.as_deref(),candidate.as_deref())?
+        }
+        "translation_review_writer.ReviewWriter.scope" |
+        "translation_review_writer.ReviewWriter.exclude" |
+        "translation_review_writer.ReviewWriter.source_issues_review" |
+        "translation_review_writer.ReviewWriter.terminology_review" |
+        "translation_review_writer.ReviewWriter.review" |
+        "translation_review_writer.ReviewWriter.unit" |
+        "translation_review_writer.UnitReview.check" |
+        "translation_review_writer.UnitReview.scan" |
+        "translation_review_writer.UnitReview.occurrence" |
+        "translation_review_writer.UnitReview.term" |
+        "translation_review_writer.UnitReview.issue" |
+        "translation_review_writer.TermReview.search" |
+        "translation_review_writer.TermReview.search_status" |
+        "translation_review_writer.TermReview.decide" => {
+            let prepared=path(&c.positional("prepared_path")?)?;
+            let decisions=c.optional_positional("decisions",json!([]))?;
+            ensure!(c.args.is_empty(),"TRW_METHOD: use named method arguments after prepared_path and decisions");
+            let method=op.strip_prefix("translation_review_writer.").context("TRW_METHOD")?;
+            translation_writer::call_public_method(&prepared,&decisions,method,c.kwargs)?
         }
         "translation_review_writer.select_source" | "translation_review_writer.select_candidate" |
         "translation_review_writer.append_decision" => {

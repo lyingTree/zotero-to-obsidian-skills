@@ -30,7 +30,7 @@
   "capabilities": {
     "all_original_runtime_operations": {
       "qualified": false,
-      "blocker": "Remaining original API and behavior parity"
+      "blocker": "Native decision methods, render helpers, glossary class operations, atomic rule lookup and PDF geometry helpers added; report/progress/launcher compatibility and image-indexer parity remain"
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
@@ -46,7 +46,7 @@
     },
     "translation_review_lifecycle": {
       "qualified": false,
-      "blocker": "Native validation, explicit decision replay and task routing implemented; full writer API replacement coverage, historical differential and workflow qualification remain"
+      "blocker": "All reference ReviewWriter/UnitReview/TermReview mutation methods now have explicit native replay-backed operations; expanded per-method differential and full workflow qualification remain"
     },
     "native_complete_workflow": {
       "qualified": false,

@@ -125,14 +125,7 @@ impl Pdf{
         Ok(images)
     }
     pub fn contains_bbox(&self,n:u64,bbox:&Value)->Result<bool>{
-        let bounds=self.bounds(n)?;
-        let Some(a)=bbox.as_array().filter(|a|a.len()==4) else{return Ok(false);};
-        let mut b=[0.;4];
-        for (i,v) in a.iter().enumerate(){
-            let Some(x)=v.as_f64().filter(|x|x.is_finite()) else{return Ok(false);};
-            b[i]=x;
-        }
-        Ok(b[0]<b[2]&&b[1]<b[3]&&inside(bounds,b))
+        Ok(valid_pdf_bbox(bbox,&json!(self.bounds(n)?)))
     }
 
     pub fn index(&self,n:u64)->Result<Value>{
@@ -479,4 +472,35 @@ pub(crate) fn export_indexed(pdf:&Pdf,source:&Path,before:&Value,page:u64,xref:u
         "asset":asset,"output_extension":ext,"method":method,"orientation":"native_image_samples",
         "visual_review":{"status":"pending","figure_completeness":"not_assessed"},"source_fidelity":"not_assessed",
         "evidence_boundary":"Actual invoked image samples, not proof of visible ink or complete figure membership. Overlay, text, vector and unsupported display effects require page rendering and independent review."}))
+}
+
+
+/// Original geometry helper, exposed through actual file and one-based page
+/// instead of passing a Python-specific Fitz page object across the ABI.
+pub fn pdf_page_rect(source:&Path,page:u64)->Result<Value>{
+    let before=check_ledger::bind_file(source)?;
+    let pdf=Pdf::open(source)?;
+    let rect=pdf.bounds(page)?;
+    ensure!(check_ledger::bind_file(source)?==before,"Source PDF changed during page geometry extraction");
+    Ok(json!(rect))
+}
+fn finite_rect(v:&Value)->Option<[f64;4]>{
+    let a=v.as_array().filter(|a|a.len()==4)?;
+    let mut b=[0.;4];
+    for(i,v)in a.iter().enumerate(){b[i]=v.as_f64().filter(|x|x.is_finite())?;}
+    (b[0]<b[2]&&b[1]<b[3]).then_some(b)
+}
+pub fn valid_pdf_bbox(bbox:&Value,page_rect:&Value)->bool{
+    finite_rect(bbox).zip(finite_rect(page_rect)).is_some_and(|(b,p)|inside(p,b))
+}
+#[cfg(test)]
+mod geometry_helpers_tests{
+    use super::*;
+    #[test]
+    fn reject_invalid_and_out_of_page_boxes(){
+        let page=json!([0,0,100,200]);
+        assert!(valid_pdf_bbox(&json!([0,0,100,200]),&page));
+        for b in [json!([0,0,101,200]),json!([1,0,0,200]),json!([0,0,0,200]),json!([false,0,99,200]),json!([0,0,null,200]),json!([0,0,1])]{assert!(!valid_pdf_bbox(&b,&page));}
+        assert!(!valid_pdf_bbox(&page,&json!([0,0,0,0])));
+    }
 }

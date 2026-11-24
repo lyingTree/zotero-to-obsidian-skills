@@ -22,7 +22,7 @@ fn fields<'a>(v:&'a Value,p:&str,required:&str,optional:&str)->R<&'a Map<String,
     }
     Ok(obj)
 }
-fn line<'a>(v:&'a Value,p:&str)->R<&'a str>{
+pub fn line<'a>(v:&'a Value,p:&str)->R<&'a str>{
     let s=v.as_str().filter(|s|!s.trim().is_empty()&&s.trim()==*s).ok_or_else(||bad(p,"expected nonempty text without outer whitespace"))?;
     check(!s.chars().any(|c|c<'\u{20}'||matches!(c,'\u{7f}'|'\u{85}'|'\u{2028}'|'\u{2029}')),p,"expected one line without controls")?;Ok(s)
 }
@@ -83,7 +83,7 @@ fn slots(u:&Value)->Value{
 pub fn content_template(plan:&Value)->R<Value>{
     Ok(Value::Object(plan_units(plan)?.iter().map(|u|(u["unit_id"].as_str().unwrap().to_owned(),slots(u))).collect()))
 }
-fn literal(s:&str)->String{
+pub fn literal(s:&str)->String{
     let mut out=String::with_capacity(s.len());let mut run=0;
     for c in s.chars(){
         if c=='%'{run+=1;continue;}
@@ -172,7 +172,7 @@ fn inline(u:&Value,value:&str,p:&str,targets:&TextMap,numbers:&HashMap<String,us
     check(used.len()==rules.len(),p,"missing registered placeholder(s)")?;
     out.push_str(&literal(&value[cursor..]));Ok(out)
 }
-fn canonical(v:&Value)->String{files::digest(&serde_json::to_vec(v).expect("JSON value serialization"))}
+pub fn canonical(v:&Value)->String{files::digest(&serde_json::to_vec(v).expect("JSON value serialization"))}
 fn render(plan:&Value,content:&Value)->R<(String,Vec<Value>)>{
     let units=plan_units(plan)?;
     let values=content.as_object().ok_or_else(||bad("/content","expected a mapping of unit IDs"))?;
@@ -291,4 +291,19 @@ pub fn render_note(plan:&Value,content:&Value)->Value{
         Err(e)=>json!({"schema_version":1,"status":"blocked","text":null,"mapping":[],"findings":[{"code":"RENDER_INVALID","field":e.field,"message":e.message}],
             "plan_sha256":ph,"content_sha256":ch,"output_sha256":null,"source_fidelity":"not_assessed"}),
     }
+}
+
+
+/// The public helpers have the same checked behavior as the renderer's
+/// internal primitives, with safe allocation bounds for standalone calls.
+pub fn keys(value:&Value,path:&str,required:&str,optional:&str)->R<()>{
+    fields(value,path,required,optional)?;Ok(())
+}
+pub fn digest(value:&str)->String{files::digest(value.as_bytes())}
+pub fn template_fields(unit:&Value)->R<Value>{
+    let kind=unit["kind"].as_str().ok_or_else(||bad("/unit/kind","expected a unit kind"))?;
+    check(spec(kind).is_some(),"/unit/kind","unknown unit kind")?;
+    if kind=="header"{check(unit["translated"].is_boolean(),"/unit/translated","expected a boolean")?;}
+    if kind=="list"{check(unit["count"].as_u64().is_some_and(|n|n>0&&n<=1_000_000),"/unit/count","positive bounded item count required")?;}
+    Ok(slots(unit))
 }

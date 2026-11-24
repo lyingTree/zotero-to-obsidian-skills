@@ -564,3 +564,82 @@ pub fn replay(prepared:&Path,commands:&Value)->Result<Writer>{
     for(i,command)in list.iter().enumerate(){writer.apply(command)?;if (i+1)%128==0||i+1==list.len(){eprintln!("[{}/{}] translation decisions",i+1,list.len());}}
     writer.verify()?;Ok(writer)
 }
+
+
+/// Explicit native equivalents of the reference ReviewWriter, UnitReview
+/// and TermReview public mutation methods. A request carries the original
+/// preparation and the prior short-call log, not a mutable review ledger.
+pub const PUBLIC_DECISION_METHODS:&[(&str,&str,&[&str],&[(&str,Option<&str>)])]=&[
+    ("ReviewWriter.scope","scope",&["status","reason"],&[]),
+    ("ReviewWriter.exclude","exclude",&["unit_id","condition","reason"],&[]),
+    ("ReviewWriter.source_issues_review","source_issues_review",&["status","reason"],&[]),
+    ("ReviewWriter.terminology_review","terminology_review",&["status","covered_units"],&[("no_unlisted_reason",None)]),
+    ("ReviewWriter.review","review",&["status"],&[]),
+    ("ReviewWriter.unit","unit",&["unit_id"],&[("candidate_locations",None)]),
+    ("UnitReview.check","check",&["unit_id","name","status","reason"],&[]),
+    ("UnitReview.scan","scan",&["unit_id","category","status","candidate_ids","reason"],&[]),
+    ("UnitReview.occurrence","occurrence",&["unit_id","kind","occurrence_id","source","candidate","status","reason"],&[("comparison",Some("{}"))]),
+    ("UnitReview.term","term",&["unit_id","term_id","original","category","source"],&[("aliases",Some("[]"))]),
+    ("UnitReview.issue","issue",&["unit_id","issue_id","source","description","candidate_readings","disposition","status","reason"],&[]),
+    ("TermReview.search","search",&["unit_id","term_id","mode","query","interpretation"],&[]),
+    ("TermReview.search_status","search_status",&["unit_id","term_id","mode","status","reason"],&[]),
+    ("TermReview.decide","decide",&["unit_id","term_id","decision","translation","reason"],&[("matches",Some("[]")),("resolution_basis",None)]),
+];
+
+/// Validate method-specific argument names/defaults before any mutation.
+/// For all decision operations return the complete replayable state; search
+/// additionally returns the hits from the actual glossary query just executed.
+pub fn call_public_method(prepared:&Path,commands:&Value,method:&str,mut arguments:Map<String,Value>)->Result<Value>{
+    let (_,op,required,optional)=PUBLIC_DECISION_METHODS.iter().find(|r|r.0==method)
+        .context("TRW_METHOD: unknown public decision method")?;
+    ensure!(arguments.keys().all(|k|required.contains(&k.as_str())||optional.iter().any(|(name,_)|*name==k)),
+        "TRW_METHOD: unexpected or protected argument");
+    for key in *required{ensure!(arguments.contains_key(*key),"TRW_METHOD: missing argument {key}");}
+    for (key,default) in *optional{
+        if !arguments.contains_key(*key){
+            arguments.insert((*key).into(),match default{Some(s)=>crate::parse_json(s)?,None=>Value::Null});
+        }
+    }
+    arguments.insert("op".into(),json!(op));
+    let command=Value::Object(arguments);
+    let mut w=replay(prepared,commands)?;
+    // Reference unit() is a handle lookup when the same unit has already
+    // been bound. Keep this idempotent without discarding earlier decisions.
+    if *op=="unit"{
+        let id=text(&command["unit_id"],"unit ID")?;
+        if w.commands.iter().any(|c|c["op"]=="unit"&&c["unit_id"]==id){
+            let row=w.data["units"].get(id).context("TRW_UNIT: unknown selected unit")?;
+            ensure!(command["candidate_locations"].is_null()||command["candidate_locations"]==row["candidate_locations"],
+                "TRW_LOCATION_REBOUND: keep original mapping");
+            w.verify()?;let mut snapshot=w.snapshot();snapshot["method_result"]=json!({"unit_id":id,"reused":true});
+            return Ok(snapshot);
+        }
+    }
+    let mut snapshot=w.append_decision(&command)?;
+    let result=if *op=="search"{
+        let unit=text(&command["unit_id"],"unit ID")?;let term=text(&command["term_id"],"term ID")?;let mode=text(&command["mode"],"search mode")?;
+        let row=rows(&w.data["units"][unit]["term_candidates"],"actual term candidates")?.iter().find(|r|r["id"]==term)
+            .context("TRW_TERM_MAPPING: actual searched term unavailable")?;
+        let q=rows(&row["searches"][mode]["queries"],"actual queries")?.last().context("TRW_SEARCH_ACTION: missing executed query")?;
+        ensure!(q["query"]==command["query"],"TRW_SEARCH_ACTION: query differs");
+        q["hits"].clone()
+    }else if *op=="unit"{json!({"unit_id":command["unit_id"],"reused":false})}
+    else if *op=="term"{json!({"unit_id":command["unit_id"],"term_id":command["term_id"]})}
+    else{Value::Null};
+    snapshot["method_result"]=result;
+    Ok(snapshot)
+}
+
+#[cfg(test)]
+mod method_tests{
+    use super::*;
+    #[test]
+    fn protected_fields_and_missing_arguments_are_rejected_before_opening_files(){
+        let p=Path::new("not-a-prepared-review.json");
+        let mut m=Map::new();m.insert("status".into(),json!("passed"));
+        assert!(call_public_method(p,&json!([]),"ReviewWriter.scope",m.clone()).unwrap_err().to_string().contains("missing argument reason"));
+        m.insert("reason".into(),json!("explicit reason"));m.insert("op".into(),json!("review"));
+        assert!(call_public_method(p,&json!([]),"ReviewWriter.scope",m).unwrap_err().to_string().contains("protected argument"));
+        assert!(call_public_method(p,&json!([]),"ReviewWriter.unknown",Map::new()).unwrap_err().to_string().contains("unknown public decision method"));
+    }
+}

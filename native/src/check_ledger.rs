@@ -380,3 +380,14 @@ pub fn pending_rows(p:&Path,limit:usize,prefix:Option<&str>)->Result<Value>{
     let rows=pending_batch(p,limit,prefix)?;
     Ok(json!(rows.as_array().unwrap().iter().map(|r|json!([r["id"],r["objective"]])).collect::<Vec<_>>()))
 }
+
+
+/// Return the exact declared atomic rule from the current source catalog.
+/// Do not reconstruct a rule location or objective from a caller's fields.
+pub fn atomic_rule(root:&Path,id:&str,location_only:bool,progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    let catalog=catalog(root,progress)?;
+    let mut matches=catalog.rules.iter().filter(|r|r.id==id);
+    let rule=matches.next().context("Unknown actual atomic rule ID")?;
+    ensure!(matches.next().is_none(),"Duplicate actual atomic rule ID");
+    Ok(if location_only{rule.location.clone()}else{rule.entry()})
+}
