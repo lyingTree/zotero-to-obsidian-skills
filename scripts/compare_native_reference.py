@@ -1111,6 +1111,7 @@ class NativeFigurePreparationComparison(unittest.TestCase):
     invoke = ReferenceComparison.invoke
 
     def test_pending_pdf_figure_review_against_reference(self):
+        self.maxDiff = None
         import test_figure_review_records as suite
         from copy import deepcopy
         fixture = suite.FigureReviewTests(methodName="test_generated_rows_cover_only_actual_figures_and_all_atomic_ids")
@@ -1132,6 +1133,7 @@ class NativeFigurePreparationComparison(unittest.TestCase):
             expected = deepcopy(fixture.ledger)
             actual_snapshot = Path(actual.pop("inventory")["path"])
             expected_snapshot = Path(expected.pop("inventory")["path"])
+            self.assertEqual(actual_snapshot.read_bytes(), json.dumps(value).encode("utf-8"))
             self.assertEqual(json.loads(actual_snapshot.read_text(encoding="utf-8")),
                              json.loads(expected_snapshot.read_text(encoding="utf-8")))
             self.assertEqual(actual.pop("inventory_path"), str(inventory.resolve()))

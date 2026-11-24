@@ -42,9 +42,9 @@ jobs:
       - name: Check the actual runner target
         run: rustc +stable -vV
       - name: Native target tests (including no-Python-PATH process tests)
-        run: cargo +stable test --target ${{ matrix.target }}
+        run: cargo +stable test --locked --target ${{ matrix.target }}
       - name: Build release executable for the exact target
-        run: cargo +stable build --release --target ${{ matrix.target }}
+        run: cargo +stable build --locked --release --target ${{ matrix.target }}
       # The migration is incomplete. No release artifact is published from this workflow.
 
   differential:
@@ -58,7 +58,7 @@ jobs:
       - name: Install reference-only dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Build Rust reference-comparison target
-        run: cargo build --manifest-path native/Cargo.toml
+        run: cargo build --locked --manifest-path native/Cargo.toml
       - name: Record resolved dependency lockfile
         run: |
           echo Z2O_CARGO_LOCK_BEGIN

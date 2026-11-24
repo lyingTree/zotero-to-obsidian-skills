@@ -349,7 +349,8 @@ pub fn prepare_figure_reviews(inventory_path:&Path,final_assets:&Value,work_dire
         ensure!(binding(&path(&b["path"])?)?==*b,"Figure evidence changed during preparation");
     }
     ensure!(files::snapshot(&inventory_path)?["sha256"]==bound["sha256"],"Inventory changed during preparation");
-    let snapshot_bytes=json_bytes(&inventory)?;
+    // Freeze the exact input bytes, including every numeric coordinate and its original encoding.
+    let snapshot_bytes=old.clone();
     let root=safe_dir(work_directory)?;
     let review=root.join("figure-reviews.json");
     let snapshot=root.join("figure-inventory-snapshot.json");
@@ -370,7 +371,9 @@ pub fn prepare_figure_reviews(inventory_path:&Path,final_assets:&Value,work_dire
         "inventory":bound,"after_sha256":files::digest(&after),"review":path_text(&review)?,
         "snapshot":snapshot_binding,"boundary":"Inspect current file hashes before any manual recovery."
     }))?)?;
-    exclusive(&snapshot,&crate::parse_json(std::str::from_utf8(&snapshot_bytes)?)?)?;
+    let mut frozen=tempfile::Builder::new().prefix(".pending-figure-snapshot-").tempfile_in(&root)?;
+    frozen.write_all(&snapshot_bytes)?;frozen.as_file().sync_all()?;
+    frozen.persist_noclobber(&snapshot).map_err(|e|anyhow!("Cannot exclusively save {}: {}",snapshot.display(),e.error))?;
     ensure!(binding(&snapshot)?==snapshot_binding,"Snapshot bytes changed before publication");
     exclusive(&review,&ledger)?;
     check_write::replace_bytes(&inventory_path,bound["sha256"].as_str().unwrap(),&after)
