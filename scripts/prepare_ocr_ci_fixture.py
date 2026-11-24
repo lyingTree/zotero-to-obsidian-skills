@@ -20,7 +20,7 @@ from urllib.request import Request, urlopen
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(os.environ["Z2O_OCR_FIXTURE_DIR"]).resolve()
-ORT_VERSION = "1.28.2"
+ORT_VERSION = "1.28.3"
 HF_ORG = "PaddlePaddle"
 MAX_DOWNLOAD = 256 * 1024 * 1024
 HEX40 = re.compile(r"[0-9a-f]{40}")

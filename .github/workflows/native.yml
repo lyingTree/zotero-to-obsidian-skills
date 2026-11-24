@@ -113,7 +113,6 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     env:
-      Z2O_OCR_FIXTURE_DIR: ${{ runner.temp }}/z2o-ocr-fixture
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
     steps:
@@ -123,6 +122,9 @@ jobs:
           python-version: '3.12'
       - name: Install pinned Rust development toolchain
         run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Establish fixture directory in runner step context
+        shell: bash
+        run: echo "Z2O_OCR_FIXTURE_DIR=$RUNNER_TEMP/z2o-ocr-fixture" >> "$GITHUB_ENV"
       - name: Install fixture-only tools (not runtime requirements)
         run: |
           python -m pip install -r requirements-dev.txt

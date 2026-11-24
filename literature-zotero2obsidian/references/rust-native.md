@@ -148,4 +148,6 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 
 ### 锁定依赖与真实 CPU 验收
 
-回收成功的 `resolve-lock` job（run 45406085584, job 138487297262）生成的完整 Cargo.lock，含固定 PdfCraft 和 ppocr-rs Git revisions、ort 2.0.0-rc.13；CI 恢复 `--locked`，不得静默重解析。新增 Ubuntu x86_64 独立 CPU OCR smoke：从 Microsoft 官方 release v1.28.2 读取发布校验值，从 PaddlePaddle Hugging Face 模型 metadata 确定实际 revision 并校验 LFS SHA-256/Git blob，使用模型配置中的字典，不信任无元数据下载。只提取指定常规运行库文件、不跟随 archive 链接。CI 生成虚构中英文扫描版 PDF（无文字层），通过真实 z2o 二进制，在空 PATH、禁用 GPU 条件下执行并验证英文字串、中文、数值、实际坐标与源文件哈希。CI Python 仅用于生成测试夹具及资源验证，不是用户运行依赖。首次真实测试尚未执行完；成功后仍需其余五个 target 的实际模型、内存/低端 CPU 及字体、可信发布模型包的资格审查。此测试资源清单不是已签名或已批准的生产安装目录，不能将其直接标记为合格安装包。
+回收成功的 `resolve-lock` job（run 45406085584, job 138487297262）生成的完整 Cargo.lock，含固定 PdfCraft 和 ppocr-rs Git revisions、ort 2.0.0-rc.13；CI 恢复 `--locked`，不得静默重解析。新增 Ubuntu x86_64 独立 CPU OCR smoke：从 Microsoft 官方 release v1.28.3 读取发布校验值，从 PaddlePaddle Hugging Face 模型 metadata 确定实际 revision 并校验 LFS SHA-256/Git blob，使用模型配置中的字典，不信任无元数据下载。只提取指定常规运行库文件、不跟随 archive 链接。CI 生成虚构中英文扫描版 PDF（无文字层），通过真实 z2o 二进制，在空 PATH、禁用 GPU 条件下执行并验证英文字串、中文、数值、实际坐标与源文件哈希。CI Python 仅用于生成测试夹具及资源验证，不是用户运行依赖。首次真实测试尚未执行完；成功后仍需其余五个 target 的实际模型、内存/低端 CPU 及字体、可信发布模型包的资格审查。此测试资源清单不是已签名或已批准的生产安装目录，不能将其直接标记为合格安装包。
+
+CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GITHUB_ENV，避免在 job 级 env 中引用不可用的 runner context 导致整个 native workflow 无法创建 job。官方 ONNX Runtime 1.28.3 包含 1.28.2 之后的模型校验与内存安全修复，测试优先使用该补丁版；真实包仍须通过 release digest 核验。
