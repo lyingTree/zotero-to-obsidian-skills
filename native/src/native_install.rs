@@ -13,8 +13,8 @@ pub const SKILLS:&[&str]=&[
 ];
 const MAX_FILES:usize=50_000;
 const MAX_TOTAL:u64=2*1024*1024*1024;
-const BOUNDARY:&str="Offline native migration candidate. The twelve local skills and native executable are installed. Legacy Python source is reference evidence only, never executed by z2o. External integrations, OCR resource distribution, licenses and formal release qualification remain separate.";
-const GUARD:&str="\n\n> **Rust 原生迁移候选 / Native runtime only**\n>\n> 此安装中的 Python 源码、旧脚本入口和示例仅为 1.1.0 参考证据，禁止将其作为任务执行路径。已迁移的机械操作使用主技能目录 literature-zotero2obsidian/runtime/z2o（Windows: z2o.exe）的 describe / invoke JSON 协议；参考 literature-zotero2obsidian/references/rust-native.md。尚不可用的操作和外部集成应明确阻断，绝不自动安装或运行 Python、调用旧脚本或虚构通过状态。当前不是正式 2.0.0 发布包。\n\n";
+const BOUNDARY:&str="Offline native migration candidate. The twelve local skills and native executable are installed. Legacy Python source stays in the development repository and existing installation backups, not in the candidate skill payload; z2o never executes it. External integrations, OCR resource distribution, licenses and formal release qualification remain separate.";
+const GUARD:&str="\n\n> **Rust 原生迁移候选 / Native runtime only**\n>\n> 此安装包不交付旧 Python 源码、字节码、Python 扩展模块或缓存；文档中保留的旧脚本调用与示例仅为 1.1.0 开发参考，禁止将其作为任务执行路径。已迁移的机械操作使用主技能目录 literature-zotero2obsidian/runtime/z2o（Windows: z2o.exe）的 describe / invoke JSON 协议；参考 literature-zotero2obsidian/references/rust-native.md。尚不可用的操作和外部集成应明确阻断，绝不自动安装或运行 Python、调用旧脚本或虚构通过状态。当前不是正式 2.0.0 发布包。\n\n";
 type FileMap=BTreeMap<String,Value>;
 fn exe_name()->&'static str{if cfg!(windows){"z2o.exe"}else{"z2o"}}
 fn exe_relative()->String{format!("literature-zotero2obsidian/runtime/{}",exe_name())}
@@ -73,6 +73,15 @@ fn exec_bit(m:&fs::Metadata)->bool{
 fn record(p:&Path)->Result<Value>{
     check_write::no_link(p)?;let v=files::snapshot(p)?;
     Ok(json!({"sha256":v["sha256"],"size":v["size"],"executable":exec_bit(&fs::metadata(p)?)}))
+}
+// Keep the reference implementation in the source repository, never in a
+// native candidate payload. Match portable paths case-insensitively.
+fn legacy_python_path(raw:&str)->bool{
+    raw.split('/').any(|part|{
+        let part=part.to_ascii_lowercase();
+        part=="__pycache__" || part.rsplit_once('.').is_some_and(|(_,ext)|
+            matches!(ext,"py"|"pyw"|"pyc"|"pyo"|"pyz"|"pyd"|"pyi"))
+    })
 }
 fn scan(root:&Path,skip_cache:bool)->Result<FileMap>{
     let root=dir(root,false)?;let mut result=BTreeMap::new();let mut aliases=BTreeSet::new();
@@ -141,7 +150,9 @@ pub fn package(source:&Path,destination:&Path,mut progress:impl FnMut(usize,usiz
         let root=dir(&source.join(name),false)?;skill_header(&root,name)?;
         let m=scan(&root,true)?;
         ensure!(m.keys().all(|p|!p.starts_with("runtime/")),"Package input must be a repository skill, not an installed runtime");
-        let dest=payload.join(name);fs::create_dir(&dest)?;copy_map(&root,&dest,&m)?;
+        let native_files:FileMap=m.iter().filter(|(p,_)|!legacy_python_path(p))
+            .map(|(p,r)|(p.clone(),r.clone())).collect();
+        let dest=payload.join(name);fs::create_dir(&dest)?;copy_map(&root,&dest,&native_files)?;
         let (mut header,at)=skill_header(&dest,name)?;
         header.insert_str(at,GUARD);fs::write(dest.join("SKILL.md"),header.as_bytes())?;
         ensure!(scan(&root,true)?==m,"Skill changed during packaging");
@@ -153,9 +164,10 @@ pub fn package(source:&Path,destination:&Path,mut progress:impl FnMut(usize,usiz
     copy_file(&exe,&target,&executable)?;
     #[cfg(unix)]ensure!(executable["executable"]==true,"Packaged binary is not executable");
     let payload_files=scan(&payload,false)?;
+    ensure!(payload_files.keys().all(|p|!legacy_python_path(p)),"Legacy Python file in native payload");
     let manifest=json!({"schema_version":1,"bundle_kind":"native_migration_candidate","qualified":false,
         "engine_version":ENGINE_VERSION,"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,
-        "skills":SKILLS,"runtime":exe_relative(),"files":payload_files,"system_python_required":false,"boundary":BOUNDARY});
+        "skills":SKILLS,"runtime":exe_relative(),"files":payload_files,"system_python_required":false,"legacy_python_files_included":false,"boundary":BOUNDARY});
     let m=json_new(&stage.path().join("package.json"),&manifest)?;
     ensure!(!destination.exists()&&!destination.is_symlink(),"Bundle destination appeared during preparation");
     fs::rename(stage.path(),&destination).context("Cannot publish bundle directory")?;
@@ -176,13 +188,14 @@ fn load_bundle(manifest:&Path,expected:&str)->Result<Bundle>{
         "Expected explicit native candidate bundle");
     ensure!(v["platform"]==std::env::consts::OS&&v["architecture"]==std::env::consts::ARCH&&v["engine_version"]==ENGINE_VERSION,
         "Bundle architecture, platform or engine version mismatch");
-    ensure!(v["skills"]==json!(SKILLS)&&v["runtime"]==exe_relative()&&v["system_python_required"]==false,"Bundle skill scope or runtime differs");
+    ensure!(v["skills"]==json!(SKILLS)&&v["runtime"]==exe_relative()&&v["system_python_required"]==false&&v["legacy_python_files_included"]==false,"Bundle skill scope or runtime differs");
     let root=path(&b["path"])?;let payload=dir(&root.parent().context("Bundle directory")?.join("skills"),false)?;
     let table=v["files"].as_object().filter(|m|!m.is_empty()&&m.len()<=MAX_FILES).context("Bundle file list required")?;
     let mut total=0u64;let mut aliases=BTreeSet::new();let mut expected_files=BTreeMap::new();
     for(name,r)in table{
         relative(name)?;let skill=name.split('/').next().unwrap();
         ensure!(SKILLS.contains(&skill)&&name.contains('/'),"Unexpected bundle file");
+        ensure!(!legacy_python_path(name),"NATIVE_BUNDLE_LEGACY_PYTHON_FILE: {name}");
         ensure!(aliases.insert(portable_key(name)),"Ambiguous bundle filename");
         ensure!(r.as_object().is_some_and(|m|m.len()==3)&&r["sha256"].as_str().is_some_and(valid_hash)&&r["executable"].is_boolean(),"Invalid resource binding");
         total=total.checked_add(r["size"].as_u64().context("Bundle file size")?).context("Bundle size overflow")?;

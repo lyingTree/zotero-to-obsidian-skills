@@ -200,7 +200,7 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 
 修复 5322d80 在 CI 中的两个真实 E0599 编译错误（render_note.keys 缺少错误传播）。剩余报告对象、进度与脚本入口共 27 个公开符号新增真实 native 调用；报告方法根据当前实际文件重新执行相应校验器并投影，不接受调用方伪造的通过报告。旧 main 的可编辑脚本全局变量改为显式 JSON 参数，退出语义作为 exit_code 字段返回；不运行 Python。进度条输出 stderr，保持 stdout JSON 协议。此轮针对上次 AST 报告列出的全部缺口，最终以新编译二进制的门禁结果为准。
 
-新增 native_runtime.package / inspect_bundle / install 及 z2o package、z2o install 原生入口。从实际仓库 12 个技能目录与当前预编译程序构建独立候选目录，包清单逐文件 SHA-256、大小及 Unix 可执行位，绑定 OS/CPU 架构、当前运行器哈希及独立可信清单哈希。拒绝链接/特殊文件、路径穿越、大小写/Unicode 冲突、额外或缺失文件；先完整暂存、复核，再提交目录，保留本地旧技能的原始备份和事务记录；重复同一包跳过。安装后的每个 SKILL.md 在 YAML 题头后插入明确 native-only 守则；旧 .py 作为参考资料保留，不能作为执行路径。实际外部 Zotero/Obsidian、OCR 资源自动分发、第三方许可证和正式发布仍待验收，不宣称已替代外部技能。CI 六个平台新增预编译实际仓库候选包、空 PATH 安装、安装后 describe，以及合成夹具的升级备份、重复安装、篡改拒绝和实际 invoke。避免同一 PR push/PR 双跑，并不取消已开始的六平台验收。当前仅保存安装回执，不发布二进制安装包或 2.0.0。
+新增 native_runtime.package / inspect_bundle / install 及 z2o package、z2o install 原生入口。从实际仓库 12 个技能目录与当前预编译程序构建独立候选目录，包清单逐文件 SHA-256、大小及 Unix 可执行位，绑定 OS/CPU 架构、当前运行器哈希及独立可信清单哈希。拒绝链接/特殊文件、路径穿越、大小写/Unicode 冲突、额外或缺失文件；先完整暂存、复核，再提交目录，保留本地旧技能的原始备份和事务记录；重复同一包跳过。安装后的每个 SKILL.md 在 YAML 题头后插入明确 native-only 守则；旧 .py 仅在开发仓库和既有安装的事务备份中保留，不再复制到原生候选技能包；不能作为执行路径。实际外部 Zotero/Obsidian、OCR 资源自动分发、第三方许可证和正式发布仍待验收，不宣称已替代外部技能。CI 六个平台新增预编译实际仓库候选包、空 PATH 安装、安装后 describe，以及合成夹具的升级备份、重复安装、篡改拒绝和实际 invoke。避免同一 PR push/PR 双跑，并不取消已开始的六平台验收。当前仅保存安装回执，不发布二进制安装包或 2.0.0。
 
 ### 原生 Zotero 读取、库内身份索引与交付缺口
 
@@ -227,3 +227,7 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 固定上游 OpenBMB/MiniCPM-OCR c21a3ca524263ef8166cb6d350864b10c3056b61 和 llama.cpp b11901。`prepare_source_inventory.recognize_minicpm_region` / `recognize_minicpm_pdf_region` 直接使用官方 GGUF（main + mmproj；Q8 可选匹配 DSpark draft），由 Rust 启动哈希绑定的本机 llama-server，使用 loopback `/v1/chat/completions` 的实际 Text/Table/Formula Recognition prompt。`score_jev_region` 使用同一原图、实际候选文本文件及单独绑定的候选渲染图，直接调用 `/v1/systemone`，按类别名读取 0/1 概率，不再 softmax。不需要官方 Python SDK；Jev 候选内容渲染需要独立实际图，当前不内置公式/表格渲染器。`inspect_minicpm_package` 核对 manifest 和全部运行库/模型，不启动推理。MiniCPM package schema 1 包含 engine=llama.cpp, release=b11901, model_kind=minicpm-ocr/jev, platform, architecture, cpu/gpu={directory,executable,variant,files:[{path,sha256}]}, model/projector/draft={path,sha256}，cpu 必需、gpu 可选。GPU 尝试独立进程，要求实际启动日志中正数层 offload，失败/缺资源回到同权重 CPU；CPU 显式禁 GPU/投影 offload。GPU node placement/实际提速不由报告自证。
 
 PP-OCRv6 `recognize_ocr_png_accelerated` 使用独立 z2o worker；CPU 与可选 GPU package 明确绑定同一 detector/recognizer/dictionary/aux hashes 和 profile，GPU manifest runtime.execution_provider 可为 Linux CUDAExecutionProvider、Windows DmlExecutionProvider、macOS CoreMLExecutionProvider。实际 EP availability / registration error-on-failure；GPU worker 失败/崩溃/超时重新启动 CPU worker，不伪造节点放置。CI 真双语 OCR 增加故意无效动态库的 GPU worker 实际失败再走同权重 CPU 识别测试。已有默认 PDF/OCR 路由仍为 CPU；显式区域增强接口待完整工作流集成。新增官方 b11901 六平台 CPU 及 Vulkan/Metal archive SHA-256 目录和实际 native server 启动矩阵。Windows 原生编译成功后的安装失败为哈希参数异常，改用 stdin SHA-256 并校验格式。macOS Intel llama.cpp CPU 路径有官方包，但不能等同于 PP-OCR ORT API-28 实际可用。真实 MiniCPM/Jev 权重推理和真实 GPU 加速仍需单独验收。用户资源自动下载未完成。
+
+### 原生候选包排除旧 Python 文件
+
+候选包生成和读取均强制排除旧 Python 文件（`*.py`、`*.pyw`、`*.pyc`、`*.pyo`、`*.pyz`、`*.pyd`、`*.pyi`、`__pycache__`，路径按 ASCII 大小写无关匹配）。包清单新增 `legacy_python_files_included=false`；即使重新计算合法清单哈希，含旧 Python 路径的清单仍拒绝安装。保留非 Python 资料及旧安装的完整事务备份；源仓库 Python 仅用于历史差分。旧候选包须用新版二进制重新生成。该变化只解决交付载荷残留，不代表历史行为等价、旧文档示例全部转换或完整发布资格通过。

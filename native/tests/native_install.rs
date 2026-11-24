@@ -15,6 +15,14 @@ fn actual_offline_native_install_reuse_backup_and_tamper_protection(){
         let p=source.join(name);fs::create_dir(&p).unwrap();
         fs::write(p.join("SKILL.md"),format!("---\nname: {name}\ndescription: test\n---\n\n# Actual source skill\n")).unwrap();
         fs::write(p.join("reference.py"),b"raise RuntimeError('must never execute')\n").unwrap();
+        fs::create_dir(p.join("nested")).unwrap();
+        fs::write(p.join("nested").join("reference.PYW"),b"legacy").unwrap();
+        fs::write(p.join("nested").join("reference.pyi"),b"legacy stub").unwrap();
+        fs::write(p.join("nested").join("reference.pyz"),b"legacy archive").unwrap();
+        fs::write(p.join("nested").join("reference.PYD"),b"legacy extension").unwrap();
+        fs::create_dir(p.join("__PYCACHE__")).unwrap();
+        fs::write(p.join("__PYCACHE__").join("reference.PYC"),b"legacy cache").unwrap();
+        fs::write(p.join("nested").join("reference.md"),b"Keep documentation").unwrap();
     }
     let exe=Path::new(env!("CARGO_BIN_EXE_z2o"));
     let bundle=base.join("bundle");let result=success(run(exe,&["package",path(&source),path(&bundle)]));
@@ -22,17 +30,34 @@ fn actual_offline_native_install_reuse_backup_and_tamper_protection(){
     let manifest=bundle.join("package.json");
     let sha=files::snapshot(&manifest).unwrap()["sha256"].as_str().unwrap().to_owned();
     assert_eq!(result["package_manifest"]["sha256"],sha);
+    let manifest_data:Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    assert_eq!(manifest_data["legacy_python_files_included"],false);
+    for &name in SKILLS{
+        let skill=bundle.join("skills").join(name);
+        assert!(!skill.join("reference.py").exists());
+        assert!(!skill.join("nested").join("reference.PYW").exists());
+        assert!(!skill.join("nested").join("reference.pyi").exists());
+        assert!(!skill.join("nested").join("reference.pyz").exists());
+        assert!(!skill.join("nested").join("reference.PYD").exists());
+        assert!(!skill.join("__PYCACHE__").exists());
+        assert_eq!(fs::read(skill.join("nested").join("reference.md")).unwrap(),b"Keep documentation");
+        assert!(source.join(name).join("reference.py").is_file());
+    }
     let installed=base.join("skills");fs::create_dir(&installed).unwrap();
     let old=installed.join(SKILLS[0]);fs::create_dir(&old).unwrap();
     fs::write(old.join("SKILL.md"),format!("---\nname: {}\ndescription: legacy\n---\n",SKILLS[0])).unwrap();
     fs::write(old.join("local-user-data.md"),b"Keep this original user data").unwrap();
+    fs::write(old.join("reference.py"),b"Legacy user installation").unwrap();
     let receipt=success(run(exe,&["install",path(&manifest),&sha,path(&installed)]));
     assert_eq!(receipt["installed"].as_array().unwrap().len(),12);
     assert_eq!(receipt["qualified"],false);
     let backup=Path::new(receipt["backup_root"].as_str().unwrap());
     assert_eq!(fs::read(backup.join("previous").join(SKILLS[0]).join("local-user-data.md")).unwrap(),b"Keep this original user data");
+    assert_eq!(fs::read(backup.join("previous").join(SKILLS[0]).join("reference.py")).unwrap(),b"Legacy user installation");
     for &name in SKILLS{
         assert!(fs::read_to_string(installed.join(name).join("SKILL.md")).unwrap().contains("Native runtime only"));
+        assert!(!installed.join(name).join("reference.py").exists());
+        assert!(!installed.join(name).join("nested").join("reference.PYW").exists());
     }
     let installed_exe=installed.join(SKILLS[0]).join("runtime").join(if cfg!(windows){"z2o.exe"}else{"z2o"});
     let desc=success(run(&installed_exe,&["describe"]));
@@ -47,6 +72,21 @@ fn actual_offline_native_install_reuse_backup_and_tamper_protection(){
     fs::write(bundle.join("skills").join(SKILLS[0]).join("reference.py"),b"tampered").unwrap();
     assert!(!run(exe,&["install",path(&manifest),&sha,path(&installed)]).status.success());
     assert_eq!(fs::read(installed.join(SKILLS[0]).join("SKILL.md")).unwrap(),untouched);
+    // A correctly hashed manifest must still not authorize Python payloads.
+    let injected=bundle.join("skills").join(SKILLS[0]).join("reference.py");
+    let binding=files::snapshot(&injected).unwrap();
+    let mut forged=manifest_data;
+    forged["files"].as_object_mut().unwrap().insert(
+        format!("{}/reference.py",SKILLS[0]),
+        json!({"sha256":binding["sha256"],"size":binding["size"],"executable":false})
+    );
+    fs::write(&manifest,serde_json::to_vec(&forged).unwrap()).unwrap();
+    let forged_sha=files::snapshot(&manifest).unwrap()["sha256"].as_str().unwrap().to_owned();
+    let denied=base.join("denied-python-payload");
+    let failure=run(exe,&["install",path(&manifest),&forged_sha,path(&denied)]);
+    assert!(!failure.status.success());
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("NATIVE_BUNDLE_LEGACY_PYTHON_FILE"));
+    assert!(!denied.exists());
     let bad_root=base.join("should-not-exist");
     assert!(!run(exe,&["install",path(&manifest),&"0".repeat(64),path(&bad_root)]).status.success());
     assert!(!bad_root.exists());

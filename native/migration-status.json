@@ -54,11 +54,11 @@
     },
     "native_installation_and_external_integration": {
       "qualified": false,
-      "blocker": "Native installer, Zotero and vault index, explicit Markdown/resources transaction, backup and rollback candidates implemented; actual desktop and complete-workflow qualification remain"
+      "blocker": "Native installer excludes legacy Python files from candidate payloads and verifies manifests; Zotero and vault index, explicit Markdown/resources transaction, backup and rollback candidates implemented; actual desktop and complete-workflow qualification remain"
     },
     "twelve_skill_production_entrypoints": {
       "qualified": false,
-      "blocker": "All 12 production entrypoints native-only"
+      "blocker": "Native registry and install guard available; all production entrypoints, legacy documentation instructions and external integrations still require end-to-end qualification"
     },
     "all_reference_regressions_and_frozen_examples": {
       "qualified": false,
