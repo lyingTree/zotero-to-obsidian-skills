@@ -84,8 +84,10 @@ def inspect_markdown(path: Path, resource_root: Path) -> dict:
     tables = []
     for match in re.finditer(r"^```rich-table[^\n]*\n(.*?)^```\s*$", text, re.M | re.S):
         payload = match.group(1).strip()
-        if payload.startswith("---\n") and payload.endswith("\n---"):
-            payload = payload[4:-4]
+        payload_lines = payload.splitlines(keepends=True)
+        if (len(payload_lines) >= 2 and payload_lines[0].strip() == "---"
+                and payload_lines[-1].strip() == "---"):
+            payload = "".join(payload_lines[1:-1])
         record = {"line": text.count("\n", 0, match.start()) + 1}
         try:
             record["data"] = yaml.safe_load(payload)

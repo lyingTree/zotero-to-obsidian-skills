@@ -1,4 +1,5 @@
 from pathlib import Path
+from hashlib import sha256
 import tempfile
 import unittest
 
@@ -40,6 +41,17 @@ class MarkdownInspectionTests(unittest.TestCase):
         result = inspect_markdown(self.note, self.root)
         self.assertTrue(result["image_references"][0]["outside_resource_root"])
         self.assertNotIn("sha256", result["image_references"][0])
+
+    def test_crlf_wrapped_table_is_parsed_without_rewriting_candidate(self):
+        raw = ("```rich-table\r\n---\r\nversion: 2\r\nlocked: true\r\n"
+               "theme: grid\r\ncolumns: []\r\nrows: []\r\n---\r\n```\r\n"
+               "^tbl-1\r\n\r\n$$\r\nx=y\\tag{1}\r\n$$\r\n^eq-1\r\n").encode()
+        self.note.write_bytes(raw)
+        result = inspect_markdown(self.note, self.root)
+        self.assertTrue(result["rich_tables"][0]["data"]["locked"])
+        self.assertEqual(result["display_equations"][0]["text"], "$$\r\nx=y\\tag{1}\r\n$$")
+        self.assertEqual(result["sha256"], sha256(raw).hexdigest())
+        self.assertEqual(self.note.read_bytes(), raw)
 
     def test_parseable_tables_retain_block_and_flow_style_evidence(self):
         self.note.write_text(
