@@ -273,3 +273,52 @@ fn table_writer_roundtrip_and_fence_length(){
     let mut invalid=v.clone();invalid["sheets"][0]["locked"]=json!(false);
     assert!(yaml_emit::rich_table(&invalid,"tbl-1",true,"\n").is_err());
 }
+
+
+#[test]
+fn native_normalizer_protects_and_replays(){
+    use z2o_native::normalize;
+    let input=r"持续60 min，速度+81.860节，变化−0.0040%，占31.$2\%$。另有$12$分钟。";
+    let report=normalize::normalize(input).unwrap();
+    assert_eq!(report["text"],r"持续$60\,\mathrm{min}$，速度$+81.860\,\text{节}$，变化$−0.0040\%$，占$31.2\%$。另有$12\,\text{分钟}$。");
+    let mut replay:Vec<char>=input.chars().collect();
+    for change in report["changes"].as_array().unwrap(){
+        let a=change["start"].as_u64().unwrap() as usize;
+        let b=change["end"].as_u64().unwrap() as usize;
+        assert_eq!(replay[a..b].iter().collect::<String>(),change["before"].as_str().unwrap());
+        replay.splice(a..b,change["after"].as_str().unwrap().chars());
+    }
+    assert_eq!(replay.iter().collect::<String>(),report["text"].as_str().unwrap());
+    assert_eq!(normalize::normalize(report["text"].as_str().unwrap()).unwrap()["changes"],json!([]));
+    assert_eq!(report["idempotent"],true);
+    let protected=["2024年；12:45 UTC；UTC 1200 h；第3节；图2秒；A3m；1,250 kg；3±2 m；5–7 km；60 km/h；1.3e-4 m。",
+        "\x60a 60 min\x60 和 \x60\x60含内部 \x60 81节 — 中 A\x60\x60",
+        "https://host/中—A/60min DOI 10.1022/ab—6min",
+        "[id]: <目标/60 min—ab>\n  \"测试 中 A\"",
+        "> 原文摘录\n其长度为 5 m。",
+        "[x](<folder/part) 90 min—b> \"caption) 40 min—x\")",
+        "<PrE lang='txt'>\n5 m\n</pre>",
+        "---\n中 A — 30 min\n\n## 3 段\n\n尾"];
+    for source in protected{
+        let result=normalize::normalize(source).unwrap();
+        assert_eq!(result["text"],source,"{result}");
+    }
+    let linked=normalize::normalize("[持续60 min](https://x/a(b)—c) [[图—1|值25%]]").unwrap();
+    assert_eq!(linked["text"],r"[持续$60\,\mathrm{min}$](https://x/a(b)—c) [[图—1|值$25\%$]]");
+}
+#[test]
+fn native_normalizer_crlf_and_exclusive_destination(){
+    use z2o_native::normalize;
+    let source=("# Original title\n\n中文标题\n作者：甲\n## 2 实验\n\n正文\n".to_owned()+
+        "![源](path/abc123.png)\n\n**图1：** 描述\n\n^fig-1\n$$\nx=1\n$$\n\n^eq-1\n下一段").replace('\n',"\r\n");
+    let expected=("# Original title\n中文标题\n\n作者：甲\n\n## 2 实验\n正文\n\n".to_owned()+
+        "![源](path/abc123.png)  \n**图1：** 描述\n^fig-1\n\n$$\nx=1\n$$\n^eq-1\n\n下一段").replace('\n',"\r\n");
+    assert_eq!(normalize::normalize(&source).unwrap()["text"],expected);
+    let directory=tempdir().unwrap();let input=directory.path().join("原稿.md");let output=directory.path().join("规范化.md");
+    fs::write(&input,&source).unwrap();
+    let result=normalize::normalize_file(&input,&output).unwrap();
+    assert_eq!(fs::read_to_string(&output).unwrap(),result["text"].as_str().unwrap());
+    assert!(normalize::normalize_file(&input,&input).is_err());
+    assert!(normalize::normalize_file(&input,&output).is_err());
+    assert_eq!(fs::read_to_string(&input).unwrap(),source);
+}

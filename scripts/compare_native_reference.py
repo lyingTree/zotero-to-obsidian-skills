@@ -17,6 +17,7 @@ import source_url_inventory as urls
 import render_note as renderer
 sys.path.insert(0, str(ROOT.joinpath('tests')))
 from test_render_note import fixture as render_fixture
+import test_normalize_note as normalize_suite
 
 BINARY = ROOT.joinpath("native", "target", "debug", "z2o.exe" if sys.platform == "win32" else "z2o")
 
@@ -145,7 +146,7 @@ class ReferenceComparison(unittest.TestCase):
             lambda p, c: c.pop("eq"),
             lambda p, c: c["eq"].update(latex="tamper"),
             lambda p, c: p["units"][4].update(anchor="fig-1"),
-            lambda p, c: p["units"][4].update(latex="a\n$\n## injected"),
+            lambda p, c: p["units"][4].update(latex="a\n$$\n## injected"),
             lambda p, c: p["units"][2]["literals"].update(scale="# forged"),
             lambda p, c: c["body"].update(text="{{link:unknown}}"),
             lambda p, c: p["units"][1].update(level=4),
@@ -158,6 +159,42 @@ class ReferenceComparison(unittest.TestCase):
             self.assertEqual(actual["text"], expected["text"])
             self.assertEqual(actual["mapping"], expected["mapping"])
             self.assertEqual(actual["findings"][0]["field"], expected["findings"][0]["field"])
+
+
+
+class NativeNormalizationComparison(normalize_suite.NoteNormalization):
+    """Run every frozen reference fixture, then compare the entire native report."""
+    def check(self, source):
+        expected = super().check(source)
+        with tempfile.TemporaryDirectory() as folder:
+            request = Path(folder).joinpath("request.json")
+            request.write_text(json.dumps({"schema_version": 1,
+                "operation": "normalize_note.normalize_note", "args": [source]},
+                ensure_ascii=False), encoding="utf-8")
+            completed = subprocess.run([str(BINARY), "invoke", str(request)], check=True,
+                capture_output=True, encoding="utf-8", timeout=45)
+            actual = json.loads(completed.stdout)["result"]
+        self.assertEqual(actual, expected)
+        return actual
+
+    def test_exclusive_destination(self):
+        super().test_exclusive_destination()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source, destination = root.joinpath("原稿.md"), root.joinpath("规范.md")
+            source.write_bytes(b"60 min\r\n")
+            request = root.joinpath("request.json")
+            request.write_text(json.dumps({"schema_version": 1,
+                "operation": "normalize_note.normalize_file",
+                "args": [str(source), str(destination)]}, ensure_ascii=False), encoding="utf-8")
+            result = subprocess.run([str(BINARY), "invoke", str(request)], check=True,
+                capture_output=True, encoding="utf-8", timeout=45)
+            report = json.loads(result.stdout)["result"]
+            self.assertEqual(destination.read_bytes(), report["text"].encode())
+            repeated = subprocess.run([str(BINARY), "invoke", str(request)],
+                capture_output=True, encoding="utf-8", timeout=45)
+            self.assertNotEqual(repeated.returncode, 0)
+            self.assertEqual(source.read_bytes(), b"60 min\r\n")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@ pub mod properties;
 pub mod tables;
 pub mod yaml_emit;
 pub mod render;
+pub mod syntax;
+pub mod normalize;
 pub mod source_urls;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
@@ -47,6 +49,8 @@ pub const OPERATIONS: &[&str] = &[
     "render_note.content_template",
     "render_note.render_note",
     "format_helpers.build_rich_table_block",
+    "normalize_note.normalize_note",
+    "normalize_note.normalize_file",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -306,6 +310,16 @@ pub fn invoke(request: Value) -> Result<Value> {
             let nl = c.option("newline",json!("\n"));
             let nl = nl.as_str().ok_or_else(||anyhow!("newline must be LF or CRLF"))?;
             c.finish()?; json!(yaml_emit::rich_table(&data,&anchor,wrapped,nl)?)
+        }
+        "normalize_note.normalize_note" => {
+            let text = c.positional("text")?;
+            let text = text.as_str().ok_or_else(||anyhow!("text must be a UTF-8 string"))?;
+            c.finish()?; normalize::normalize(text)?
+        }
+        "normalize_note.normalize_file" => {
+            let source = path(&c.positional("source")?)?;
+            let destination = path(&c.positional("destination")?)?;
+            c.finish()?; normalize::normalize_file(&source,&destination)?
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };
