@@ -42,3 +42,25 @@ fn empty_sources_and_units_are_not_valid_delivery(){
     assert_eq!(r["structurally_consistent"],false);assert_eq!(r["native_subset_consistent"],false);
     assert!(r["findings"].as_array().unwrap().iter().any(|v|v["code"]=="INVENTORY_ACCOUNTING"||v["code"]=="MANIFEST_OR_EVIDENCE_INVALID"));
 }
+
+#[test]
+fn manifest_preserves_existing_asset_hash_and_resource_boundary(){
+    use z2o_native::delivery_prepare;
+    let tmp=tempfile::tempdir().unwrap();let root=tmp.path();
+    let resources=root.join("resources");fs::create_dir(&resources).unwrap();
+    let inventory=root.join("inventory.json");save(&inventory,&json!({"schema_version":1,"sources":[],"units":[]}));
+    let candidate=root.join("candidate.md");fs::write(&candidate,"note").unwrap();
+    let image=resources.join("figure.png");fs::write(&image,"original").unwrap();
+    let out=root.join("manifest.json");
+    let bound=z2o_native::check_ledger::bind_file(&image).unwrap();
+    let stale=json!([{"unit":"f","assets":[bound]}]);
+    fs::write(&image,"changed").unwrap();
+    assert!(delivery_prepare::manifest(&inventory,&candidate,&stale,&out,Some(&resources),None,false).is_err());
+    assert!(!out.exists());
+    let outside=root.join("outside.png");fs::write(&outside,"outside").unwrap();
+    let escaped=json!([{"unit":"f","assets":[{"path":outside}]}]);
+    assert!(delivery_prepare::manifest(&inventory,&candidate,&escaped,&out,Some(&resources),None,false).is_err());
+    assert!(!out.exists());
+    let valid=json!([{"unit":"f","assets":[{"path":"figure.png"}]}]);
+    assert!(delivery_prepare::manifest(&inventory,&candidate,&valid,&out,Some(&resources),None,false).is_ok());
+}

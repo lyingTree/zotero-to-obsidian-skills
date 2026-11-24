@@ -350,6 +350,27 @@ pub fn write_maps(run_path:&Path,deliveries:&Value,mut progress:impl FnMut(usize
     ensure!(check_ledger::bind_file(&rp)?==b,"Workflow changed during mapping; preserve newly generated evidence");
     ensure!(source_scope(&run,base)?==expected,"Original sources changed during mapping");Ok(report)
 }
+fn matching_delivery_selectors(manifest:&Value,maps:&[&Value])->Result<()>{
+    let mut expected=BTreeMap::<String,Value>::new();
+    for d in manifest["deliveries"].as_array().context("Explicit manifest deliveries required")?{
+        let id=d["unit"].as_str().filter(|s|!s.is_empty()).context("Missing manifest unit")?;
+        ensure!(d["target"].is_object(),"Missing manifest selector for {id}");
+        ensure!(expected.insert(id.into(),json!({"target":d["target"],"sheet":d["sheet"]})).is_none(),"Duplicate manifest unit {id}");
+    }
+    let mut actual=BTreeMap::<String,Value>::new();
+    for map in maps{
+        let units=&map["units"];
+        let rows:Vec<&Value>=if let Some(a)=units.as_array(){a.iter().collect()}else if let Some(m)=units.as_object(){m.values().collect()}else{anyhow::bail!("Source map units are required")};
+        for row in rows{
+            let id=row["unit"].as_str().filter(|s|!s.is_empty()).context("Missing mapped unit")?;
+            let d=&row["delivery"];
+            ensure!(d["unit"]==id&&row["target"].is_object()&&row["target"]==d["target"],"Contradictory mapped selector for {id}");
+            ensure!(actual.insert(id.into(),json!({"target":d["target"],"sheet":d["sheet"]})).is_none(),"Duplicate mapped unit {id}");
+        }
+    }
+    ensure!(expected==actual,"Manifest and saved source maps must cover identical units, target selectors and worksheet selectors");
+    Ok(())
+}
 pub fn inspect(run_path:&Path,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
     let mut a=Review::new();
     let outcome=(||->Result<()>{
@@ -450,8 +471,23 @@ pub fn inspect(run_path:&Path,mut progress:impl FnMut(usize,usize,&str))->Result
                     if m[field]!=*expected{a.fail("WORKFLOW_MANIFEST_BINDING",field,"Bind the exact inspected file and hash.");}
                 }
             }
+            let r=(||->Result<()>{
+                let manifest_root=files::canonical(&actual_path(&m["resource_root"],p.parent().unwrap(),"manifest resource root")?)?;
+                let original_root=files::canonical(&actual_path(&config["resource_root"],base,"workflow resource root")?)?;
+                ensure!(manifest_root==original_root,"Manifest resource root differs from workflow configuration");Ok(())
+            })();a.issue("WORKFLOW_RESOURCE_ROOT","delivery_manifest.resource_root",r);
+            if let Some((_,main))=loaded.get("source_map"){
+                let mut maps=vec![main];
+                if let Some((_,si))=loaded.get("si_map"){maps.push(si);}
+                let r=matching_delivery_selectors(m,&maps);a.issue("WORKFLOW_DELIVERY_SELECTOR_MISMATCH","delivery_manifest.deliveries",r);
+            }
             match crate::delivery_validate::validate_delivery(p,&mut progress){
-                Ok(report)=>{a.import(&report);a.stages.insert("delivery".into(),report);},
+                Ok(report)=>{
+                    if let Some(rows)=report["checked_files"].as_array(){
+                        for b in rows{let r=a.files.recorded(b,base).map(|_|());a.issue("WORKFLOW_DELIVERY_EVIDENCE","delivery_manifest",r);}
+                    }
+                    a.import(&report);a.stages.insert("delivery".into(),report);
+                },
                 Err(e)=>a.fail("WORKFLOW_DELIVERY","delivery_manifest",format!("{e:#}"))
             }
         }
@@ -461,6 +497,9 @@ pub fn inspect(run_path:&Path,mut progress:impl FnMut(usize,usize,&str))->Result
                 if let Some((p,_))=loaded.get(name){paths.insert(name.into(),json!(path_text(p)?));}
             }
             let report=crate::handoff_native::validate(ip,cp,&Value::Object(paths),&expected,&mut progress)?;
+            if let Some(rows)=report["evidence_files"].as_array(){
+                for b in rows{let r=a.files.recorded(b,base).map(|_|());a.issue("WORKFLOW_MAP_EVIDENCE","handoff_maps",r);}
+            }
             a.import(&report);
             if report["records_ready"]!=true{a.fail("WORKFLOW_MAPS_UNRESOLVED","handoff_maps","Complete source and link mappings for this exact scope.");}
             a.stages.insert("handoff".into(),report);
@@ -505,4 +544,24 @@ pub fn require_completed(run:&Path,progress:impl FnMut(usize,usize,&str))->Resul
     let report=inspect(run,progress)?;
     ensure!(report["records_ready"]==true,"Local records are unfinished; continue the actual unresolved requirements: {}",report["findings"]);
     Ok(report)
+}
+
+#[cfg(test)]
+mod delivery_selector_tests{
+    use super::*;
+    #[test]
+    fn identical_targets_across_main_and_supplement_are_required(){
+        let first=json!({"unit":"p","target":{"lines":[1,2]}});
+        let second=json!({"unit":"t","target":{"lines":[5,8]},"sheet":{"name":"Data"}});
+        let manifest=json!({"deliveries":[first.clone(),second.clone()]});
+        let main=json!({"units":[{"unit":"p","target":first["target"],"delivery":first}]});
+        let si=json!({"units":[{"unit":"t","target":second["target"],"delivery":second}]});
+        assert!(matching_delivery_selectors(&manifest,&[&main,&si]).is_ok());
+        assert!(matching_delivery_selectors(&manifest,&[&main]).is_err());
+        assert!(matching_delivery_selectors(&manifest,&[&main,&si,&main]).is_err());
+        let mut altered=si.clone();altered["units"][0]["delivery"]["sheet"]=json!({"name":"Other"});
+        assert!(matching_delivery_selectors(&manifest,&[&main,&altered]).is_err());
+        let mut altered=main.clone();altered["units"][0]["target"]=json!({"lines":[2,3]});
+        assert!(matching_delivery_selectors(&manifest,&[&altered,&si]).is_err());
+    }
 }

@@ -916,7 +916,9 @@ fn native_translation_review_replays_explicit_decisions_and_pending_gate(){
     let mut w=translation_writer::replay(&prepared,&commands).unwrap();
     assert_eq!(translation_tasks::next(&mut w,8).unwrap()["stage"],"unit");
     let draft=root.join("draft.json");w.draft(&draft).unwrap();
-    let mut restored=translation_writer::Writer::from_draft(&draft).unwrap();
+    let draft_hash=files::snapshot(&draft).unwrap()["sha256"].as_str().unwrap().to_owned();
+    assert!(translation_writer::Writer::from_draft_bound(&draft,Some(&"0".repeat(64))).is_err());
+    let mut restored=translation_writer::Writer::from_draft_bound(&draft,Some(&draft_hash)).unwrap();
     assert_eq!(w.data,restored.data);
     let output=root.join("review.json");let term=root.join("terms.json");
     let report=restored.save(&output,Some(&term)).unwrap();

@@ -75,6 +75,8 @@ pub fn manifest(inventory:&Path,candidate:&Path,deliveries:&Value,dest:&Path,roo
             for a in assets.as_array_mut().context("assets must be an array")?{
                 let p=absolute(&path(&a["path"])?,&root);
                 let b=check_ledger::bind_file(&p)?;
+                ensure!(path(&b["path"])?.starts_with(&root),"Delivery asset escapes resource root");
+                if let Some(expected)=a.get("sha256"){ensure!(expected==&b["sha256"],"Delivery asset changed after binding");}
                 a.as_object_mut().context("asset must be an object")?.extend(b.as_object().unwrap().clone());
                 bindings.push(b);
             }
@@ -110,12 +112,15 @@ pub fn write_workflow_manifest(run:&Path,deliveries:&Value)->Result<PathBuf>{
     let (raw,record)=files::read_bound(run)?;
     let data=parse_json(std::str::from_utf8(&raw)?)?;
     let records=&data["records"];let config=&data["config"];
-    let inv=path(&records["source_inventory"])?;let candidate=path(&config["candidate_path"])?;
-    let dest=path(&records["delivery_manifest"])?;let root=path(&config["resource_root"])?;
-    let tr=if records["translation_review"].is_null(){None}else{Some(path(&records["translation_review"])?)};
+    let run_path=path(&record["path"])?;let base=run_path.parent().context("Workflow directory")?;
+    let inv=absolute(&path(&records["source_inventory"])?,base);let candidate=absolute(&path(&config["candidate_path"])?,base);
+    let dest=absolute(&path(&records["delivery_manifest"])?,base);let root=absolute(&path(&config["resource_root"])?,base);
+    let tr=if records["translation_review"].is_null(){None}else{Some(absolute(&path(&records["translation_review"])?,base))};
     if let Some(p)=&tr{ensure!(p.is_file(),"Prepare and complete translation-review.json before the final delivery index.");}
     // Bind the final file through the existing locked native writer.
     crate::check_write::bind_candidate(run)?;
     ensure!(check_ledger::bind_file(run)?==record,"Workflow record changed during manifest preparation");
-    manifest(&inv,&candidate,deliveries,&dest,Some(&root),tr.as_deref(),true)
+    let out=manifest(&inv,&candidate,deliveries,&dest,Some(&root),tr.as_deref(),true)?;
+    ensure!(check_ledger::bind_file(run)?==record,"Workflow changed during manifest publication; preserve the evidence for inspection");
+    Ok(out)
 }

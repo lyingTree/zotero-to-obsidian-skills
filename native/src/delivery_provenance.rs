@@ -140,9 +140,27 @@ impl Audit{
             let Some(n)=row["page"].as_u64().filter(|n|*n>=1&&*n<=pdf.len() as u64) else{continue;};
             self.record(&row["text"],&format!("{id}:page-{n}:text"));
             self.record(&row["render"],&format!("{id}:page-{n}:render"));
+            if source["inventory_backend"]==crate::pdf_inventory::BACKEND{
+                let ev=&row["pdf_evidence"];
+                for key in ["glyphs","image_structure"]{self.record(&ev[key],&format!("{id}:page-{n}:{key}"));}
+                if let Some(b)=ev.get("ocr").and_then(|v|v.get("record")).filter(|v|!v.is_null()){
+                    self.record(b,&format!("{id}:page-{n}:ocr"));
+                }
+            }
             if let Err(e)=pdf.bounds(n){self.fail("SOURCE_PDF_GEOMETRY",id,e.to_string());}
         }
         if source["inventory_backend"]==crate::pdf_inventory::BACKEND{
+            for row in self.rows(&source["image_objects"],id,"image_objects"){
+                let label=format!("{id}:image-{}:{}",row["image_xref"],row["generation"]);
+                for key in ["encoded_stream","raw_asset"]{
+                    if let Some(b)=row.get(key).filter(|v|!v.is_null()){self.record(b,&format!("{label}:{key}"));}
+                }
+                for key in ["smask_stream","mask_stream"]{
+                    if let Some(b)=row.get(key).and_then(|v|v.get("asset")).filter(|v|!v.is_null()){
+                        self.record(b,&format!("{label}:{key}"));
+                    }
+                }
+            }
             match crate::pdf_inventory::replay(source,p,|_,_,_|{}){
                 Ok(mut report)=>{report["source_id"]=json!(id);self.pdf_replays.push(report);},
                 Err(e)=>self.fail("PDF_NATIVE_REPLAY_MISMATCH",id,format!("{e:#}")),
@@ -185,7 +203,8 @@ pub fn validate(inventory_path:&Path,mut progress:impl FnMut(usize,usize,&str))-
         audit.fail("FILE_HASH_MISMATCH","inventory","Inventory changed during validation.");
     }
     let complete=audit.findings.is_empty()&&audit.native_count>0&&audit.pdf_count==0;
-    let mut result=json!({"inventory":inventory_binding,"findings":audit.findings,"native_sources_checked":audit.native_count,
+    let checked_files:Vec<_>=audit.checked.values().cloned().collect();
+    let mut result=json!({"inventory":inventory_binding,"checked_files":checked_files,"findings":audit.findings,"native_sources_checked":audit.native_count,
         "pdf_structure_sources_checked":audit.pdf_count,"source_checks_complete":complete,"delivery_ready":false,
         "source_fidelity":"not_assessed","independent_review_required":true,
         "boundary":"Source-provenance subset only. Full delivery, inventory accounting, candidate targets, PDF pixels/text and independent review are not certified."});

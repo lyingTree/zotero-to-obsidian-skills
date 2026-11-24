@@ -1327,8 +1327,11 @@ pub fn invoke(request: Value) -> Result<Value> {
             }
         }
         "translation_review_writer.restore_decision_draft" => {
-            let p=path(&c.positional("draft_path")?)?;c.finish()?;
-            let writer=translation_writer::Writer::from_draft(&p)?;
+            let p=path(&c.positional("draft_path")?)?;
+            let expected=c.option("expected_draft_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_draft_sha256")?)};
+            c.finish()?;
+            let writer=translation_writer::Writer::from_draft_bound(&p,expected.as_deref())?;
             json!({"data":writer.data,"prepared":writer.prepared,"decisions":writer.commands,"terminology_summary":writer.summary})
         }
         "zotero_local.inspect_item" | "zotero_local.catalog" => {

@@ -52,6 +52,15 @@ impl Bindings{
         let v=crate::parse_json(std::str::from_utf8(&raw)?.trim_start_matches('\u{feff}'))?;
         ensure!(v.is_object()&&v["schema_version"].as_u64()==Some(1),"MAP_SCHEMA_VERSION");Ok((v,b))
     }
+    pub(crate) fn all(&self)->Vec<Value>{self.files.values().cloned().collect()}
+    pub(crate) fn merge(&mut self,other:&Self)->Result<()>{
+        other.verify()?;
+        for(p,b)in &other.files{
+            if let Some(old)=self.files.get(p){ensure!(old==b,"MAP_INPUT_CHANGED between stages: {}",p.display());}
+            else{self.files.insert(p.clone(),b.clone());}
+        }
+        Ok(())
+    }
     pub fn verify(&self)->Result<()>{for(p,b)in &self.files{ensure!(check_ledger::bind_file(p)?==*b,"MAP_INPUT_CHANGED: {}",p.display());}Ok(())}
 }
 struct Block{source:String,page:Option<u64>,record:Value,order:usize}
@@ -523,7 +532,10 @@ pub(crate) fn validate_full(inventory:&Path,candidate:&Path,paths:&Value,expecte
 }
 pub fn validate(inventory:&Path,candidate:&Path,paths:&Value,expected:&Value,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
     match validate_full(inventory,candidate,paths,expected,&mut progress){
-        Ok(v)=>Ok(report(v.checked,Map::new(),vec![])),Err(e)=>Ok(report(Map::new(),Map::new(),vec![finding(e)])),
+        Ok(v)=>{
+            let mut r=report(v.checked,Map::new(),vec![]);
+            r["evidence_files"]=json!(v.bindings.all());Ok(r)
+        },Err(e)=>Ok(report(Map::new(),Map::new(),vec![finding(e)])),
     }
 }
 

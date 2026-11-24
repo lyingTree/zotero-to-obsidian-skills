@@ -35,7 +35,7 @@ impl Audit{
     }
     fn file(&mut self,row:&Value,base:&Path)->Result<Value>{self.bindings.recorded(row,base)}
     fn ledger(&mut self,inv:&Value,manifest:&Value,ib:&Path,mb:&Path,key:&str,pointer:&str)->Result<Option<(PathBuf,Value)>>{
-        if inv.get(pointer).is_none()&&manifest.get(key).is_none(){return Ok(None);}
+        if manifest.get(key).is_none()&&(inv.get(pointer).is_none()||key=="terminology"&&(inv[pointer].is_null()||inv[pointer]=="")){return Ok(None);}
         let p=files::canonical(&ib.join(path(&inv[pointer])?))?;
         let b=self.file(&manifest[key],mb)?;
         ensure!(path(&b["path"])?==p,"{key}: bind the exact ledger named by the inventory");
@@ -185,11 +185,16 @@ fn inventory_checks(a:&mut Audit,inventory:&Value,base:&Path)->Result<()>{
     for row in url["invalid_bindings"].as_array().unwrap(){a.fail("SOURCE_URL_BINDING",row["unit"].as_str().unwrap_or("url"),row["reason"].as_str().unwrap_or("Invalid occurrence binding"));}
     Ok(())
 }
-fn asset(a:&mut Audit,b:&Value,base:&Path)->Result<Value>{a.file(b,base)}
+fn asset(a:&mut Audit,b:&Value,base:&Path)->Result<Value>{
+    let p=files::canonical(&base.join(path(&b["path"])?))?;
+    ensure!(p.starts_with(base),"FIGURE_RESOURCE_OUTSIDE_ROOT: {}",p.display());
+    a.file(b,base)
+}
 fn local_image(a:&mut Audit,href:&str,root:&Path)->Result<Value>{
     let raw=percent_encoding::percent_decode_str(href).decode_utf8()?;
     ensure!(!regex::Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:")?.is_match(&raw)&&!raw.starts_with("//"),"Local image required");
     let p=files::canonical(&root.join(raw.as_ref()))?;
+    ensure!(p.starts_with(root),"FIGURE_RESOURCE_OUTSIDE_ROOT: {}",p.display());
     let b=a.bindings.capture(&p)?;
     ensure!(fs::metadata(&p)?.len()<=128*1024*1024,"Image exceeds decode budget");
     let mut reader=image::ImageReader::open(&p)?.with_guessed_format()?;
@@ -255,7 +260,7 @@ fn targets(a:&mut Audit,inv:&Value,manifest:&Value,candidate:&Candidate,root:&Pa
                     },
                     "doi"=>ensure!(regex::Regex::new(r"^10\.\d{4,9}/\S+$")?.is_match(value)&&links.iter().any(|l|!l.image&&percent_encoding::percent_decode_str(&l.href).decode_utf8_lossy().eq_ignore_ascii_case(&format!("https://doi.org/{value}"))),"Source DOI not delivered canonically"),
                     "email"=>ensure!(regex::Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")?.is_match(value)&&links.iter().any(|l|!l.image&&l.href.split('?').next().unwrap_or("").eq_ignore_ascii_case(&format!("mailto:{value}"))),"Literal source email not delivered"),
-                    "header_note"=>ensure!(visible.lines().filter(|s|!s.trim().is_empty()).all(|s|s.trim_start().starts_with('>')),"Source header note must be blockquote"),
+                    "header_note"=>ensure!(!visible.trim().is_empty()&&visible.lines().filter(|s|!s.trim().is_empty()).all(|s|s.trim_start().starts_with('>')),"Source header note must be a nonempty blockquote"),
                     _=>{},
                 }
             }
@@ -311,7 +316,7 @@ fn figures(a:&mut Audit,inv:&Value,manifest:&Value,ledger:&Value,ledger_path:&Pa
     ensure!(rows.keys().map(String::as_str).collect::<BTreeSet<_>>()==wanted,"Figure review unit coverage differs");
     for(id,row)in rows{
         let r=(||->Result<()>{
-            let u=units[&id];let sid=u["source"].as_str().context("Figure source")?;let s=sources[sid];
+            let u=units[&id];let sid=u["source"].as_str().context("Figure source")?;let s=*sources.get(sid).context("Unknown figure source")?;
             ensure!(row["source"]==sid,"Figure source identity differs");
             let source=a.file(s,ib)?;ensure!(a.file(&row["source_file"],base)?==source,"Figure source binding differs");
             let locs=list(&row["source_locations"],"figure source locations")?;
@@ -334,7 +339,8 @@ fn figures(a:&mut Audit,inv:&Value,manifest:&Value,ledger:&Value,ledger_path:&Pa
                 }
             }
             let assets=list(&row["final_assets"],"final assets")?;
-            let delivered=list(&deliveries[&id]["assets"],"delivery assets")?;
+            let delivery=*deliveries.get(&id).context("Missing figure delivery")?;
+            let delivered=list(&delivery["assets"],"delivery assets")?;
             ensure!(!assets.is_empty()&&assets.len()==delivered.len(),"Figure final asset coverage differs");
             let mut seen=HashSet::new();let mut bound=Vec::new();
             for(x,y)in assets.iter().zip(delivered){
@@ -421,6 +427,8 @@ pub fn validate_delivery(manifest_path:&Path,mut progress:impl FnMut(usize,usize
         let candidate=Candidate::new(&raw)?;
         for f in validate::validate_note(&candidate.raw){if f.level=="error"{a.findings.push(json!({"code":format!("NOTE_{}",f.code),"object_id":"candidate","message":f.message,"level":"error","line":f.line}));}}
         let r=delivery_provenance::validate(&ip,&mut progress)?;
+        ensure!(r["inventory"]==ib,"Source inventory changed between validation stages");
+        for b in r["checked_files"].as_array().context("Source evidence bindings")?{a.bindings.recorded(b,base)?;}
         stages.insert("source_provenance".into(),r.clone());a.import(&r,"");
         let r=inventory_checks(&mut a,&inv,base);a.result("INVENTORY_ACCOUNTING","inventory",r);
         let r=targets(&mut a,&inv,&manifest,&candidate,&root);a.result("DELIVERY_TARGETS","manifest",r);
@@ -429,7 +437,7 @@ pub fn validate_delivery(manifest_path:&Path,mut progress:impl FnMut(usize,usize
         let mut ds=manifest["deliveries"].clone();
         if let Some(rows)=ds.as_array_mut(){for row in rows{if row.is_object()&&row.get("resource_root").is_none(){row["resource_root"]=json!(crate::path_text(&root)?);}}}
         let derived=handoff_native::derive_for_delivery(&ip,&cp,&ds,&mut progress);
-        match derived{Ok((docs,b))=>{b.verify()?;stages.insert("handoff_derivation".into(),json!({"map_names":docs.as_object().unwrap().keys().collect::<Vec<_>>(),"records_consistent":true}));},Err(e)=>a.fail("DELIVERY_HANDOFF","manifest",format!("{e:#}"))}
+        match derived{Ok((docs,b))=>{a.bindings.merge(&b)?;stages.insert("handoff_derivation".into(),json!({"map_names":docs.as_object().unwrap().keys().collect::<Vec<_>>(),"records_consistent":true}));},Err(e)=>a.fail("DELIVERY_HANDOFF","manifest",format!("{e:#}"))}
         let r=(||->Result<()>{
             if let Some((p,l))=a.ledger(&inv,&manifest,base,mb,"terminology","terminology_path")?{terminology(&mut a,&inv,&l,p.parent().unwrap())?;}Ok(())
         })();a.result("TERMINOLOGY","terminology",r);
@@ -453,7 +461,8 @@ pub fn validate_delivery(manifest_path:&Path,mut progress:impl FnMut(usize,usize
     // Keep the original full gate fail-closed until the remaining historical
     // delivery behaviors are migrated and independently regression tested.
     let subset_consistent=a.findings.is_empty();
+    let checked_files=a.bindings.all();
     a.fail("NATIVE_DELIVERY_PARITY_PENDING","manifest","Native source, target and review subsets ran; complete historical delivery equivalence is not yet qualified.");
     Ok(json!({"findings":a.findings,"structurally_consistent":false,"native_subset_consistent":subset_consistent,
-        "stage_reports":stages,"source_fidelity":"not_assessed","independent_review_required":true,"evidence_boundary":BOUNDARY}))
+        "stage_reports":stages,"checked_files":checked_files,"source_fidelity":"not_assessed","independent_review_required":true,"evidence_boundary":BOUNDARY}))
 }

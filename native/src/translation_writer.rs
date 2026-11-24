@@ -98,7 +98,9 @@ impl Writer{
         let inventory_path=bound_path(&data["bindings"]["source_inventory"],&base)?;
         let candidate_path=bound_path(&data["bindings"]["candidate"],&base)?;
         let glossary_path=if data["bindings"]["glossary"].is_null(){None}else{Some(bound_path(&data["bindings"]["glossary"],&base)?)};
-        let inventory=pipeline::read_json(&inventory_path)?;
+        let (inventory_bytes,inventory_binding)=files::read_bound(&inventory_path)?;
+        ensure!(inventory_binding["sha256"]==data["bindings"]["source_inventory"]["sha256"],"TRW_STALE_BINDING: inventory changed while loading");
+        let inventory=parse_json(std::str::from_utf8(&inventory_bytes)?.trim_start_matches('\u{feff}'))?;
         let sources=index(&inventory["sources"],"inventory sources")?;let units=index(&inventory["units"],"inventory units")?;
         let selected=ids(&data["scope"]["selected_units"],"selected units")?;
         ensure!(!selected.is_empty(),"TRW_TARGETS: no selected units");
@@ -123,7 +125,9 @@ impl Writer{
         }
         let summary=data["writer_metadata"]["terminology_summary"].as_object().map(|m|Value::Object(m.clone()))
             .unwrap_or(json!({"review_status":"pending","covered_units":[],"no_unlisted_reason":null}));
-        let candidate_text=fs::read_to_string(&candidate_path)?;
+        let (candidate_bytes,candidate_binding)=files::read_bound(&candidate_path)?;
+        ensure!(candidate_binding["sha256"]==data["bindings"]["candidate"]["sha256"],"TRW_STALE_BINDING: candidate changed while loading");
+        let candidate_text=String::from_utf8(candidate_bytes)?;
         let mut result=Self{prepared,data,commands:vec![],summary,inventory,source_bindings:bindings,candidate_path,inventory_path,glossary_path,
             candidate_text,selected,base,sources,units,cache:tv::Cache::default(),index:None};
         result.verify()?;Ok(result)
@@ -511,16 +515,27 @@ impl Writer{
         self.verify()?;
         let v=json!({"schema_version":1,"format":"translation-review-decisions-v1","prepared":self.prepared,"decisions":self.commands,
             "boundary":"Explicit decisions only. Resume requires the original unchanged prepared inputs; no cross-version inheritance."});
-        write_new(p,&v)
+        let out=write_new(p,&v)?;
+        self.verify()?;
+        ensure!(pipeline::read_json(&out)?==v,"TRW_DRAFT: saved decisions changed");
+        Ok(out)
     }
-    pub fn from_draft(p:&Path)->Result<Self>{
-        let d=pipeline::read_json(p)?;
+    pub fn from_draft(p:&Path)->Result<Self>{Self::from_draft_bound(p,None)}
+    pub fn from_draft_bound(p:&Path,expected_sha256:Option<&str>)->Result<Self>{
+        let (raw,draft_binding)=files::read_bound(p)?;
+        if let Some(sha)=expected_sha256{
+            ensure!(draft_binding["sha256"].as_str()==Some(sha),"TRW_STALE_BINDING: decision draft hash differs from the expected revision");
+        }
+        let draft_path=path(&draft_binding["path"])?;
+        let d=parse_json(std::str::from_utf8(&raw)?.trim_start_matches('\u{feff}'))?;
         ensure!(d["schema_version"].as_u64()==Some(1)&&d["format"]=="translation-review-decisions-v1","TRW_DRAFT: use a writer decision draft");
-        let prepared=bind(&d["prepared"],p.parent().unwrap_or(Path::new(".")))?;
+        let prepared=bind(&d["prepared"],draft_path.parent().context("Draft directory")?)?;
         let mut writer=Self::open(&path(&prepared["path"])?)?;
         ensure!(writer.prepared==prepared,"TRW_STALE_BINDING: prepared file changed");
         for command in rows(&d["decisions"],"decisions")?{writer.apply(command)?;}
-        writer.verify()?;Ok(writer)
+        writer.verify()?;
+        ensure!(prep::bind_file(&draft_path)?==draft_binding,"TRW_STALE_BINDING: decision draft changed during replay");
+        Ok(writer)
     }
     pub fn save(&mut self,p:&Path,term:Option<&Path>)->Result<Value>{
         self.verify()?;
@@ -543,7 +558,13 @@ impl Writer{
         }
         self.verify()?;verify_tree(&payload,dest.parent().unwrap())?;
         let out=write_new(&dest,&payload)?;
-        tv::validate(&out,Some(&self.inventory_path),Some(&self.candidate_path))
+        let (raw,output_binding)=files::read_bound(&out)?;
+        ensure!(parse_json(std::str::from_utf8(&raw)?)?==payload,"TRW_OUTPUT_CHANGED: review changed before validation");
+        let report=tv::validate(&out,Some(&self.inventory_path),Some(&self.candidate_path))?;
+        self.verify()?;
+        verify_tree(&payload,dest.parent().unwrap())?;
+        ensure!(prep::bind_file(&out)?==output_binding,"TRW_OUTPUT_CHANGED: review changed during validation");
+        Ok(report)
     }
 }
 fn planned(p:&Path)->Result<PathBuf>{
