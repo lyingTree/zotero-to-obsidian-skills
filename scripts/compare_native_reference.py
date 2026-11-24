@@ -1136,6 +1136,89 @@ class NativeSourceProvenanceComparison(unittest.TestCase):
             fixture.doCleanups()
 
 
+class NativeExplicitPdfMaskComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def fixture(self, name, mask_fields="", mode="normal"):
+        import fitz
+        source = self.root.joinpath(name + ".pdf")
+        with fitz.open() as document:
+            page = document.new_page(width=100, height=80)
+            mask = document.get_new_xref()
+            document.update_object(mask,
+                "<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ImageMask true /BitsPerComponent 1 "
+                + mask_fields + " >>")
+            document.update_stream(mask, bytes([0b01010101]), compress=False)
+            image = document.get_new_xref()
+            mask_field = ("/Mask [0 0 0 0 0 0]" if mode == "color-key" else f"/Mask {mask} 0 R")
+            soft_field = f" /SMask {mask} 0 R" if mode == "combined" else ""
+            document.update_object(image,
+                "<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceRGB "
+                f"/BitsPerComponent 8 {mask_field}{soft_field} >>")
+            document.update_stream(image, bytes([255, 0, 0, 0, 0, 255]), compress=False)
+            content = document.get_new_xref()
+            document.update_object(content, "<< >>")
+            document.update_stream(content, b"0 1 0 rg 0 0 100 80 re f q 40 0 0 20 20 20 cm /Im Do Q", compress=True)
+            document.xref_set_key(page.xref, "Contents", f"{content} 0 R")
+            document.xref_set_key(page.xref, "Resources", f"<< /XObject << /Im {image} 0 R >> >>")
+            document.save(source)
+        return source, image, mask
+
+    def test_explicit_mask_alpha_matches_independent_reference_page_pixels(self):
+        import fitz
+        from PIL import Image
+        import pdf_image_objects as reference
+        for name, field, alpha in (("default", "", (255, 0)), ("inverted", "/Decode [1 0]", (0, 255))):
+            with self.subTest(name=name):
+                source, image, mask = self.fixture(name, field)
+                frozen = hashlib.sha256(source.read_bytes()).hexdigest()
+                with self.assertRaises(reference.PageRenderRequired):
+                    reference.export_image_object(source, page_number=1, image_xref=image,
+                                                  destination=self.root.joinpath("legacy-" + name), progress=None)
+                receipt = self.invoke("pdf_image_objects.export_image_object", str(source), page_number=1,
+                    image_xref=image, destination=str(self.root.joinpath(name + "-native.png")), expected_source_sha256=frozen)
+                self.assertEqual(receipt["method"], "explicit_mask_composited_png")
+                self.assertEqual(receipt["source_object"]["explicit_mask"]["image_xref"], mask)
+                self.assertEqual(receipt["source_object"]["explicit_mask"]["decoded_alpha_sha256"],
+                                 hashlib.sha256(bytes(alpha)).hexdigest())
+                self.assertEqual(receipt["source_fidelity"], "not_assessed")
+                self.assertEqual(receipt["visual_review"]["status"], "pending")
+                with Image.open(receipt["asset"]["path"]) as extracted, fitz.open(source) as document:
+                    self.assertEqual(extracted.mode, "RGBA")
+                    self.assertEqual(extracted.size, (2, 1))
+                    self.assertEqual(tuple(extracted.getpixel((i, 0))[3] for i in range(2)), alpha)
+                    rendered = document[0].get_pixmap(alpha=False, colorspace=fitz.csRGB)
+                    composite = Image.new("RGBA", extracted.size, (0, 255, 0, 255))
+                    composite.alpha_composite(extracted)
+                    self.assertEqual([composite.getpixel((i, 0))[:3] for i in range(2)],
+                                     [rendered.pixel(x, 50) for x in (30, 50)])
+                self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), frozen)
+
+    def test_unqualified_explicit_mask_cases_fail_before_output(self):
+        for name, mask_fields, mode, detail in (
+            ("resampled", "/Width 4", "normal", "resolution differs"),
+            ("bad-decode", "/Decode [0 0]", "normal", "unsupported explicit Mask Decode"),
+            ("interpolated", "/Interpolate true", "normal", "requests interpolation"),
+            ("bad-mask-kind", "/ImageMask false", "normal", "declare ImageMask true"),
+            ("external-mask-stream", "/F (another-source.bin)", "normal", "unsupported explicit Mask F"),
+            ("compound", "", "combined", "combined explicit Mask and SMask"),
+            ("array", "", "color-key", "color-key masks are not supported"),
+        ):
+            with self.subTest(name=name):
+                source, image, _ = self.fixture(name, mask_fields, mode)
+                target = self.root.joinpath(name + "-output")
+                before = source.read_bytes()
+                with self.assertRaises(subprocess.CalledProcessError) as e:
+                    self.invoke("pdf_image_objects.export_image_object", str(source), page_number=1,
+                                image_xref=image, destination=str(target))
+                self.assertIn(detail, e.exception.stderr)
+                self.assertFalse(target.with_suffix(".png").exists())
+                self.assertFalse(target.with_suffix(".jpeg").exists())
+                self.assertEqual(source.read_bytes(), before)
+
+
+
 class NativeBoundMappingComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp
     invoke = ReferenceComparison.invoke
@@ -1428,6 +1511,42 @@ class NativeTranslationSelectionComparison(unittest.TestCase):
 class NativeTranslationLifecycleComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp
     invoke = ReferenceComparison.invoke
+
+    def test_historical_cr_glossary_draft_restores_and_publishes(self):
+        import test_translation_review_writer as suite
+
+        root = self.root.joinpath("old-mac-glossary")
+        example = suite.example.demonstrate(root)
+        glossary = example["glossary_path"]
+        glossary.write_bytes(glossary.read_bytes().replace(b"\n", b"\r"))
+        prepared = root.joinpath("prepared-cr.json")
+        suite.tools.PREPARE.prepare_translation_review(example["inventory_path"], example["candidate_path"],
+            prepared, glossary_path=glossary, unit_ids=[suite.example.UNIT_ID], progress=None)
+        writer = suite.tools.ReviewWriter(prepared, progress=None)
+        for decision in json.loads(example["draft_path"].read_text(encoding="utf-8"))["decisions"]:
+            writer._replay(decision)
+        writer.source_issues_review("passed", "Compared the complete invented source sentence.")
+        writer.terminology_review("reviewed", covered_units=[suite.example.UNIT_ID],
+                                  no_unlisted_reason="Both invented terms matched the glossary.")
+        writer.review("reviewed")
+        draft = writer.save_draft(root.joinpath("decisions-cr.json"))
+        draft_before = draft.read_bytes()
+        expected_terms = root.joinpath("python-terms-cr.json")
+        expected = writer.save(root.joinpath("python-review-cr.json"), terminology_path=expected_terms).to_dict()
+        self.assertTrue(expected["records_ready"])
+        self.assertEqual(expected["findings"], [])
+
+        snapshot = self.invoke("translation_review_writer.restore_decision_draft", str(draft))
+        self.assertEqual(snapshot["data"], writer.data)
+        actual_terms = root.joinpath("native-terms-cr.json")
+        actual = self.invoke("translation_review_writer.save_review", str(prepared), snapshot["decisions"],
+                             output_path=str(root.joinpath("native-review-cr.json")), terminology_path=str(actual_terms))
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual["source_fidelity"], "not_assessed")
+        self.assertEqual(actual["execution_truth"], "not_assessed")
+        self.assertEqual(json.loads(actual_terms.read_text(encoding="utf-8")),
+                         json.loads(expected_terms.read_text(encoding="utf-8")))
+        self.assertEqual(draft.read_bytes(), draft_before)
 
     def test_complete_legacy_review_replays_a_relative_glossary_binding(self):
         import test_translation_review_writer as suite

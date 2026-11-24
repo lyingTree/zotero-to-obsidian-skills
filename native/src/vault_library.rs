@@ -43,18 +43,48 @@ fn inspect_note(p:&Path,root:&Path)->Result<Value>{
     let (raw,b)=files::read_bound(p)?;ensure!(raw.len() as u64<=LIMIT,"Note exceeds size budget");
     let parts=properties::split(&raw)?;
     let meta=if let Some(payload)=parts.payload{properties::parse_yaml(payload)?}else{Value::Null};
-    // The actual final item URI is enumerated outside fences/comments by
-    // the native candidate scanner. Ignore cited Zotero links inside text.
+    // The source link must itself be the final visible standalone footer
+    // line. A matching link at the end of a sentence, a list/blockquote, or
+    // a decoded table field whose fallback span reaches EOF is not a footer.
     let c=Candidate::new(&raw)?;
-    let mut locations=vec![];
+    let trimmed_end=c.raw.trim_end().len();
+    let mut prior_headings=vec![];
+    let mut final_locator=None;
+    let (mut searched,mut line_start)=(0,0);
     for l in &c.links{
-        if l.image||!matches!(norm(&l.label).as_str(),"zotero 原条目"|"zotero原条目"){continue;}
-        if let Some((group,k))=parse_uri(&l.href){
-            let tail=c.raw[l.span.end..].trim();
-            if !tail.is_empty(){continue;}
-            locations.push(json!({"group_id":group,"item_key":k,"uri":l.href,"locator":l.locator}));
+        if l.image||l.syntax!="markdown"||l.locator["kind"]!="characters"||
+            !matches!(norm(&l.label).as_str(),"zotero 原条目"|"zotero原条目"){continue;}
+        let Some((group,k))=parse_uri(&l.href)else{continue;};
+        // Links are already sorted by source span. Search each disjoint
+        // interval only once even with many matching labels on one line.
+        if let Some(pos)=c.raw[searched..l.span.start].rfind(['\r','\n']){
+            line_start=searched+pos+1;
         }
+        searched=l.span.start;
+        let prefix=&c.raw[line_start..l.span.start];
+        let heading=prefix.strip_prefix("##").is_some_and(|rest|
+            !rest.is_empty()&&rest.bytes().all(|b|matches!(b,b' '|b'\t')));
+        if !heading{
+            if !prefix.is_empty(){continue;}
+            // A historical bare link begins its own paragraph, not a
+            // soft-wrapped line or a lazy continuation of a list/blockquote.
+            let previous=&c.raw[..line_start];
+            let previous=previous.strip_suffix("\r\n").or_else(||previous.strip_suffix(['\r','\n'])).unwrap_or(previous);
+            if !previous.rsplit(['\r','\n']).next().unwrap_or_default().trim().is_empty(){continue;}
+        }
+        if c.raw[l.span.start..l.span.end].contains(['\r','\n']){continue;}
+        let tail=&c.raw[l.span.end..];
+        let same_line=tail.split(['\r','\n']).next().unwrap_or_default();
+        if !same_line.bytes().all(|b|matches!(b,b' '|b'\t')){continue;}
+        let locator=json!({"group_id":group,"item_key":k,"uri":l.href,"locator":l.locator});
+        if l.span.end==trimmed_end{final_locator=Some(locator);}
+        else if heading{prior_headings.push(locator);}
     }
+    let locations=if let Some(locator)=final_locator{
+        // Earlier canonical headings make the note ambiguous rather than
+        // silently allowing the last one to replace a competing identity.
+        prior_headings.push(locator);prior_headings
+    }else{vec![]};
     ensure!(check_ledger::bind_file(p)?==b,"Note changed during inspection");
     Ok(json!({"relative_path":rel(root,p)?,"file":b,"metadata":meta,"identity_candidates":locations,
         "status":if locations.len()==1{"item_locator_found"}else if locations.is_empty(){"item_locator_missing"}else{"ambiguous_item_locator"},

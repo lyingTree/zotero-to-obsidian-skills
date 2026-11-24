@@ -228,13 +228,38 @@ fn startup_signatures(log:&str)->Vec<&'static str>{
         .chain(patterns.iter().filter(|(_,markers)|markers.iter().any(|marker|log.contains(marker))).map(|(code,_)|*code))
         .collect()
 }
+// Keep the same conservative reservation. Report only byte counts when the
+// host cannot satisfy it; a startup log does not exist in that case.
+const MODEL_MEMORY_RESERVE:u64=2*GIB;
+#[derive(Debug)]
+struct MemoryBudgetError{available_bytes:u64,required_bytes:u64,host_weight_bytes:u64}
+impl MemoryBudgetError{
+    fn json(&self)->Value{
+        json!({"available_bytes":self.available_bytes,"required_bytes":self.required_bytes,
+            "host_weight_bytes":self.host_weight_bytes,"reserve_bytes":MODEL_MEMORY_RESERVE})
+    }
+}
+impl std::fmt::Display for MemoryBudgetError{
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{
+        f.write_str("Insufficient conservative memory budget for this MiniCPM attempt")
+    }
+}
+impl std::error::Error for MemoryBudgetError{}
+fn require_model_memory(available_bytes:u64,weight_bytes:u64,gpu:bool)->Result<()>{
+    let host_weight_bytes=if gpu{0}else{weight_bytes};
+    let required_bytes=host_weight_bytes.saturating_add(MODEL_MEMORY_RESERVE);
+    if available_bytes<required_bytes{
+        return Err(MemoryBudgetError{available_bytes,required_bytes,host_weight_bytes}.into());
+    }
+    Ok(())
+}
 impl Server{
     fn start(p:&Package,e:&EngineFiles,gpu:bool,timeout:Duration)->Result<Self>{
         p.verify_models()?;e.verify()?;
-        let mut sys=sysinfo::System::new();sys.refresh_memory();
         let weight_bytes=fs::metadata(path(&p.model["path"])?)?.len()+fs::metadata(path(&p.projector["path"])?)?.len()+
             p.draft.as_ref().map(|b|fs::metadata(path(&b["path"])?).map(|m|m.len()).map_err(anyhow::Error::from)).transpose()?.unwrap_or(0);
-        ensure!(sys.available_memory()>=if gpu{2*GIB}else{weight_bytes.saturating_add(2*GIB)},"Insufficient conservative memory budget for this MiniCPM attempt");
+        let mut sys=sysinfo::System::new();sys.refresh_memory();
+        require_model_memory(sys.available_memory(),weight_bytes,gpu)?;
         let temp=tempfile::Builder::new().prefix("z2o-llama-").tempdir()?;
         let a=tempfile::NamedTempFile::new_in(temp.path())?;
         let b=tempfile::NamedTempFile::new_in(temp.path())?;
@@ -339,6 +364,7 @@ fn attempts(p:&Package,acceleration:&str,timeout:Duration,route:&str,body:&Value
             Err(e)=>{
                 let mut attempt=json!({"mode":mode,"status":"failed","reason":format!("{e:#}"),"elapsed_seconds":started.elapsed().as_secs_f64()});
                 if let Some(d)=e.downcast_ref::<StartupDiagnostic>(){attempt["startup_diagnostic"]=d.json();}
+                if let Some(d)=e.downcast_ref::<MemoryBudgetError>(){attempt["memory_budget"]=d.json();}
                 log.push(attempt);
             },
         }
@@ -378,6 +404,22 @@ pub fn score(original:&Path,original_sha:&str,render:&Path,render_sha:&str,candi
 }
 #[cfg(test)]
 mod tests{
+    #[test]
+    fn model_memory_diagnostics_preserve_cpu_and_gpu_reservation(){
+        let weights=1_430_124_352;
+        let required=3_577_608_000;
+        assert!(require_model_memory(required,weights,false).is_ok());
+        let err=require_model_memory(required-1,weights,false).unwrap_err();
+        let detail=err.downcast_ref::<MemoryBudgetError>().unwrap();
+        assert_eq!(detail.json(),json!({"available_bytes":required-1,"required_bytes":required,
+            "host_weight_bytes":weights,"reserve_bytes":MODEL_MEMORY_RESERVE}));
+        assert!(require_model_memory(MODEL_MEMORY_RESERVE,weights,true).is_ok());
+        let err=require_model_memory(MODEL_MEMORY_RESERVE-1,weights,true).unwrap_err();
+        assert_eq!(err.downcast_ref::<MemoryBudgetError>().unwrap().json()["host_weight_bytes"],0);
+        assert!(require_model_memory(0,weights,false).is_err());
+        assert!(require_model_memory(u64::MAX-1,u64::MAX,false).is_err());
+    }
+
     use super::*;
     #[test]
     fn jev_uses_actual_class_one_and_never_softmaxes_twice(){

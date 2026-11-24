@@ -108,6 +108,8 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 
 旧账册的术语表绑定若使用相对路径，查询和草稿重放按账册所在目录解析，并复核原 SHA-256 和实际文件身份；不改写原账册或把变更后的术语表视为旧证据。
 
+旧术语表的 CR 换行、常规 LF/CRLF 和混合分隔符均按原行号定位。查询证据的整表行范围与索引来自同一份绑定字节；表格表头不会被当作实际术语命中。
+
 ### 图件审阅初始化增量
 
 `prepare_source_inventory.prepare_figure_reviews` 使用实际 PDF 页树、未旋转边界及可达 XObject 资源检查，或使用 DOCX 原生媒体定位，绑定已存在的页面渲染和最终图片，生成 28 个 pending 原子检查及每件资源四个 pending 边缘槽位。原始清单快照和恢复计划先发布，随后更新清单指针；不自动填充视觉结论。PDF 资源存在不等价于实际绘制，更不代表页面渲染与完整图件提取已经迁移。新增真实多页 PDF/XRef 参考差分测试，待 CI 验证。
@@ -210,7 +212,7 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 
 新增 `zotero_local.inspect_item(library_type, library_id, item_key, storage_root=..., attachment_paths=..., output_path=...)`，与 `zotero_local.catalog(library_type, library_id, output_path=...)`。按 Zotero 官方 Local API v3 文档（https://www.zotero.org/support/dev/web_api/v3/local_api），仅访问本机 loopback 23119 的 GET 请求，拒绝重定向、异常帧、重复分页、身份变化和超预算响应。不执行附件下载或写入。保留原始条目、直接子项、附件子项、集合父链、声明 MIME/语言、本地明确附件字节与 PDF/DOCX 解析状态；语言和主全文版本仍待人工/模型核对。0 仅作为本地用户路由，不当成跨设备身份。新增实际 loopback HTTP 模拟服务测试，覆盖分页、父链和无下载，不声称连接真实 Zotero 实机。
 
-新增 `vault_library.index(vault_root, literature_relative, excluded_relative=[], personal_library_id=..., output_path=...)` 及 `vault_library.match_reference(index_path, reference, expected_index_sha256=..., catalog_path=..., expected_catalog_sha256=...)`（JSON kwargs 或显式命名输入）。扫描已确认文献根下真实笔记，排除模板/附件/工作稿等目录并保留无法读取记录；仅使用末尾原条目 URI，不将正文引用中的 DOI 当作笔记身份。结合实际绑定 Zotero catalog、完整题名、全部作者、年份、文献类型及 DOI；同 DOI 冲突、重名、重复笔记保持歧义。个人库映射需明确实际库 ID，唯一候选仍须独立版本确认。空结果只针对已绑定快照，不证明当前实时库无文献。真实笔记读取和篡改负例测试。两项均不修改真实库，正式桌面集成和提交链仍需资格验证。
+新增 `vault_library.index(vault_root, literature_relative, excluded_relative=[], personal_library_id=..., output_path=...)` 及 `vault_library.match_reference(index_path, catalog_path, reference, expected_index_sha256=..., expected_catalog_sha256=...)`（JSON kwargs 或显式命名输入）。扫描已确认文献根下真实笔记，排除模板/附件/工作稿等目录并保留无法读取记录；仅使用末尾独占一行的原条目 Markdown 链接（标准 H2 或兼容旧版独立链接）。正文末句、引用块、列表、代码和表格中的 Zotero 链接不作为笔记身份；重复原条目标题保留歧义。结合实际绑定 Zotero catalog、完整题名、全部作者、年份、文献类型及 DOI；同 DOI 冲突、重名、重复笔记保持歧义。个人库映射需明确实际库 ID，唯一候选仍须独立版本确认。空结果只针对已绑定快照，不证明当前实时库无文献。真实笔记读取和篡改负例测试。两项均不修改真实库，正式桌面集成和提交链仍需资格验证。
 
 补齐 author affiliation_numbers / affiliation_units、未编号及缺失理由、重复关系、同源归属，以及实际 bibliography call 的独立 citation unit 和重复参考锚点约束。当前 `NATIVE_DELIVERY_PARITY_PENDING` 等最终阻断仍保留。442f0a0 实际 CI 编译后二进制覆盖 23 个参考模块、0 缺失公开符号，差分和 CPU OCR 通过；本次新增功能仍须 CI 验收。
 
@@ -257,3 +259,9 @@ Ubuntu 22.04 ARM64 的运行验收不可用 Ubuntu 24.04 替代。上游 b11901 
 Figure delivery recognizes local `.svg` files case-insensitively and binds the exact bytes it validates. The native vector validator uses pinned resvg 0.50.0 without default font, raster-image, or SVGZ features. It draws a bounded in-memory raster to require a real drawable image; it does not replace the SVG or certify visual/source fidelity. Standard static shapes, groups, transforms, local gradients and clips, and direct local shape reuse are supported. Fonts/text, stylesheet elements, images, filters, masks, animation, foreign elements, DTD and custom entities, processing instructions, and external or data references fail explicitly rather than disappearing during rendering. Compact inline presentation styles are permitted within the supported shape subset.
 
 The file stays inside the manifest resource root and the rasterizer has no image resource resolver. Budgets limit bytes per SVG and delivery, number of distinct SVG assets, XML nodes and depth, geometry and `use` expansion, effect nesting, intrinsic canvas size, and actual render dimensions. Existing native delivery release and independent-review gates are unchanged.
+
+### Same-resolution explicit PDF masks
+
+Native image export composes an actually invoked base image with its indirect, one-bit explicit `/Mask` image when their resolutions match and no interpolation or competing soft mask is present. It applies both PDF stencil `Decode` polarities, ignores row padding, retains straight colors, and writes binary alpha to a PNG. The receipt records the mask object/generation, exact encoded mask and decoded alpha hashes, and polarity. The existing inventory binds and replays the raw mask stream independently; historical mask cases that recorded page rendering as required remain pending rather than silently gaining an extraction.
+
+Color-key arrays, placement-dependent stencil images, resampling, compound masks, external streams and unsupported filters remain explicit page-render/review cases. Independent PyMuPDF comparison on the development fixtures does not certify an arbitrary paper’s figure or change source-fidelity or release gates.

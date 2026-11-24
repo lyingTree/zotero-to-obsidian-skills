@@ -263,7 +263,13 @@ fn cli_preflights_later_docx_before_writing_any_evidence_and_retries(){
     assert_eq!(inv["sources"][1]["native_blocks"][0]["text"],"Supplement evidence");
     assert_eq!(inv["units"],json!([]));
     assert_eq!(inv["sources"][0]["header_fields"]["title"]["status"],"pending");
-    assert_eq!(work.join("terminology.json").canonicalize().unwrap(),Path::new(inv["terminology_path"].as_str().unwrap()));
+    let ledger_path=Path::new(inv["terminology_path"].as_str().unwrap());
+    // std canonicalization returns a verbatim Windows path; the inventory
+    // intentionally emits the ordinary DOS spelling when either is usable.
+    assert_eq!(work.join("terminology.json").canonicalize().unwrap(),ledger_path.canonicalize().unwrap());
+    let ledger=z2o_native::pipeline::read_json(ledger_path).unwrap();
+    assert_eq!(ledger["review_status"],"pending");
+    assert_eq!(ledger["glossary"]["sha256"],files::digest("wave = 波".as_bytes()));
     let baseline=fs::read(inventory_path).unwrap();
     let rerun=inventory_cli(&work,&req,&pdf,&docx,&glossary);
     assert!(!rerun.status.success());
@@ -489,4 +495,72 @@ fn legacy_pdf_image_correspondence_requires_encoded_identity_and_plain_unique_in
     changed = old.clone();
     changed["sources"][0]["pages"][0]["image_index"]["status"] = json!("partial");
     assert_eq!(run(&changed)["reason"], "page_image_index_missing_or_incomplete");
+}
+
+#[test]
+fn same_resolution_explicit_mask_is_lossless_bound_and_replayed(){
+    use z2o_native::{files,pdf_inventory,pdf_structure::export_image_object,pipeline,source_prepare};
+    let temporary=tempfile::tempdir().unwrap();
+    let root=temporary.path();
+    let pdf=root.join("explicit.pdf");
+    let mut doc=Document::with_version("1.5");
+    let pages=doc.new_object_id();
+    // Padding noise must not turn into samples in either row.
+    let bits=[0b0101_1111,0b1010_0001];
+    let encoded=craft_pdf::filters::encode_flate(&bits);
+    let mask=doc.add_object(Stream::new(dictionary!{
+        "Type"=>"XObject","Subtype"=>"Image","Width"=>3,"Height"=>2,"ImageMask"=>true,
+        "BitsPerComponent"=>1,"Decode"=>vec![1.into(),0.into()],"Filter"=>"FlateDecode"
+    },encoded.clone()));
+    let pixels=[20u8,100,200, 200,30,80, 224,2,47, 9,15,203, 23,156,1, 231,5,2];
+    let item=doc.add_object(Stream::new(dictionary!{
+        "Type"=>"XObject","Subtype"=>"Image","Width"=>3,"Height"=>2,"ColorSpace"=>"DeviceRGB",
+        "BitsPerComponent"=>8,"Mask"=>mask
+    },pixels.to_vec()));
+    let body=doc.add_object(Stream::new(dictionary!{},b"q 30 0 0 20 10 10 cm /Image Do Q".to_vec()));
+    let page=doc.add_object(dictionary!{"Type"=>"Page","Parent"=>pages,"Contents"=>body,
+        "Resources"=>dictionary!{"XObject"=>dictionary!{"Image"=>item}}});
+    doc.objects.insert(pages,Object::Dictionary(dictionary!{"Type"=>"Pages","Kids"=>vec![Object::Reference(page)],
+        "Count"=>1,"MediaBox"=>vec![0.into(),0.into(),100.into(),100.into()]}));
+    let catalog=doc.add_object(dictionary!{"Type"=>"Catalog","Pages"=>pages});
+    doc.trailer.set("Root",catalog);
+    doc.save(&pdf).unwrap();
+    let frozen=fs::read(&pdf).unwrap();
+    let output=root.join("asset.png");
+    let r=export_image_object(&pdf,1,item.0,&output,Some(&files::digest(&frozen))).unwrap();
+    assert_eq!(r["method"],"explicit_mask_composited_png");
+    let record=&r["source_object"]["explicit_mask"];
+    assert_eq!(record["image_xref"],mask.0);
+    assert_eq!(record["generation"],mask.1);
+    assert_eq!(record["painted_sample"],1);
+    assert_eq!(record["pdf_stream_sha256"],files::digest(&encoded));
+    let image=image::open(output).unwrap().into_rgba8();
+    let alpha=[0u8,255,0,255,0,255];
+    assert_eq!(record["decoded_alpha_sha256"],files::digest(&alpha));
+    for ((actual,rgb),alpha) in image.pixels().zip(pixels.chunks_exact(3)).zip(alpha){
+        assert_eq!(&actual.0[..3],rgb);
+        assert_eq!(actual.0[3],alpha);
+    }
+    assert_eq!(fs::read(&pdf).unwrap(),frozen);
+    let inv=source_prepare::prepare_sources(&json!({"main":pdf}),&root.join("work"),
+        &json!({"main":"main"}),None,72,None,|_,_,_|{}).unwrap();
+    let inventory=pipeline::read_json(&inv).unwrap();
+    let source=&inventory["sources"][0];
+    let row=&source["image_objects"][0];
+    assert_eq!(row["mask_stream"]["encoded_stream_sha256"],files::digest(&encoded));
+    assert_eq!(row["extraction"]["source_object"]["explicit_mask"],*record);
+    let replay=pdf_inventory::replay(source,&pdf,|_,_,_|{}).unwrap();
+    assert_eq!(replay["image_dependency_replay_complete"],true);
+    assert_eq!(replay["independent_visual_parity"],"not_assessed");
+
+    let mut old=source.clone();
+    let historical=&mut old["image_objects"][0];
+    historical.as_object_mut().unwrap().remove("raw_asset");
+    historical["extraction"]=json!({"status":"page_render_required","reason":"PAGE_RENDER_REQUIRED: Mask"});
+    let old_replay=pdf_inventory::replay(&old,&pdf,|_,_,_|{}).unwrap();
+    assert!(old_replay["pending_review"].as_array().unwrap().iter().any(|r|r["image_xref"]==item.0));
+    assert_eq!(old_replay["source_checks_complete"],false);
+
+    fs::write(row["mask_stream"]["asset"]["path"].as_str().unwrap(),b"tampered").unwrap();
+    assert!(pdf_inventory::replay(source,&pdf,|_,_,_|{}).is_err());
 }

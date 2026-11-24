@@ -340,6 +340,15 @@ pub fn replay(source:&Value,p:&Path,mut progress:impl FnMut(usize,usize,&str))->
         let r=backend.export_indexed(*page,x,&scratch.path().join(format!("xref-{x}-g{g}")),index);
         match r{
             Ok(actual)=>{
+                // Older native inventories deliberately left explicit masks
+                // unextracted. Replaying the original PDF does not retroactively
+                // supply a reviewed asset in that historical inventory.
+                if actual["source_object"].get("explicit_mask").is_some()
+                    &&row["raw_asset"].is_null()
+                    &&row["extraction"]==json!({"status":"page_render_required","reason":"PAGE_RENDER_REQUIRED: Mask"}){
+                    blocked.push(json!({"page":page,"image_xref":x,"reason":"Historical explicit Mask extraction remains pending; regenerate source inventory to record native PNG evidence"}));
+                    continue;
+                }
                 validate_binding(&row["raw_asset"])?;
                 ensure!(row["raw_asset"]["sha256"]==actual["asset"]["sha256"]&&row["extraction"]["source_object"]==actual["source_object"]&&
                     row["extraction"]["asset"]==row["raw_asset"],"Image extraction differs from actual samples");

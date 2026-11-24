@@ -472,9 +472,10 @@ fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>
     let sample_channels=if palette.is_some(){1}else{channels};
     let bits=usize::try_from(img_int(doc,d,b"BitsPerComponent",None)?)?;
     ensure!(matches!(bits,1|2|4|8),"PAGE_RENDER_REQUIRED: unsupported sample depth");
-    for key in [b"Mask".as_slice(),b"Matte",b"OC",b"Alternates"]{
+    for key in [b"Matte".as_slice(),b"OC",b"Alternates",b"F",b"FFilter",b"FDecodeParms"]{
         ensure!(img_value(doc,d,key)?.is_none(),"PAGE_RENDER_REQUIRED: {}",String::from_utf8_lossy(key));
     }
+    if mask{ensure!(img_value(doc,d,b"Mask")?.is_none(),"PAGE_RENDER_REQUIRED: nested Mask on SMask");}
     ensure!(img_int(doc,d,b"SMaskInData",Some(0))?==0&&matches!(img_value(doc,d,b"ImageMask")?,None|Some(Object::Boolean(false))),
         "PAGE_RENDER_REQUIRED: SMaskInData or ImageMask");
     let mut invert=vec![false;channels];
@@ -543,10 +544,53 @@ fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>
     let preserve_jpeg=jpeg&&!invert.iter().any(|b|*b);
     Ok(Samples{w,h,channels,bits,bytes,jpeg,preserve_jpeg,filters:names,pdf_colorspace,indexed_palette})
 }
+// ISO 32000-1 §8.9.6.2–3: in a one-bit image mask, Decode [0 1]
+// paints bit 0, and [1 0] paints bit 1. Equal resolution and nearest sample
+// semantics are required here; rendering a page remains the fallback.
+fn explicit_mask_samples(pdf:&Pdf,id:ObjectId,w:u32,h:u32)->Result<(Vec<u8>,Value)>{
+    let doc=&pdf.doc;
+    let stream=pdf.raw_object(id.0,id.1).context("PAGE_RENDER_REQUIRED: explicit Mask stream")?;
+    let d=&stream.dict;
+    ensure!(img_value(doc,d,b"ImageMask")?==Some(&Object::Boolean(true)),
+        "PAGE_RENDER_REQUIRED: explicit Mask must declare ImageMask true");
+    ensure!(img_int(doc,d,b"Width",None)?==i64::from(w)&&img_int(doc,d,b"Height",None)?==i64::from(h),
+        "PAGE_RENDER_REQUIRED: explicit Mask resolution differs from base image");
+    ensure!(img_int(doc,d,b"BitsPerComponent",Some(1))?==1,"PAGE_RENDER_REQUIRED: explicit Mask is not one-bit");
+    for key in [b"ColorSpace".as_slice(),b"Mask",b"SMask",b"SMaskInData",b"Matte",b"OC",b"Alternates",b"F",b"FFilter",b"FDecodeParms"]{
+        ensure!(img_value(doc,d,key)?.is_none(),"PAGE_RENDER_REQUIRED: unsupported explicit Mask {}",String::from_utf8_lossy(key));
+    }
+    ensure!(matches!(img_value(doc,d,b"Interpolate")?,None|Some(Object::Boolean(false))),
+        "PAGE_RENDER_REQUIRED: explicit Mask requests interpolation");
+    let decode=match img_value(doc,d,b"Decode")?{
+        None=>[0.,1.],
+        Some(v)=>array::<2>(doc,v).context("PAGE_RENDER_REQUIRED: malformed explicit Mask Decode")?,
+    };
+    let painted=match decode{
+        [0.,1.]=>0,
+        [1.,0.]=>1,
+        _=>return Err(anyhow!("PAGE_RENDER_REQUIRED: unsupported explicit Mask Decode")),
+    };
+    ensure!(stream.content.len()<=128*1024*1024,"Explicit Mask exceeds encoded byte budget");
+    let chain=img_chain(doc,d)?;
+    ensure!(chain.iter().all(|(f,p)|f.is_decodable()&&p.predictor!=2),
+        "PAGE_RENDER_REQUIRED: unsupported explicit Mask filter or predictor");
+    let packed_size=(w as usize).div_ceil(8).checked_mul(h as usize).context("Explicit Mask size overflow")?;
+    let raw=decode_image_rows(&chain,&stream.content,w,h,1,1,packed_size)?;
+    let mut alpha=unpack_samples(&raw,w,h,1,1,false)?;
+    for value in &mut alpha{*value=if *value==painted{255}else{0};}
+    let lo=*alpha.iter().min().context("Empty explicit Mask")?;
+    let hi=*alpha.iter().max().context("Empty explicit Mask")?;
+    let record=json!({"image_xref":id.0,"generation":id.1,"status":if lo==255{"opaque"}else{"nonopaque"},
+        "width":w,"height":h,"bits_per_component":1,"decode":decode,"painted_sample":painted,
+        "alpha_min":lo,"alpha_max":hi,"pdf_stream_sha256":files::digest(&stream.content),
+        "decoded_alpha_sha256":files::digest(&alpha),
+        "filters":chain.iter().map(|(f,_)|f.name()).collect::<Vec<_>>()});
+    Ok((alpha,record))
+}
 fn image_png(s:&Samples,alpha:Option<&[u8]>)->Result<Vec<u8>>{
     let mut out=Vec::new();
     if let Some(alpha)=alpha{
-        ensure!(alpha.len()==(s.w as usize)*(s.h as usize),"SMask dimensions differ");
+        ensure!(alpha.len()==(s.w as usize)*(s.h as usize),"Image alpha dimensions differ");
         let mut pixels=Vec::with_capacity(alpha.len()*(s.channels+1));
         for (p,a) in s.bytes.chunks_exact(s.channels).zip(alpha){pixels.extend_from_slice(p);pixels.push(*a);}
         let ty=if s.channels==1{ExtendedColorType::La8}else{ExtendedColorType::Rgba8};
@@ -589,22 +633,34 @@ pub(crate) fn export_indexed(pdf:&Pdf,source:&Path,before:&Value,page:u64,xref:u
         ensure!((sx-sy).abs()<=0.0001*sx.abs().max(sy.abs()),"PAGE_RENDER_REQUIRED: nonuniform image scale");
     }
     let mut alpha=None;let mut mask=json!({"image_xref":0,"status":"absent"});
-    if let Some(v)=img_value(doc,&stream.dict,b"SMask")?{
-        if v.as_name().ok()!=Some(b"None".as_slice()){
-            let id=match stream.dict.get(b"SMask")?{Object::Reference(id)=>*id,_=>return Err(anyhow!("PAGE_RENDER_REQUIRED: SMask must be indirect"))};
-            ensure!(id!=(xref,u16::try_from(generation)?),"Recursive SMask");
-            let ms=pdf.raw_object(id.0,id.1)?;let a=image_samples(doc,ms,true)?;
-            ensure!((a.w,a.h)==(s.w,s.h),"PAGE_RENDER_REQUIRED: differing SMask dimensions");
-            let lo=*a.bytes.iter().min().context("Empty SMask")?;let hi=*a.bytes.iter().max().context("Empty SMask")?;
-            mask=json!({"image_xref":id.0,"generation":id.1,"status":if lo==255{"opaque"}else{"nonopaque"},
-                "width":a.w,"height":a.h,"alpha_min":lo,"alpha_max":hi,"pdf_stream_sha256":files::digest(&ms.content),
-                "decoded_alpha_sha256":files::digest(&a.bytes),"filters":a.filters});
-            if lo!=255{alpha=Some(a.bytes);}
-        }
+    let mut explicit=None;
+    let soft=img_value(doc,&stream.dict,b"SMask")?.filter(|v|v.as_name().ok()!=Some(b"None".as_slice()));
+    if img_value(doc,&stream.dict,b"Mask")?.is_some(){
+        ensure!(soft.is_none(),"PAGE_RENDER_REQUIRED: combined explicit Mask and SMask");
+        ensure!(matches!(img_value(doc,&stream.dict,b"Interpolate")?,None|Some(Object::Boolean(false))),
+            "PAGE_RENDER_REQUIRED: explicit Mask base requests interpolation");
+        let id=match stream.dict.get(b"Mask")?{
+            Object::Reference(id)=>*id,
+            _=>return Err(anyhow!("PAGE_RENDER_REQUIRED: Mask must be an indirect same-resolution one-bit image; color-key masks are not supported")),
+        };
+        ensure!(id!=(xref,u16::try_from(generation)?),"Recursive explicit Mask");
+        let (hard_alpha,record)=explicit_mask_samples(pdf,id,s.w,s.h)?;
+        alpha=Some(hard_alpha);explicit=Some(record);
+    }
+    if soft.is_some(){
+        let id=match stream.dict.get(b"SMask")?{Object::Reference(id)=>*id,_=>return Err(anyhow!("PAGE_RENDER_REQUIRED: SMask must be indirect"))};
+        ensure!(id!=(xref,u16::try_from(generation)?),"Recursive SMask");
+        let ms=pdf.raw_object(id.0,id.1)?;let a=image_samples(doc,ms,true)?;
+        ensure!((a.w,a.h)==(s.w,s.h),"PAGE_RENDER_REQUIRED: differing SMask dimensions");
+        let lo=*a.bytes.iter().min().context("Empty SMask")?;let hi=*a.bytes.iter().max().context("Empty SMask")?;
+        mask=json!({"image_xref":id.0,"generation":id.1,"status":if lo==255{"opaque"}else{"nonopaque"},
+            "width":a.w,"height":a.h,"alpha_min":lo,"alpha_max":hi,"pdf_stream_sha256":files::digest(&ms.content),
+            "decoded_alpha_sha256":files::digest(&a.bytes),"filters":a.filters});
+        if lo!=255{alpha=Some(a.bytes);}
     }
     let png=if s.preserve_jpeg&&alpha.is_none(){None}else{Some(image_png(&s,alpha.as_deref())?)};
     let (data,ext,method)=match png.as_ref(){
-        Some(b)=>(b.as_slice(),"png",if alpha.is_some(){"smask_composited_png"}else{"lossless_sample_png"}),
+        Some(b)=>(b.as_slice(),"png",if explicit.is_some(){"explicit_mask_composited_png"}else if alpha.is_some(){"smask_composited_png"}else{"lossless_sample_png"}),
         None=>(stream.content.as_slice(),"jpeg","original_extracted_bytes"),
     };
     let target=match dest.extension(){
@@ -630,6 +686,7 @@ pub(crate) fn export_indexed(pdf:&Pdf,source:&Path,before:&Value,page:u64,xref:u
         "visual_review":{"status":"pending","figure_completeness":"not_assessed"},"source_fidelity":"not_assessed",
         "evidence_boundary":"Actual invoked image samples, not proof of visible ink or complete figure membership. Overlay, text, vector and unsupported display effects require page rendering and independent review."});
     if let Some(palette)=s.indexed_palette{record["source_object"]["indexed_palette"]=palette;}
+    if let Some(mask)=explicit{record["source_object"]["explicit_mask"]=mask;}
     Ok(record)
 }
 

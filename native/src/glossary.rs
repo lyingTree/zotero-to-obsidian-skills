@@ -1,5 +1,5 @@
 //! Source-bound glossary retrieval. A match is a search lead, not a translation.
-use crate::{files,parse_json,path,path_text,string};
+use crate::{files,parse_json,path,string,syntax};
 use anyhow::{anyhow,ensure,Context,Result};
 use regex::Regex;
 use serde_json::{json,Map,Value};
@@ -34,6 +34,7 @@ fn text_snapshot(p:&Path)->Result<(String,Value)>{
 fn binding(p:&Path)->Result<Value>{let v=files::snapshot(p)?;Ok(json!({"path":v["path"],"sha256":v["sha256"]}))}
 pub struct Glossary {
     pub binding:Value,
+    line_count:usize,
     entries:BTreeMap<String,Value>,
     order:Vec<String>,
     postings:HashMap<String,BTreeSet<String>>,
@@ -43,18 +44,22 @@ pub struct Glossary {
 impl Glossary{
     pub fn new(p:&Path)->Result<Self>{
         let (text,binding)=text_snapshot(p)?;
-        let mut index=Self{binding,entries:BTreeMap::new(),order:vec![],postings:HashMap::new(),phrases:HashMap::new(),entry_phrases:HashMap::new()};
+        // Match the legacy splitlines() numbering and strip just the line
+        // separator, not spaces or escapes inside the recorded excerpt.
+        let lines:Vec<_>=syntax::lines(&text).into_iter().map(|line|{
+            syntax::body(&text,line).trim_end_matches(['\u{b}','\u{c}','\u{1c}','\u{1d}','\u{1e}','\u{85}','\u{2028}','\u{2029}'])
+        }).collect();
+        let mut index=Self{binding,line_count:lines.len(),entries:BTreeMap::new(),order:vec![],postings:HashMap::new(),phrases:HashMap::new(),entry_phrases:HashMap::new()};
         let identifier=Regex::new(r"^[A-Za-z][A-Za-z0-9_-]*$")?;
         let alias=Regex::new(r"[;；]\s*别名(?:/缩写)?\s*[:：]\s*")?;
-        let lines:Vec<_>=text.split_terminator('\n').collect();
-        let parsed:Vec<_>=lines.iter().map(|s|cells(s.trim_end_matches('\r'))).collect();
+        let parsed:Vec<_>=lines.iter().map(|s|cells(s)).collect();
         for (i,c) in parsed.iter().enumerate(){
             if c.len()<3||separator(c)||parsed.get(i+1).is_some_and(|n|n.len()==c.len()&&separator(n))||!identifier.is_match(&c[0]){continue;}
             let id=&c[0];
             ensure!(!index.entries.contains_key(id),"Duplicate glossary entry: {id}");
             ensure!(!c[1].is_empty()&&!c[2].is_empty(),"A glossary entry needs its source phrase and translation: {id}");
             let entry=json!({"id":id,"english":c[1],"translation":c[2],"context":c.get(3).map(String::as_str).unwrap_or(""),
-                "line":i+1,"raw_line":lines[i].trim_end_matches('\r'),"evidence":{"path":index.binding["path"],"sha256":index.binding["sha256"],"locator":{"kind":"lines","start":i+1,"end":i+1}}});
+                "line":i+1,"raw_line":lines[i],"evidence":{"path":index.binding["path"],"sha256":index.binding["sha256"],"locator":{"kind":"lines","start":i+1,"end":i+1}}});
             index.entries.insert(id.clone(),entry);index.order.push(id.clone());
             let mut parts=alias.splitn(&c[1],2);let mut phrases=vec![parts.next().unwrap_or("")];
             if let Some(tail)=parts.next(){phrases.extend(tail.split([';','；','、']).map(str::trim).filter(|s|!s.is_empty()));}
@@ -69,6 +74,7 @@ impl Glossary{
         ensure!(!index.entries.is_empty(),"The glossary has no identifiable term rows.");
         Ok(index)
     }
+    pub(crate) fn line_count(&self)->usize{self.line_count}
     pub fn search(&self,query:&str)->Result<Value>{
         ensure!(!query.trim().is_empty(),"Provide the actual nonempty search query.");
         let tok=tokens(query);

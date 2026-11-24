@@ -15,6 +15,17 @@ SHARED = Path(os.environ["Z2O_LLAMA_SHARED_SCAN"]).resolve()
 BINARY = Path(os.environ["Z2O_LLAMA_NATIVE_BINARY"]).resolve()
 TARGET = os.environ["Z2O_LLAMA_TARGET"]
 UPSTREAM = "c21a3ca524263ef8166cb6d350864b10c3056b61"
+OCR_REPOSITORY = "openbmb/MiniCPM-OCR-1.0-gguf"
+OCR_REVISION = "0133ad8db635210441a55dcf421e25bfb9915142"
+OCR_PROJECTOR = "mmproj-model-f16-4x.gguf"
+# Standard Apple Silicon hosted runners have only 7 GB total. The official
+# Q4_K_M tier uses 282,491,616 fewer bytes than Q8_0, with the same projector.
+# This changes the CI fixture, not the native runtime's memory reservation;
+# exact bilingual transcription and official Jev discrimination still gate CI.
+OCR_WEIGHTS = {
+    "x86_64-unknown-linux-gnu": "MiniCPM-OCR-1_0-Q8_0.gguf",
+    "aarch64-apple-darwin": "MiniCPM-OCR-1_0-Q4_K_M.gguf",
+}
 EXAMPLES = {
     "01_text_putnam": ["a2d9ef67235ddca2052855fa10260abbb1e55966", "b4d8adb328fe762585982ab6c35747d12371a83a", "e4ac67753d14c797b7515861acce761bb2c77e9d"],
     "02_formula_putnam": ["6f3b4b1881120d161ef40b0901b00a12b2c07b89", "552a8032e63594c9d2ab77ddf2660899a3720ea6", "dd1536bf01b7bca6ed0bfd0e0f7e6fbe7787c689"],
@@ -38,10 +49,15 @@ def get(url, limit):
     require(len(result) <= limit, "Response exceeds budget")
     return result
 
-def weights(repo, names):
-    info = json.loads(get(f"https://huggingface.co/api/models/{repo}?blobs=true", 16 * 1024**2))
+def weights(repo, names, pinned_revision=None):
+    endpoint = f"https://huggingface.co/api/models/{repo}"
+    if pinned_revision is not None:
+        require(re.fullmatch(r"[0-9a-f]{40}", pinned_revision), "Invalid pinned model revision")
+        endpoint += f"/revision/{pinned_revision}"
+    info = json.loads(get(endpoint + "?blobs=true", 16 * 1024**2))
     revision = info["sha"]
-    require(info["id"].casefold() == repo.casefold() and re.fullmatch(r"[0-9a-f]{40}", revision), "Invalid model identity")
+    require(info["id"].casefold() == repo.casefold() and re.fullmatch(r"[0-9a-f]{40}", revision)
+            and (pinned_revision is None or revision == pinned_revision), "Invalid model identity")
     directory = ROOT.joinpath("weights", repo.split("/")[-1])
     directory.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -122,8 +138,9 @@ def main():
     require(file_sha(manifest) == SHARED.joinpath("package.sha256").read_text(encoding="ascii").strip(), "Shared scan manifest mismatch")
     scan = SHARED.joinpath("fixture.png")
     require(file_sha(scan) == json.loads(manifest.read_text(encoding="utf-8"))["provenance"]["fixtures"]["fixture.png"]["sha256"], "Shared scan hash mismatch")
-    ocr = make_package("minicpm-ocr", weights("openbmb/MiniCPM-OCR-1.0-gguf",
-        ["MiniCPM-OCR-1_0-Q8_0.gguf", "mmproj-model-f16-4x.gguf"]), runtime)
+    require(TARGET in OCR_WEIGHTS, f"No qualified model smoke fixture for {TARGET}")
+    ocr_model = OCR_WEIGHTS[TARGET]
+    ocr = make_package("minicpm-ocr", weights(OCR_REPOSITORY, [ocr_model, OCR_PROJECTOR], OCR_REVISION), runtime)
     result = invoke("minicpm-bilingual", scan, ocr, "text")
     require(result["status"] == "minicpm_candidate_review_required", f"MiniCPM inference blocked: {result}")
     normalized = re.sub(r"\s+", "", result["result"]["candidate_text"]).upper()
@@ -147,6 +164,7 @@ def main():
     ROOT.joinpath("model-smoke-result.json").write_text(json.dumps({"target": TARGET,
         "bilingual_cpu_inference": True, "jev_reference_discrimination": True,
         "scores": scores, "ocr_runtime_release": runtime["release"], "jev_runtime_release": jev_runtime["release"],
+        "ocr_model_file": ocr_model, "ocr_model_revision": OCR_REVISION,
         "gpu_hardware_verified": False, "source_acceptance": False}, indent=2) + "\n", encoding="utf-8")
 
 if __name__ == "__main__":

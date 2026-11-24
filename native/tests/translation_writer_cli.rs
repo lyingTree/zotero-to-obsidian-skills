@@ -12,6 +12,11 @@ struct Fixture {
 
 impl Fixture {
     fn new(text: &str, unit_locations: Value) -> Self {
+        Self::with_glossary(text, unit_locations,
+            "| ID | English | Chinese |\n| --- | --- | --- |\n| WAVE | wave | 波浪 |\n")
+    }
+
+    fn with_glossary(text: &str, unit_locations: Value, glossary_text: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("supplement.docx");
         let candidate = dir.path().join("译文.md");
@@ -37,7 +42,7 @@ impl Fixture {
         let inv = f.dir.path().join("inventory.json");
         fs::write(&inv, serde_json::to_vec(&json!({"schema_version":1,"sources":[inventory_source],"units":[unit]})).unwrap()).unwrap();
         let glossary = f.dir.path().join("glossary.md");
-        fs::write(&glossary, "| ID | English | Chinese |\n| --- | --- | --- |\n| WAVE | wave | 波浪 |\n").unwrap();
+        fs::write(&glossary, glossary_text).unwrap();
         f.ok("prepare_translation_review.prepare_translation_review",
             json!([inv, f.candidate, f.prepared]),
             json!({"unit_ids":["U"], "glossary_path":glossary, "candidate_locations":{"U":unit_locations}}));
@@ -69,6 +74,34 @@ impl Fixture {
 fn occurrence(source: Value, candidate: Value) -> Value {
     json!({"unit_id":"U","kind":"claims","occurrence_id":"c1","source":source,"candidate":candidate,
         "status":"passed","reason":"Explicit independent comparison in this synthetic fixture."})
+}
+
+#[test]
+fn glossary_search_uses_exact_bound_lines_across_historical_line_endings() {
+    let first = "| ID | English | Chinese |";
+    let second = "| --- | --- | --- |";
+    let excerpt = "| WAVE | wave | 波浪 |  ";
+    let last = "| OTHER | current | 水流 |";
+    for endings in [["\n"; 4], ["\r"; 4], ["\r\n"; 4], ["\r\n", "\u{2028}", "\r", "\u{85}"]] {
+        let table = format!("\u{feff}{first}{}{second}{}{excerpt}{}{last}{}", endings[0], endings[1], endings[2], endings[3]);
+        let f = Fixture::with_glossary("波浪出现。\n", json!([{"lines":[1,1]}]), &table);
+        let decisions = json!([
+            {"op":"term","unit_id":"U","term_id":"wave","original":"wave","category":"concept","source":{"quote":"wave"}},
+            {"op":"search","unit_id":"U","term_id":"wave","mode":"full_phrase","query":"wave","interpretation":"Search the actual fixture glossary."}
+        ]);
+        let state = f.ok("translation_review_writer.TermReview.search", json!([f.prepared, decisions]),
+            json!({"unit_id":"U","term_id":"wave","mode":"family","query":"English","interpretation":"The table header is not an actual glossary entry."}));
+        assert_eq!(state["method_result"],json!([]),"{endings:?}");
+        let search = &state["data"]["units"]["U"]["term_candidates"][0]["searches"]["full_phrase"];
+        assert_eq!(search["queries"][0]["hits"],json!([{"entry_id":"WAVE","excerpt":excerpt,"glossary_locator":{"lines":[3,3]}}]),"{endings:?}");
+        assert_eq!(search["evidence"][0]["locator"],json!({"lines":[1,4]}));
+        assert_eq!(search["evidence"][0]["sha256"],Fixture::digest(&f.dir.path().join("glossary.md")));
+
+        let rejected = f.call("translation_review_writer.TermReview.decide",json!([f.prepared,state["decisions"]]),
+            json!({"unit_id":"U","term_id":"wave","decision":"adopted","translation":"波浪",
+                "reason":"A header ID is not an actual query result.","matches":["ID"]})).unwrap_err();
+        assert!(rejected.contains("TRW_GLOSSARY_HIT"),"{rejected}");
+    }
 }
 
 #[test]

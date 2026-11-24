@@ -474,7 +474,9 @@ impl Writer{
                 let query=text(&c["query"],"query")?;let interpretation=text(&c["interpretation"],"interpretation")?;
                 let index=self.glossary()?;let result=index.search(query)?;
                 let hits=rows(&result,"hits")?.iter().map(hit).collect::<Vec<_>>();
-                let b=index.binding.clone();let p=path(&b["path"])?;let lines=syntax::lines(&fs::read_to_string(p)?).len();
+                // Evidence extent belongs to the exact bytes used to build
+                // this glossary index, not a second read of the live file.
+                let b=index.binding.clone();let lines=index.line_count();
                 let evidence=json!([with_locator(&b,&json!({"lines":[1,lines]}))]);
                 let search=&mut term["searches"][mode];
                 search.as_object_mut().unwrap().extend(state(&json!("searched"),&c["interpretation"],evidence,&["searched"])?.as_object().unwrap().clone());
