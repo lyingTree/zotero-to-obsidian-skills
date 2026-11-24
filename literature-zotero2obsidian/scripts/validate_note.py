@@ -1,8 +1,9 @@
 """Read-only checks for generated literature Markdown, not a rendering verdict.
 
 Edit NOTE_PATH below and run this file, or import validate_note / validate_file.
-Checks cover frontmatter, top-level fenced Rich Tables, display equations, block
-IDs, explicit same-note block links, and recognizable Chinese bibliography
+Checks cover frontmatter, top-level fenced Rich Tables and their block-list
+styles, caption self-links, display equations, block IDs, explicit same-note
+block links, and recognizable Chinese bibliography
 sections. Ordinary fenced / indented code, inline code and mathematics, HTML
 comments and Obsidian comments are excluded. This deliberately does not resolve
 heading links, reference-style Markdown links, nested plugin syntax, external
@@ -291,8 +292,73 @@ def _table_visible_links(data: dict, start: int, context: str,
             links.extend((target, start, context) for target, _ in _links(value, 1))
 
 
+def _mapping_value_node(node: yaml.Node | None, name: str,
+                        seen: set[int] | None = None) -> yaml.Node | None:
+    """Resolve one mapping field with SafeLoader's YAML-merge precedence.
+
+    Aliases can be recursive. Follow each merge mapping once and prefer an
+    explicit field over inherited fields; sequence merges prefer their first
+    mapping. Returned marks remain the actual source location of the value.
+    """
+    if not isinstance(node, yaml.MappingNode):
+        return None
+    if seen is None:
+        seen = set()
+    if id(node) in seen:
+        return None
+    seen.add(id(node))
+    for key, value in node.value:
+        if key.tag == "tag:yaml.org,2002:str" and key.value == name:
+            return value
+    for key, value in node.value:
+        if key.tag != "tag:yaml.org,2002:merge":
+            continue
+        inherited = value.value if isinstance(value, yaml.SequenceNode) else [value]
+        for child in inherited:
+            found = _mapping_value_node(child, name, seen)
+            if found is not None:
+                return found
+    return None
+
+
+def _table_source_style(node: yaml.Node | None, start: int, context: str,
+                        findings: list[Finding]) -> None:
+    for key, rule in (("columns", "BODY-C138"), ("rows", "BODY-C139")):
+        value = _mapping_value_node(node, key)
+        if not isinstance(value, yaml.SequenceNode) or not value.value or not value.flow_style:
+            continue
+        findings.append(Finding(
+            "error", f"TABLE_{key.upper()}_FLOW_STYLE", start + 1 + value.start_mark.line,
+            f"[{rule}] {context}：{key} 必须使用逐条展开的块状 YAML 序列；"
+            "方括号 flow 数组虽可解析，仍不满足该源码要求。",
+        ))
+
+
+def _table_caption_self_link(data: dict, node: yaml.Node | None, start: int,
+                             context: str, anchor: str | None,
+                             findings: list[Finding]) -> None:
+    title = data.get("title")
+    if anchor is None or not isinstance(title, str):
+        return
+    comment = None
+    visible = []
+    for line in _mask_paragraph_code(title, None).split("\n"):
+        clean, comment = _mask_comments(line, comment)
+        visible.append(clean)
+    if not any(target == anchor for target, _line in _links("\n".join(visible), 1)):
+        return
+    value = _mapping_value_node(node, "title")
+    location = start + 1 + value.start_mark.line if value is not None else start
+    findings.append(Finding(
+        "error", "TABLE_CAPTION_SELF_LINK", location,
+        f"[LINK-C27] {context}：title 中的表题不得链接到自身 ^{anchor}；保留题注文字和原锚 ID。",
+    ))
+
+
 def _rich_table_sheet(data: dict, start: int, context: str,
-                      findings: list[Finding], links: list[tuple[str, int, str]]) -> None:
+                      findings: list[Finding], links: list[tuple[str, int, str]],
+                      *, node: yaml.Node | None = None, fence_line: int | None = None,
+                      anchor: str | None = None) -> None:
     if data.get("locked") is not True:
         findings.append(Finding("error", "TABLE_UNLOCKED", start, f"{context}：locked 必须为 true。"))
     if data.get("theme") != "grid":
@@ -301,25 +367,14 @@ def _rich_table_sheet(data: dict, start: int, context: str,
         if not isinstance(data.get(key), list) or not data[key]:
             findings.append(Finding("error", "TABLE_STRUCTURE", start,
                                     f"{context}：{key} 必须为非空列表。"))
+    source_start = start if fence_line is None else fence_line
+    _table_source_style(node, source_start, context, findings)
+    _table_caption_self_link(data, node, source_start, context, anchor, findings)
     _table_visible_links(data, start, context, links)
 
 
-def _sheet_source_lines(payload: str, start: int) -> list[int]:
-    """Return real sheet-node locations after the payload has passed YAML checks."""
-    root = yaml.compose(payload, Loader=yaml.SafeLoader)
-    if not isinstance(root, yaml.MappingNode):
-        return []
-    for key, value in root.value:
-        if key.value != "sheets" or not isinstance(value, yaml.SequenceNode):
-            continue
-        return [start + 1 + sheet.start_mark.line for sheet in value.value]
-    # A YAML merge may provide sheets indirectly. The owning fence remains an
-    # honest fallback location; the message still identifies the sheet.
-    return []
-
-
 def _rich_table(content: list[str], start: int, findings: list[Finding],
-                links: list[tuple[str, int, str]]) -> None:
+                links: list[tuple[str, int, str]], *, anchor: str | None = None) -> None:
     payload = _rich_table_payload(content)
     data = _load_yaml(payload, start + 1, "TABLE_YAML", findings)
     if data is _YAML_ERROR:
@@ -327,12 +382,13 @@ def _rich_table(content: list[str], start: int, findings: list[Finding],
     if not isinstance(data, dict):
         findings.append(Finding("error", "TABLE_TYPE", start, "Rich Table 必须是 YAML 映射。"))
         return
+    root = yaml.compose(payload, Loader=yaml.SafeLoader)
     version = data.get("version")
     if type(version) is not int or version not in (2, 3):
         findings.append(Finding("error", "TABLE_VERSION", start,
                                 "Rich Table version 必须为整数 2（单表）或 3（多工作表）。"))
     if version != 3 or type(version) is not int:
-        _rich_table_sheet(data, start, "Rich Table", findings, links)
+        _rich_table_sheet(data, start, "Rich Table", findings, links, node=root, anchor=anchor)
         return
     sheets = data.get("sheets")
     if not isinstance(sheets, list) or not sheets:
@@ -340,9 +396,12 @@ def _rich_table(content: list[str], start: int, findings: list[Finding],
                                 "Rich Table v3 的 sheets 必须为非空列表。"))
         return
     _table_visible_links(data, start, "Rich Table 工作簿", links)
-    locations = _sheet_source_lines(payload, start)
+    _table_caption_self_link(data, root, start, "Rich Table 工作簿", anchor, findings)
+    sheets_node = _mapping_value_node(root, "sheets")
+    nodes = sheets_node.value if isinstance(sheets_node, yaml.SequenceNode) else []
     for index, sheet in enumerate(sheets):
-        location = locations[index] if index < len(locations) else start
+        node = nodes[index] if index < len(nodes) else None
+        location = start + 1 + node.start_mark.line if node is not None else start
         context = f"Rich Table 工作表 {index + 1}"
         if not isinstance(sheet, dict):
             findings.append(Finding("error", "TABLE_SHEET_TYPE", location,
@@ -352,7 +411,8 @@ def _rich_table(content: list[str], start: int, findings: list[Finding],
                   if isinstance(sheet.get(key), str) and sheet[key]]
         if labels:
             context += "（" + "，".join(labels) + "）"
-        _rich_table_sheet(sheet, location, context, findings, links)
+        _rich_table_sheet(sheet, location, context, findings, links,
+                          node=node, fence_line=start, anchor=anchor)
 
 
 def _object_anchor(lines: list[str], closing: int, prefix: str,
@@ -379,6 +439,21 @@ def _citation_preview_anchor(anchor: str) -> tuple[str, int] | None:
     if match is None:
         return None
     return match[1].lower(), int(match[2])
+
+
+def _figure_caption_self_link(text: str, anchor: str, line: int,
+                              findings: list[Finding]) -> None:
+    if not any(target == anchor for target, _line in _links(text, line)):
+        return
+    label = _LOCAL_MARKDOWN.sub(lambda match: match[0][1:].partition("](")[0], text)
+    label = _LOCAL_WIKI.sub(lambda match: match[0][2:-2].partition("|")[2], label)
+    label = re.sub(r"(?<!\\)(?:\*\*|__)", "", label).strip()
+    if not re.match(r"^(?:图[^\s：:]+[：:]|图(?:形|文)摘要(?:\s|$)|(?:Figure|Fig\.)\s+[A-Za-z0-9])", label):
+        return
+    findings.append(Finding(
+        "error", "FIGURE_CAPTION_SELF_LINK", line,
+        f"[LINK-C27] 图题不得链接到自身 ^{anchor}；保留题注文字和原锚 ID。",
+    ))
 
 
 def _bibliography(lines: list[str], findings: list[Finding]) -> None:
@@ -472,7 +547,12 @@ def validate_note(text: str) -> list[Finding]:
             if re.fullmatch(r" {0,3}" + re.escape(marker) + "{" + str(length) + r",}[ \t]*", raw):
                 if language == "rich-table":
                     table_closings.add(index)
-                    _rich_table(fence_content, opening + 1, findings, links)
+                    following = index + 1
+                    while following < len(lines) and not lines[following].strip():
+                        following += 1
+                    anchor = _WHOLE_ANCHOR.fullmatch(lines[following]) if following < len(lines) else None
+                    own_id = anchor[1] if anchor and anchor[1].startswith("tbl-") else None
+                    _rich_table(fence_content, opening + 1, findings, links, anchor=own_id)
                     _object_anchor(lines, index, "tbl-", findings, required=True)
                 fence, fence_content = None, []
                 continue
@@ -553,6 +633,10 @@ def validate_note(text: str) -> list[Finding]:
             ):
                 findings.append(Finding("error", "TABLE_ANCHOR", index + 1,
                                         "表锚须顶格独占 Rich Table 闭合围栏的下一行。"))
+            if anchor.startswith("fig-"):
+                caption_line = index - 1 if _WHOLE_ANCHOR.fullmatch(line) else index
+                if caption_line >= 0:
+                    _figure_caption_self_link(visible[caption_line], anchor, caption_line + 1, findings)
         links.extend((target, location, "") for target, location in _links(line, index + 1))
     for target, line, context in links:
         if target not in anchors:
@@ -579,7 +663,7 @@ def main() -> int:
     findings = validate_file(NOTE_PATH)
     for finding in findings:
         print(f"{finding.level.upper()} [{finding.code}] 第 {finding.line} 行：{finding.message}")
-    print(f"静态检查完成：{len(findings)} 项发现。原文、翻译、Obsidian 缓存和界面仍须分别验收。")
+    print(f"静态检查完成：{len(findings)} 项发现。来源忠实度与翻译含义仍须逐项核对；不执行应用界面验收。")
     return int(any(finding.level == "error" for finding in findings))
 
 

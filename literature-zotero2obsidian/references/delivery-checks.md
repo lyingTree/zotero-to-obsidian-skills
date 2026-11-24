@@ -4,6 +4,7 @@
 
 - [检查边界](#检查边界)
 - [准备来源证据](#准备来源证据)
+- [原生 DOCX 证据](#原生-docx-证据)
 - [填写原子来源单元](#填写原子来源单元)
 - [记录各来源的题头](#记录各来源的题头)
 - [映射最终候选](#映射最终候选)
@@ -14,7 +15,7 @@
 
 ## 检查边界
 
-[prepare_source_inventory.py](../scripts/prepare_source_inventory.py) 从实际 PDF 生成逐页证据。[validate_delivery.py](../scripts/validate_delivery.py) 将这些证据与最终候选关联起来。两者都是本地脚本，不连接 Zotero 或 Obsidian。
+[prepare_source_inventory.py](../scripts/prepare_source_inventory.py) 从实际 PDF 生成逐页证据，从 DOCX 保存原生 XML、内容顺序和图片关系。[validate_delivery.py](../scripts/validate_delivery.py) 将这些证据与最终候选关联起来。两者都是本地脚本，不连接 Zotero 或 Obsidian。
 
 `structurally_consistent: true` 表示已记录的证据链没有发现机器可检出的矛盾。它不表示源清单分类完整，不表示模型确实看过页面，也不表示译文、图件或科学内容正确。报告始终保留 `source_fidelity: not_assessed` 与 `independent_review_required: true`。
 
@@ -36,7 +37,7 @@ skills_root = run_root.joinpath("skills")
 inventory_path = prepare_sources(
     {
         "main": input_root.joinpath("main.pdf"),
-        "si_a": input_root.joinpath("supplement.pdf"),
+        "si_a": input_root.joinpath("supplement.docx"),
     },
     work.joinpath("evidence"),
     source_roles={"main": "main", "si_a": "supplement"},
@@ -53,6 +54,51 @@ inventory_path = prepare_sources(
 传入 `glossary_path` 时同时创建 `terminology.json`，术语表路径与哈希由实际文件生成，其余采用记录仍待填写。按[翻译技能](../../literature-translate-zh/SKILL.md#术语记录的具体做法)逐块完成术语台账；`write_delivery_manifest()` 自动绑定台账的最终文件哈希。`TERMINOLOGY_PENDING` 表示记录尚未完成，`TERM_UNRESOLVED` 表示仍有译法未决；台账通过结构检查不等于译义已通过独立验收。
 
 生成的页面只是待查看证据。文字层与可见页面可能冲突。题头、日期、公式、表格和图件的清单证据采用 `basis: visual`；该标记只是记录所用证据类型，不会替代实际查看页面。
+
+## 原生 DOCX 证据
+
+`prepare_sources()` 与 `initialize_workflow()` 接受同一任务中的 PDF 和 DOCX；不需要先把 Word 伪装成 PDF。DOCX 来源保留原文件哈希，`format: docx`、`pages: []`、`page_count: null` 表明这份原生清单没有宣称分页结果。
+
+| 字段 | 保留的实际来源信息 |
+|---|---|
+| `native_document` | 原始 `word/document.xml` 文件路径与哈希。 |
+| `native_blocks` | 按 XML 顺序排列的段落或表格；每块有 `id`、`kind`、`order`、`text`、`locator`。 |
+| `native_blocks[].locator` | `part` 与从 XML 根节点开始的零起始子元素下标数组 `element_path`。 |
+| `native_blocks[].inline_content` | 原文段落内的文字、换行、图片调用及待核对象的位置。 |
+| `native_blocks[].rows` | 表格的原始行、单元格、段落、横向跨度及纵向合并标记。 |
+| `media_calls` | 图片在 XML 中的每一次实际调用，包含 `block_id`、`locator`、`relationship_id`、`media_id`、附近文字与解析状态。 |
+| `native_media` | 原媒体部件身份、内容类型、字节数与哈希；`file` 为保存的原图文件绑定。 |
+| `native_issues` | 公式、浮动对象、图片显示变换、外部/缺失关系、其他文档部件等尚需检查的事项。 |
+
+`media_calls` 与逻辑图不是一一对应关系。两个图片调用可以组成同一图的两个面板，同一媒体也可以在多个位置使用。依据原文题注和内容明确分组，再填写 `original_number`；`media-1`、`image2.png` 或 `rId9` 均不是源图号。
+
+文本或表格单元的原生 evidence 写法如下，变量取自已经查看的原生块：
+
+```python
+source_evidence = {
+    "basis": "native",
+    "native_locator": block["locator"],
+    "blocks": [block["id"]],
+    "quote": block["text"],
+}
+```
+
+一条原生 evidence 对应一个实际块；跨段单元写多条 evidence。保留题注为自己的文本单元。图件的每件媒体调用则各写一条 evidence：
+
+```python
+figure_evidence = {
+    "basis": "native",
+    "native_locator": image_call["locator"],
+    "blocks": [image_call["block_id"]],
+    "media_call": image_call["id"],
+}
+```
+
+原生 evidence 不填写 `page`、`bbox`、`image_xref` 或 PDF 坐标系。`validate_delivery()` 会重新读取源 DOCX，比较原始 XML、块、关系、媒体字节和来源定位。未被图单元使用的实际图片调用返回 `NATIVE_MEDIA_UNMAPPED`。确属来源范围外的装饰调用可在清单顶层的 `excluded_media_calls` 中按 `source`、`media_call`、`reason` 单独记录；理由仍需对源判断。
+
+原生提取不保证重建浮动排版、OMML 数学含义、复杂形状或 Word 的显示变换。保留 `native_issues` 的机器原始记录，在来源的 `native_issue_reviews` 中逐项追加 `{id, status, reason, evidence}`；完成状态使用 `resolved` 或有具体依据的 `not_applicable`。每条 `evidence` 包含实际 `file: {path, sha256}` 与该文件中的 `locator`。需要可见页面时先实际渲染，再引用生成文件；这不赋予原始 DOCX 固定页数。只有说明文字而没有实际核对证据时保持待核。
+
+原生图的 `prepare_figure_reviews()` 和 `record_figure_edges()` 沿用同一调用入口。生成的 `source_locations` 保存 `native_locator`、`media_call`、`relationship_id` 和 `source_media`，不含 `page_render`。逐项视觉证据用 `kind: source_location` 指向其零起始位置，同时指向 `final_asset`。PDF 继续使用 `source_page`。FIG-A19 的页码目标、FIG-A22 的 PDF 坐标系目标在纯原生材料中按实际条件单独记录不适用，不把原生块序号填成页码。所有图像内容、对应关系、最终文件和四边比较仍逐项完成。
 
 ## 填写原子来源单元
 

@@ -1,6 +1,6 @@
-"""Prepare PDF source evidence without claiming visual or semantic acceptance.
+"""Prepare PDF or native DOCX evidence without claiming semantic acceptance.
 
-Set SOURCE_PDFS, SOURCE_ROLES and WORK_DIRECTORY below, then run this file.
+Set SOURCE_FILES, SOURCE_ROLES and WORK_DIRECTORY below, then run this file.
 Or call prepare_sources(source_pdfs, work_directory, source_roles=...).
 The generated inventory deliberately contains pending decisions. Fill those
 decisions from the rendered pages before constructing a delivery manifest.
@@ -23,6 +23,7 @@ import fitz
 
 
 SOURCE_PDFS: dict[str, Path] = {}
+SOURCE_FILES: dict[str, Path] = {}
 SOURCE_ROLES: dict[str, str] = {}
 WORK_DIRECTORY: Path | None = None
 GLOSSARY_PATH: Path | None = None
@@ -107,6 +108,20 @@ def _image_tools():
     return module
 
 
+def _docx_tools():
+    path = Path(__file__).resolve().parent.joinpath("docx_source_inventory.py")
+    name = "literature_docx_inventory_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def prepare_sources(
     source_pdfs: Mapping[str, Path],
     work_directory: Path,
@@ -116,7 +131,7 @@ def prepare_sources(
     dpi: int = RENDER_DPI,
     progress: Progress | None = progress_bar,
 ) -> Path:
-    """Render pages, record text blocks, and index actual image-object calls.
+    """Render PDF pages or preserve DOCX XML order and image relationships.
 
     Source IDs are stable task-local names, not bibliography anchor prefixes.
     Existing inventories are never overwritten. Use a new work directory for
@@ -127,7 +142,7 @@ def prepare_sources(
     and SMask evidence. Neither identifies complete figures automatically.
     """
     if not source_pdfs:
-        raise ValueError("Provide at least one source PDF")
+        raise ValueError("Provide at least one source PDF or DOCX")
     if not 72 <= dpi <= 600:
         raise ValueError("dpi must be between 72 and 600")
     invalid = [key for key in source_pdfs if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", key)]
@@ -144,18 +159,31 @@ def prepare_sources(
         glossary = file_record(Path(glossary_path).resolve(strict=True))
     resolved = {key: Path(value).resolve(strict=True) for key, value in source_pdfs.items()}
     page_counts: dict[str, int] = {}
+    native_counts: dict[str, int] = {}
     for key, path in resolved.items():
+        if path.suffix.lower() == ".docx":
+            native_counts[key] = len(_docx_tools().read_docx(path, key)["native_blocks"])
+            continue
         with fitz.open(path) as document:
             if not document.is_pdf or document.needs_pass:
                 raise ValueError(f"{key}: an accessible PDF is required")
             page_counts[key] = len(document)
-    total = sum(page_counts.values())
-    image_tools = _image_tools()
+    total = sum(page_counts.values()) + sum(native_counts.values())
+    image_tools = _image_tools() if page_counts else None
     done = 0
     sources = []
     for key, path in resolved.items():
         directory = work_directory.joinpath("source-evidence", key)
         directory.mkdir(parents=True, exist_ok=True)
+        if key in native_counts:
+            native = _docx_tools().prepare_docx_source(path, key, directory,
+                                                      progress=progress)
+            sources.append({"id": key, "role": (source_roles or {}).get(key, "pending"),
+                            **file_record(path), **native,
+                            "header_fields": {field: {"status": "pending"} for field in
+                                              ("title", "authors", "affiliations", "publication_date")}})
+            done += native_counts[key]
+            continue
         pages = []
         with fitz.open(path) as document, image_tools.ImageObjectIndexer(
             path, document, directory.joinpath("image-objects"), progress=progress,
@@ -319,8 +347,9 @@ def record_figure_edges(
     selected = []
     for index in indices:
         location = dict(locations[index])
-        location["page_render"] = _figure_file_reference(location.get("page_render"), review_path.parent,
-                                                         f"{unit_id}:source-location-{index}")
+        file_key = "source_media" if "native_locator" in location else "page_render"
+        location[file_key] = _figure_file_reference(location.get(file_key), review_path.parent,
+                                                   f"{unit_id}:source-location-{index}")
         selected.append({"index": index, **location})
     entries = row.get("edge_reviews")
     if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
@@ -366,8 +395,9 @@ def prepare_figure_reviews(
 
     ``final_assets`` maps each figure unit ID to its final image paths, in order.
     Relative image paths use ``resource_root`` (default: the inventory directory).
-    Figure evidence must explicitly use PDF-point coordinates, or identify an
-    original image XRef. No coordinate units or visual outcomes are inferred.
+    PDF figure evidence uses explicit point coordinates or an original XRef;
+    DOCX evidence identifies its actual native media call. No page numbers,
+    coordinate units, logical figure numbers or visual outcomes are inferred.
     This binds an immutable inventory snapshot and registers the new ledger path
     in the live inventory. Other tool pointers can then be registered in either
     order. Bind the delivery after filling the ledger. Existing evidence files
@@ -405,48 +435,60 @@ def prepare_figure_reviews(
             if not isinstance(source_id, str) or source_id not in sources:
                 raise ValueError(f"{identity}: choose a source ID from the inventory")
             source = sources[source_id]
-            if source_id not in documents:
+            if source_id not in source_files:
                 source_files[source_id] = _figure_file_reference(source, inventory_path.parent, source_id)
-                document = stack.enter_context(fitz.open(source_files[source_id]["path"]))
-                if not document.is_pdf or document.needs_pass:
-                    raise ValueError(f"{source_id}: an accessible PDF is required")
-                documents[source_id] = document
-            document = documents[source_id]
-            page_rows = source.get("pages")
-            if not isinstance(page_rows, list) or any(not isinstance(row, dict) for row in page_rows):
-                raise ValueError(f"{source_id}: pages must be an array of objects")
-            page_numbers = [row.get("page") for row in page_rows]
-            if any(type(number) is not int for number in page_numbers) or page_numbers != list(range(1, len(document) + 1)):
-                raise ValueError(f"{source_id}: record every actual PDF page once in source order")
-            evidence = unit.get("evidence")
-            if not isinstance(evidence, list) or not evidence or any(not isinstance(row, dict) for row in evidence):
-                raise ValueError(f"{identity}: source locations are required")
-            locations = []
-            for location in evidence:
-                number = location.get("page")
-                if type(number) is not int or not 1 <= number <= len(document):
-                    raise ValueError(f"{identity}: unknown source page")
-                if location.get("basis") != "visual":
-                    raise ValueError(f"{identity}: figure locations require visible-page evidence")
-                page = document[number - 1]
-                locator = {"page": number}
-                box = location.get("bbox")
-                xref = location.get("image_xref")
-                if box is None and xref is None:
-                    raise ValueError(f"{identity}: locate the figure with a bbox or image_xref")
-                if box is not None:
-                    if location.get("coordinate_system") != PDF_BBOX_COORDINATES:
-                        raise ValueError(f"{identity}: declare unrotated PDF points with a top-left origin and right/down axes")
-                    if not valid_pdf_bbox(box, pdf_page_rect(page)):
-                        raise ValueError(f"{identity}: bbox must be a finite nonempty PDF-point rectangle inside its page")
-                    locator.update({"bbox": box, "coordinate_system": dict(PDF_BBOX_COORDINATES)})
-                if xref is not None:
-                    if type(xref) is not int or xref not in {image[0] for image in page.get_images(full=True)}:
-                        raise ValueError(f"{identity}: image_xref must name an image on this source page")
-                    locator["image_xref"] = xref
-                locator["page_render"] = _figure_file_reference(page_rows[number - 1].get("render"), inventory_path.parent,
-                                                                f"{identity}:page-{number}")
-                locations.append(locator)
+            if source.get("format") == "docx":
+                evidence = unit.get("evidence")
+                if not isinstance(evidence, list) or not evidence:
+                    raise ValueError(f"{identity}: source locations are required")
+                locations = []
+                for location in evidence:
+                    locator = _docx_tools().native_figure_location(source, location)
+                    locator["source_media"] = _figure_file_reference(locator["source_media"], inventory_path.parent,
+                                                                      f"{identity}:native-media")
+                    locations.append(locator)
+            else:
+                if source_id not in documents:
+                    document = stack.enter_context(fitz.open(source_files[source_id]["path"]))
+                    if not document.is_pdf or document.needs_pass:
+                        raise ValueError(f"{source_id}: an accessible PDF is required")
+                    documents[source_id] = document
+                document = documents[source_id]
+                page_rows = source.get("pages")
+                if not isinstance(page_rows, list) or any(not isinstance(row, dict) for row in page_rows):
+                    raise ValueError(f"{source_id}: pages must be an array of objects")
+                page_numbers = [row.get("page") for row in page_rows]
+                if any(type(number) is not int for number in page_numbers) or page_numbers != list(range(1, len(document) + 1)):
+                    raise ValueError(f"{source_id}: record every actual PDF page once in source order")
+                evidence = unit.get("evidence")
+                if not isinstance(evidence, list) or not evidence or any(not isinstance(row, dict) for row in evidence):
+                    raise ValueError(f"{identity}: source locations are required")
+                locations = []
+                for location in evidence:
+                    number = location.get("page")
+                    if type(number) is not int or not 1 <= number <= len(document):
+                        raise ValueError(f"{identity}: unknown source page")
+                    if location.get("basis") != "visual":
+                        raise ValueError(f"{identity}: figure locations require visible-page evidence")
+                    page = document[number - 1]
+                    locator = {"page": number}
+                    box = location.get("bbox")
+                    xref = location.get("image_xref")
+                    if box is None and xref is None:
+                        raise ValueError(f"{identity}: locate the figure with a bbox or image_xref")
+                    if box is not None:
+                        if location.get("coordinate_system") != PDF_BBOX_COORDINATES:
+                            raise ValueError(f"{identity}: declare unrotated PDF points with a top-left origin and right/down axes")
+                        if not valid_pdf_bbox(box, pdf_page_rect(page)):
+                            raise ValueError(f"{identity}: bbox must be a finite nonempty PDF-point rectangle inside its page")
+                        locator.update({"bbox": box, "coordinate_system": dict(PDF_BBOX_COORDINATES)})
+                    if xref is not None:
+                        if type(xref) is not int or xref not in {image[0] for image in page.get_images(full=True)}:
+                            raise ValueError(f"{identity}: image_xref must name an image on this source page")
+                        locator["image_xref"] = xref
+                    locator["page_render"] = _figure_file_reference(page_rows[number - 1].get("render"), inventory_path.parent,
+                                                                    f"{identity}:page-{number}")
+                    locations.append(locator)
             paths = final_assets[identity]
             if not isinstance(paths, Sequence) or isinstance(paths, (str, bytes)) or not paths:
                 raise ValueError(f"{identity}: provide a nonempty sequence of final image paths")
@@ -494,10 +536,11 @@ def prepare_figure_reviews(
 
 
 def main() -> int:
-    if not SOURCE_PDFS or WORK_DIRECTORY is None:
-        print("Set SOURCE_PDFS, SOURCE_ROLES and WORK_DIRECTORY at the top of this script.")
+    sources = SOURCE_FILES or SOURCE_PDFS
+    if not sources or WORK_DIRECTORY is None:
+        print("Set SOURCE_FILES, SOURCE_ROLES and WORK_DIRECTORY at the top of this script.")
         return 2
-    path = prepare_sources(SOURCE_PDFS, WORK_DIRECTORY, source_roles=SOURCE_ROLES, glossary_path=GLOSSARY_PATH)
+    path = prepare_sources(sources, WORK_DIRECTORY, source_roles=SOURCE_ROLES, glossary_path=GLOSSARY_PATH)
     print(f"Source inventory created: {path}")
     print("Pending classifications still require source inspection. No acceptance has been granted.")
     return 0

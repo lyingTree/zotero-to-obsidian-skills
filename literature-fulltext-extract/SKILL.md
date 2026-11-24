@@ -19,6 +19,14 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 5. 对照页图复核需要精确转录的字段。
 6. 回查清单中尚无提取结果的对象。
 
+## DOCX 原生入口
+
+正文或 SI 为 `.docx` 时，将原文件直接传给 `prepare_source_inventory.prepare_sources()` 或总入口 `initialize_workflow()`；同一调用可以混合 PDF 与 DOCX。读取返回清单的 `native_blocks`、`media_calls` 和 `native_media`，具体字段见[原生 DOCX 证据](../literature-zotero2obsidian/references/delivery-checks.md#原生-docx-证据)。原生定位使用 XML 部件及子元素路径，没有推定页码。
+
+先按 `native_blocks` 的顺序提取正文与表格。再按 `media_calls` 的实际 relationship 找原图，并结合前后题注确认逻辑图号。同一图可以对应多个媒体调用；ZIP 中的图片文件名和媒体序号不代表图号。原图文件绑定位于 `native_media[].file`。
+
+`native_issues` 列出 OMML 公式、浮动图形、裁剪变换、其他部件等尚需核对的对象。保留这些原始条目，在 `native_issue_reviews` 另记实际处置及证据。需要看排版时实际渲染 DOCX，再记录该次渲染的文件和定位；不能将段落序号写成 PDF 页码，也不能用生成清单代替内容核验。
+
 ## 约束
 
 每条约束按其 ID 单独记录执行证据。

@@ -1,4 +1,4 @@
-"""Start and inspect a complete PDF-to-Markdown task without awarding fidelity.
+"""Start and inspect a PDF/DOCX-to-Markdown task without awarding fidelity.
 
 Use these functions from a task-local Python script.  The individual validators
 remain useful for partial tasks; this entry point additionally requires the
@@ -82,7 +82,7 @@ def initialize_workflow(
     if run_path.exists():
         raise FileExistsError(f"Resume the existing workflow: {run_path}")
     if not sources or set(sources) != set(source_roles):
-        raise ValueError("Provide one explicit role for every source PDF.")
+        raise ValueError("Provide one explicit role for every source PDF or DOCX.")
     if any(role not in {"main", "supplement"} for role in source_roles.values()):
         raise ValueError("Source roles must be main or supplement.")
     if not isinstance(translation_required, bool):
@@ -92,7 +92,7 @@ def initialize_workflow(
     resolved = {identity: Path(path).resolve(strict=True) for identity, path in sources.items()}
     protected = set(resolved.values())
     if candidate_path in protected or run_path in protected:
-        raise ValueError("A workflow output must not replace a source PDF.")
+        raise ValueError("A workflow output must not replace a source attachment.")
     inventory_path = work_root.joinpath("evidence", "source-inventory.json")
     checks_path = work_root.joinpath("checks.json")
     for path in (inventory_path, checks_path):
@@ -470,7 +470,7 @@ def inspect_workflow(run_path: Path, *, progress: PROGRESS | None = None) -> Com
         return report
     run, _ = loaded
     if run.get("workflow_profile") != PROFILE:
-        fail("WORKFLOW_PROFILE", "run", "Use initialize_workflow for a complete PDF candidate task.")
+        fail("WORKFLOW_PROFILE", "run", "Use initialize_workflow for a complete PDF/DOCX candidate task.")
         return report
     config, scope, records = run.get("config"), run.get("scope"), run.get("records")
     if not all(isinstance(value, dict) for value in (config, scope, records)):

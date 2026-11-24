@@ -85,6 +85,13 @@ DATE_PLACEHOLDER = re.compile(
     r"(?<![A-Za-z])(?:x{1,4}(?:[\s./-]+x{1,4}){1,2}|"
     r"(?:dd|yyyy)[\s./-]+(?:mm|month)[\s./-]+(?:yyyy|dd))(?![A-Za-z])", re.IGNORECASE
 )
+FRONT_LABEL = re.compile(
+    r"(?:研究亮点|研究要点|主要亮点|亮点|要点|图形摘要|图文摘要|图像摘要|"
+    r"Graphical\s+Abstract|(?:Research\s+)?Highlights)"
+    r"(?:\s*(?:与|和|及|、|/|&|\+|and)\s*(?:研究亮点|研究要点|主要亮点|亮点|要点|"
+    r"图形摘要|图文摘要|图像摘要|Graphical\s+Abstract|(?:Research\s+)?Highlights))*",
+    re.IGNORECASE,
+)
 
 
 def _sibling(name: str):
@@ -477,6 +484,59 @@ def _heading_spacing(events: list[tuple[str, int, str]]) -> list[Prompt]:
     return findings
 
 
+def _front_material_positions(events: list[tuple[str, int, str]]) -> list[Prompt]:
+    """Locate explicit front-material labels after the main abstract.
+
+    Only headings and stand-alone bold labels are considered. Ordinary prose,
+    image alt text, fenced examples and supplementary abstracts cannot assert
+    that a source object is misplaced. The result remains a source-review
+    prompt, not an inferred source inventory or an automatic rearrangement.
+    """
+    findings = []
+    abstract_seen = False
+    body_seen = False
+    supplement_level = None
+    for kind, line, text in events:
+        if kind not in {"heading", "text"}:
+            continue
+        heading = note_checks._HEADING.match(text) if kind == "heading" else None
+        label = heading[2].strip() if heading else text.strip()
+        if heading:
+            label = re.sub(r"^[0-9]+(?:\.[0-9]+)*\s+", "", label)
+            if supplement_level is not None and len(heading[1]) <= supplement_level:
+                supplement_level = None
+            if len(heading[1]) <= 2 and re.match(
+                r"^(?:补充材料|补充信息|Supplement(?:ary|al)?\s+(?:Materials?|Information))"
+                r"(?:$|[\s：:（(])", label, re.IGNORECASE,
+            ):
+                supplement_level = len(heading[1])
+            if supplement_level is not None:
+                continue
+            if len(heading[1]) == 2 and label.casefold() in {"摘要", "abstract"}:
+                abstract_seen = True
+                continue
+        else:
+            bold = re.fullmatch(r"(?P<mark>\*\*|__)(?P<label>.+?)(?P=mark)[：:]?", label)
+            if bold is None:
+                continue
+            label = bold["label"].strip()
+        label = re.sub(r"^(?:\*\*|__)(.*?)(?:\*\*|__)$", r"\1", label).strip().rstrip("：:").strip()
+        if supplement_level is not None or not abstract_seen:
+            continue
+        if not FRONT_LABEL.fullmatch(label):
+            if heading and len(heading[1]) <= 2:
+                body_seen = True
+            continue
+        rule = "BODY-C16" if body_seen else "BODY-C10"
+        position = "正文开始之后" if body_seen else "主文摘要与正文之间"
+        findings.append(Prompt(
+            rule, line, "FRONT_MATERIAL_AFTER_ABSTRACT", text,
+            f"显式前置信息标签“{label}”位于{position}；对照来源核对其位置。"
+            "来源的前置材料放在摘要之前，摘要之后直接接正文；不新增来源中没有的对象。",
+        ))
+    return findings
+
+
 def lint_presentation(text: str) -> list[Prompt]:
     """Return review prompts, including visible values in every Rich Table sheet.
 
@@ -621,6 +681,7 @@ def lint_presentation(text: str) -> list[Prompt]:
     findings.extend(_heading_spacing(events))
     findings.extend(_paragraph_spacing(events))
     findings.extend(_letter_list_structure(events))
+    findings.extend(_front_material_positions(events))
     return list(dict.fromkeys(findings))
 
 

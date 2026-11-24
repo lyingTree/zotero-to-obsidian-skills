@@ -15,6 +15,8 @@ import re
 from typing import Any
 import unicodedata
 
+import yaml
+
 
 _ILLEGAL = frozenset('<>:"/\\|?*')
 _LINK_AMBIGUOUS = frozenset("[]#^|")
@@ -523,6 +525,61 @@ def new_figure_table_anchor(
     if anchor in occupied_ids or anchor[1:] in occupied_ids:
         raise ValueError(f"new anchor is already occupied: {anchor}")
     return anchor
+
+
+def build_rich_table_block(
+    data: Mapping[str, Any], *, anchor: str, wrapped: bool = True, newline: str = "\n",
+) -> str:
+    """Serialize supplied v2/v3 table data as block YAML with its supplied ID.
+
+    Supply the complete table, including every source cell, locked=True and
+    theme='grid' for every sheet. This function neither invents those fields nor
+    changes captions, cells, mathematics, identifiers, merges or reference links.
+    It writes no file and does not certify source completeness or link targets.
+    Run validate_note and the source checks on the assembled note afterwards.
+    """
+    if not isinstance(data, Mapping):
+        raise ValueError("data must be the complete Rich Table mapping")
+    if not isinstance(anchor, str) or not re.fullmatch(r"\^?tbl-[A-Za-z0-9-]+", anchor):
+        raise ValueError("anchor must be the supplied tbl- block ID, optionally prefixed by ^")
+    if type(wrapped) is not bool:
+        raise ValueError("wrapped must be True or False")
+    if newline not in {"\n", "\r\n"}:
+        raise ValueError("newline must be LF or CRLF")
+    try:
+        prepared = _json_copy(dict(data))
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValueError("table data must contain finite, acyclic JSON-compatible values") from error
+    if prepared != data:
+        raise ValueError("table data must use JSON string keys and list values without type conversion")
+    version = prepared.get("version")
+    if type(version) is not int or version not in (2, 3):
+        raise ValueError("version must be the integer 2 or 3")
+    sheets = prepared.get("sheets") if version == 3 else [prepared]
+    if not isinstance(sheets, list) or not sheets:
+        raise ValueError("a v3 workbook requires a nonempty sheets list")
+    for index, sheet in enumerate(sheets, 1):
+        if not isinstance(sheet, dict):
+            raise ValueError(f"sheet {index} must be a mapping")
+        if sheet.get("locked") is not True:
+            raise ValueError(f"sheet {index} must explicitly supply locked=True")
+        if sheet.get("theme") != "grid":
+            raise ValueError(f"sheet {index} must explicitly supply theme='grid'")
+        for field in ("columns", "rows"):
+            if not isinstance(sheet.get(field), list) or not sheet[field]:
+                raise ValueError(f"sheet {index} must supply nonempty {field}")
+    payload = yaml.safe_dump(prepared, allow_unicode=True, sort_keys=False,
+                             default_flow_style=False, width=100000)
+    if yaml.safe_load(payload) != prepared:
+        raise ValueError("YAML serialization changed a supplied field value")
+    if wrapped:
+        payload = "---\n" + payload + "---\n"
+    # A cell can contain Markdown code. Its longest backtick run must not close
+    # the surrounding data fence, even when YAML emits a multiline string.
+    longest = max((len(match[0]) for match in re.finditer(r"`+", payload)), default=0)
+    fence = "`" * max(3, longest + 1)
+    block = f"{fence}rich-table\n{payload}{fence}\n^{anchor.removeprefix('^')}\n"
+    return block if newline == "\n" else block.replace("\n", newline)
 
 
 def plan_supplement_figure_caption(

@@ -13,12 +13,14 @@ description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、�
 ## 执行步骤
 
 1. 复用第 1 步清单核对每份 SI 附件的身份。
-2. 查看每份 SI 自己的题头页图。
+2. 查看每份 SI 自己的题头；PDF 使用题头页图，DOCX 使用原生段落并按实际版面需要渲染。
 3. 按[来源命名空间](../literature-zotero2obsidian/references/pipeline-contract.md#补充材料与书目命名空间)建立该份 SI 的来源记录。
 4. 按[题头规则](../literature-header-format/SKILL.md)构建该份 SI 的题头。
 5. 提取该份 SI 的完整内容。
 6. 对照清单检查该份 SI 的遗漏对象。
 7. 将核对后的 SI 内容并入候选一次。
+
+DOCX 补充材料直接进入[原生 DOCX 证据入口](../literature-zotero2obsidian/references/delivery-checks.md#原生-docx-证据)。先核对每个 `media_call` 的关系目标和前后原文，再建立图号与题注对应。一个题注前有两个媒体调用时，先核对是否为同一图的两个面板；不要据此补造第二个图号。最终检查会提示未映射的实际媒体调用，目录中存在图片不能替代笔记中的正确嵌入。
 
 ## 约束
 
@@ -42,8 +44,8 @@ description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、�
 - [SI-C16] 保留 Movie 的原 S 编号。
 - [SI-C17] 保留 SI 对象的原顺序。
 - [SI-C18] 来源原编号字段不得补入原文没有的对象编号。
-- [SI-C19] 补充图执行[PDF 图像裁剪与验收规则](../literature-fulltext-extract/references/figure-crop.md)。
-- [SI-C20] 一页仅一幅补充图时仍须定位图框。
+- [SI-C19] PDF 补充图执行[PDF 图像裁剪与验收规则](../literature-fulltext-extract/references/figure-crop.md)。
+- [SI-C20] PDF 一页仅一幅补充图时仍须定位图框。
 - [SI-C21] 保留 SI 表格的行结构。
 - [SI-C98] 保留 SI 表格的列结构。
 - [SI-C22] 保留 SI 表格合并关系。

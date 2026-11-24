@@ -277,6 +277,19 @@ class _Context:
             binding = self.binding(source, self.inventory_path.parent, identity)
             if binding is not None:
                 self.source_bindings[identity] = binding
+            if source.get("format") == "docx":
+                native_tools = self.delivery_tools.source_tools._docx_tools()
+                for order, block in enumerate(self.rows(source.get("native_blocks"), identity + ".native_blocks")):
+                    block_id = block.get("id")
+                    if not _nonempty(block_id) or block_id in self.blocks:
+                        self.fail("MAP_BLOCK_ID", str(block_id), "Source block IDs must be nonempty and globally unique.")
+                        continue
+                    if not isinstance(block.get("text"), str) or not native_tools.valid_native_locator(block.get("locator")):
+                        self.fail("MAP_NATIVE_BLOCK_RECORD", block_id, "Native blocks require original text and the actual OOXML locator.")
+                        continue
+                    self.blocks[block_id] = (identity, None, block, order)
+                self.notify(index, len(self.sources), "native source bindings and block inventory")
+                continue
             pages = self.rows(source.get("pages"), identity + ".pages", "page")
             seen_pages = set()
             order = 0
@@ -316,6 +329,16 @@ class _Context:
             if not evidence:
                 self.fail("MAP_UNIT_EVIDENCE", identity, "A registered unit needs actual source locations.")
             for location in evidence:
+                if self.sources.get(source, {}).get("format") == "docx":
+                    errors = self.delivery_tools.source_tools._docx_tools().native_evidence_errors(self.sources[source], location)
+                    for message in errors:
+                        self.fail("MAP_NATIVE_LOCATOR", identity, message)
+                    if errors:
+                        continue
+                    for block_id in location["blocks"]:
+                        self.unit_blocks[identity].add(block_id)
+                        self.block_units[block_id].add(identity)
+                    continue
                 page = location.get("page")
                 if type(page) is not int or page not in pages_by_source.get(source, set()):
                     self.fail("MAP_UNIT_PAGE", identity, "The unit evidence points outside its source pages.")
@@ -964,6 +987,12 @@ def _record_unit(context: _Context, row: dict, identity: str) -> str | None:
     return unit
 
 
+def _block_source_locator(page, block: Mapping) -> dict:
+    if "locator" in block:
+        return {"native_locator": _copy(block["locator"])}
+    return {"page": page, "bbox": _copy(block["bbox"])}
+
+
 def _locations_match(value: Any, expected: list[dict]) -> bool:
     if not isinstance(expected, list) or any(not isinstance(row, dict) for row in expected):
         return False
@@ -972,12 +1001,13 @@ def _locations_match(value: Any, expected: list[dict]) -> bool:
         return False
     matched = set()
     for location in locations:
-        if not any(key in location for key in ("bbox", "quote", "blocks", "image_xref")):
+        if not any(key in location for key in ("bbox", "quote", "blocks", "image_xref", "native_locator")):
             return False
         choices = [index for index, original in enumerate(expected)
                    if location.get("page") == original.get("page") and
                    all(key in original and location[key] == original[key]
-                       for key in ("bbox", "quote", "blocks", "image_xref", "coordinate_system") if key in location)]
+                       for key in ("bbox", "quote", "blocks", "image_xref", "coordinate_system", "native_locator", "media_call") if key in location)
+                   and ("native_locator" not in original or location.get("native_locator") == original["native_locator"])]
         if not choices:
             return False
         matched.update(choices)
@@ -1160,7 +1190,7 @@ def _check_source_map(context: _Context, data: dict, name: str, path: Path) -> t
         if context.sources.get(source, {}).get("role") != role:
             context.fail("MAP_SOURCE_ROLE", block_id, f"This block belongs in the {context.sources.get(source, {}).get('role')} source view.")
         context.binding(row.get("source_attachment"), path.parent, block_id, context.source_bindings.get(source))
-        locations = [{"page": value[1], "bbox": value[2]["bbox"]} for value in originals]
+        locations = [_block_source_locator(value[1], value[2]) for value in originals]
         if not _locations_match(row.get("source_locators", row.get("source_locator")), locations):
             context.fail("MAP_BLOCK_LOCATOR", block_id, "The map location differs from the original block positions.")
         joiner = row.get("joiner", "")
@@ -1518,7 +1548,7 @@ def _derived_source_map(context: _Context, role: str, deliveries: dict[str, dict
         row = {
             "block_id": block_id, "source_id": source, "source_blocks": [block_id],
             "source_attachment": context.source_bindings[source],
-            "source_locator": {"page": page, "bbox": _copy(block["bbox"])},
+            "source_locator": _block_source_locator(page, block),
             "order": order, "kind": next(iter(kinds)) if len(kinds) == 1 else "mixed" if units else "excluded",
             "original_text": block["text"], "original_sha256": _text_hash(block["text"]),
             "decision": decision,

@@ -22,6 +22,10 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 
 书目 ID 的兼容性按第 9 步的语法规则静态核对，保留对应 warning；不以插件运行作为验收条件。
 
+Rich Table 使用 `literature-zotero2obsidian/scripts/format_helpers.py` 的 `build_rich_table_block(table_data, anchor=actual_anchor)` 生成完整数据块。`table_data` 来自已逐格核对的源表；显式提供 v2/v3、每张表的 `locked=True`、`theme="grid"`、完整 `columns` 与 `rows`。函数保留单元格、公式字符串、合并关系和锚 ID，生成块状 YAML 后读回比较；不要改用 `json.dumps()` 输出 flow 数组。表题中的“表N”保留纯文本，正文调用再链接到该表锚。
+
+候选组装后运行 `validate_note()` 与 `lint_presentation()`。列、行样式和题注自链的诊断分别处理。前置材料位置提示须回到来源核对：原文摘要前的亮点、图形摘要仍置于摘要前；摘要后直接进入正文。普通正文讨论“研究亮点”不据此移动。
+
 ## 约束
 
 每条约束按其 ID 单独记录执行证据。验收对象为 Markdown 源码、解析后的结构化字段及引用的资源文件。

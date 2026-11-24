@@ -9,20 +9,23 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，不审查应用界面，不要求点击交互、阅读视图、插件显示或原生缓存检查。
 
-完整生成任务先读[完整候选的开始与收尾](references/complete-workflow.md)，用 `initialize_workflow()` 建立实际来源材料与全量待核清单；结束前用 `inspect_workflow()` 列出剩余目标。再沿[分阶段执行路线](references/execution-plan.md)逐阶段处理，具体内容规则仍以对应子技能为准。
+完整生成任务先读[完整候选的开始与收尾](references/complete-workflow.md)，用 `initialize_workflow()` 建立实际来源材料与全量待核清单。该入口支持 PDF 与原生 DOCX 混合输入。接着使用[逐块产出队列](references/draft-queue.md)构建完整正文，再沿[分阶段执行路线](references/execution-plan.md)核对、排版及收尾。具体内容规则仍以对应子技能为准。
 
 ## 完整任务的完成入口
 
-1. 使用[逐段待办入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)确认每个来源单元的处理范围。
-2. 用 `next_review_task()` 取得当前段落的实际对照材料。
-3. 用[翻译短入口](../literature-translate-zh/references/translation-review.md#逐段短入口与增量保存)填写该段各项实际判断。
-4. 用 `require_unit_records()` 检查本段记录，再进入下一段。
-5. 逐段记录完成后，使用 `pending_check_rows()` 查看尚待完成的验收 ID。
-6. 已核对的 ID 用 `record_decision_rows()` 保存各自结果。
-7. 写最终完成报告前运行 `require_completed_records()`。
-8. 该函数报告本地缺项时，继续完成对应目标。
+1. 从实际来源库存建立[逐块产出队列](references/draft-queue.md)。
+2. 按源页确认 PDF 的阅读顺序。
+3. 将同一语义段的来源块归入一个内容单元。
+4. 将当前单元的完整中文内容保存为片段。
+5. 持续处理队列中的下一项，直至范围内内容片段齐全。
+6. 按已确认的来源顺序组装候选。
+7. 使用[逐段复核入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)核对实际译文。
+8. 用 `record_decision_rows()` 保存已经核对的逐 ID 结果。
+9. 写最终完成报告前运行 `require_completed_records()`。
 
-完整入口见[完整流程说明](references/complete-workflow.md)。先闭合当前段落，避免只给全部段落填写“完整性”后把其余字段留到末尾。待办视图省略重复文件绑定，完整记录仍保留所有目标。记录数量较多不构成外部阻断。用户没有要求中止时，不因已经生成 Markdown 或已经花费一段时间而自行结束仍能完成的本地核对。
+内容产出与译文复核是两个入口：`DraftQueue.next_task()` 能在尚无候选时指出下一块实际来源；`next_review_task()` 需要已有候选和来源单元，用于后续核对。不能把后者当作从零写全文的任务队列。不要先只写摘要、结论后便进入最终报告；剩余正文是当前任务的一部分。
+
+写片段时保留实际发现的术语、数值与来源疑点，候选固定后再绑定其最终位置。每段的独立目标仍分别判定。队列完成只说明登记的来源块已有片段或明确排除理由，不证明译义正确。遇到队列或收尾报告的本地缺项，继续处理该目标。记录数量较多不构成外部阻断；用户没有要求中止时，不因已经生成部分 Markdown 或已经花费一段时间而自行结束。
 
 ## 范围与约束
 
@@ -77,8 +80,8 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 - [PIPE-C49] 完整生成任务在结束前逐页核对来源覆盖。
 - [PIPE-C50] 完整生成任务在结束前逐对象核对来源内容。
 - [PIPE-C51] 只生成离线候选时按[离线候选模式](references/project-profile.md#离线候选模式)规划路径。
-- [PIPE-C52] 完整 PDF 生成任务使用[完整流程入口](references/complete-workflow.md)初始化工作记录。
-- [PIPE-C53] 完整 PDF 候选交付前运行 `inspect_workflow()`。
+- [PIPE-C52] 完整 PDF/DOCX 生成任务使用[完整流程入口](references/complete-workflow.md)初始化工作记录。
+- [PIPE-C53] 完整 PDF/DOCX 候选交付前运行 `inspect_workflow()`。
 
 ## 十一个子 skill
 

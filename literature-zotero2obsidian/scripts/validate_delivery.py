@@ -314,6 +314,8 @@ class _Audit:
         self.blocks: dict[str, tuple[str, int, dict]] = {}
         self.used_blocks: set[str] = set()
         self.used_pages: set[tuple[str, int]] = set()
+        self.native_sources: dict[str, dict] = {}
+        self.used_media_calls: set[tuple[str, str]] = set()
         self.units: dict[str, dict] = {}
         self.targets: dict[str, tuple[int, int, str]] = {}
         self.deliveries: dict[str, dict] = {}
@@ -395,6 +397,9 @@ class _Audit:
             path = self.record(source, base, identity)
             if path is None:
                 continue
+            if source.get("format") == "docx":
+                self.check_native_source(identity, source, path, base)
+                continue
             try:
                 document = fitz.open(path)
             except (fitz.mupdf.FzErrorBase, RuntimeError, ValueError, OSError) as error:
@@ -435,6 +440,55 @@ class _Audit:
                     if self.progress:
                         self.progress(done, total, f"verify {identity} page {number}")
 
+    def check_native_source(self, identity: str, source: dict, path: Path, base: Path):
+        try:
+            actual = source_tools._docx_tools().read_docx(path, identity, progress=self.progress)
+        except (OSError, ValueError) as error:
+            self.fail("SOURCE_DOCX", identity, str(error))
+            return
+        for name in ("format", "page_count", "pages", "document_part", "relationships", "native_blocks", "media_calls", "native_issues"):
+            if json.dumps(source.get(name), sort_keys=True, allow_nan=False) != json.dumps(actual[name], sort_keys=True, allow_nan=False):
+                self.fail("NATIVE_PROVENANCE", identity + ":" + name, "Preserve the actual OOXML source inventory; pagination and image numbering are not inferred.")
+        registered = self.index(self.rows(source.get("native_media"), identity, "native_media"), "id", identity + ":media")
+        if list(registered) != [row["id"] for row in actual["native_media"]]:
+            self.fail("NATIVE_MEDIA_SET", identity, "Retain every actual embedded media part once in source inventory order.")
+        for media in actual["native_media"]:
+            entry = registered.get(media["id"], {})
+            if {key: entry.get(key) for key in media} != media:
+                self.fail("NATIVE_MEDIA_PROVENANCE", media["id"], "Native media metadata must match the original DOCX part.")
+            saved = self.record(entry.get("file"), base, media["id"])
+            if saved is not None and self.hashes[saved] != media["sha256"]:
+                self.fail("NATIVE_MEDIA_BYTES", media["id"], "Preserve the original embedded image bytes.")
+            media["file"] = entry.get("file")
+        document_path = self.record(source.get("native_document"), base, identity + ":native-document")
+        if document_path is not None and self.hashes[document_path] != actual["document_part"]["sha256"]:
+            self.fail("NATIVE_DOCUMENT_BYTES", identity, "Preserve the original document XML bytes.")
+        text_path = self.record(source.get("native_text"), base, identity + ":native-text")
+        expected_text = "".join(f"[{block['id']} | {block['kind']}]\n{block['text']}\n\n" for block in actual["native_blocks"])
+        if text_path is not None and text_path.read_bytes() != expected_text.encode("utf-8"):
+            self.fail("NATIVE_TEXT_BYTES", identity, "The native block text evidence differs from the original OOXML inventory.")
+        self.native_sources[identity] = {**source, **actual}
+        for block in actual["native_blocks"]:
+            self.blocks[block["id"]] = (identity, None, block)
+        reviews = self.index(self.rows(source.get("native_issue_reviews", []), identity, "native_issue_reviews"), "id", identity + ":native-reviews")
+        issues = {row["id"]: row for row in actual["native_issues"]}
+        for key in set(reviews) - set(issues):
+            self.fail("NATIVE_ISSUE_UNKNOWN", key, "Review an actual native extraction issue.")
+        for key in issues:
+            review = reviews.get(key, {})
+            if review.get("status") not in {"resolved", "not_applicable"}:
+                self.fail("NATIVE_ISSUE_PENDING", key, "Unsupported source content requires explicit inspection before completion.")
+                continue
+            if not isinstance(review.get("reason"), str) or not review["reason"].strip():
+                self.fail("NATIVE_ISSUE_REASON", key, "Record a source-specific reason for resolving this extraction issue.")
+            evidence = self.rows(review.get("evidence"), key, "evidence")
+            if not evidence:
+                self.fail("NATIVE_ISSUE_EVIDENCE", key, "Bind the actually inspected source or rendered evidence.")
+            for index, entry in enumerate(evidence):
+                self.record(entry.get("file"), base, f"{key}:evidence-{index}")
+                if not isinstance(entry.get("locator"), dict) or not entry["locator"]:
+                    self.fail("NATIVE_ISSUE_LOCATOR", key, "Locate the actual evidence used to resolve this issue.")
+
     def check_render(self, record: Any, base: Path, identity: str, number: int, page):
         label = f"{identity}:page-{number}:render"
         path = self.record(record, base, label)
@@ -463,6 +517,26 @@ class _Audit:
         if not rows:
             self.fail("SOURCE_EVIDENCE_REQUIRED", identity, "Locate this item on at least one source page.")
         for row in rows:
+            if self.sources.get(source, {}).get("format") == "docx":
+                native = self.native_sources.get(source)
+                if native is None:
+                    self.fail("NATIVE_SOURCE_UNAVAILABLE", identity, "Native source provenance could not be verified.")
+                    continue
+                errors = source_tools._docx_tools().native_evidence_errors(native, row)
+                for message in errors:
+                    self.fail("NATIVE_EVIDENCE", identity, message)
+                if errors:
+                    continue
+                self.used_blocks.update(row["blocks"])
+                call = row.get("media_call")
+                if call is not None:
+                    if self.units.get(identity, {}).get("kind") != "figure":
+                        self.fail("NATIVE_MEDIA_UNIT", identity, "Assign a native image call to an explicit figure unit.")
+                    else:
+                        self.used_media_calls.add((source, call))
+                elif self.units.get(identity, {}).get("kind") == "figure":
+                    self.fail("NATIVE_FIGURE_CALL", identity, "A native figure location needs its actual image relationship call.")
+                continue
             page = row.get("page")
             if type(page) is not int or (source, page) not in self.pages:
                 self.fail("EVIDENCE_PAGE", identity, "Evidence points to an unknown source page.")
@@ -586,6 +660,21 @@ class _Audit:
             excluded.add(block)
         for block in sorted(set(self.blocks) - self.used_blocks - excluded):
             self.fail("SOURCE_BLOCK_UNMAPPED", block, "Map this source text block or record a justified exclusion.")
+        excluded_calls = {}
+        calls = {(source_id, row["id"]): row for source_id, source in self.native_sources.items()
+                 for row in source["media_calls"]}
+        for row in self.rows(inventory.get("excluded_media_calls", []), "inventory", "excluded_media_calls"):
+            key = (row.get("source"), row.get("media_call"))
+            if key not in calls or not isinstance(row.get("reason"), str) or not row["reason"].strip():
+                self.fail("NATIVE_MEDIA_EXCLUSION", str(key), "Exclude an actual media call only with a source-specific reason.")
+                continue
+            if key in excluded_calls or key in self.used_media_calls:
+                self.fail("NATIVE_MEDIA_EXCLUSION_CONFLICT", str(key), "A call cannot be both delivered and excluded or excluded twice.")
+            excluded_calls[key] = row["reason"]
+        for key, call in calls.items():
+            if key in self.used_media_calls or key in excluded_calls or call["block_id"] in excluded:
+                continue
+            self.fail("NATIVE_MEDIA_UNMAPPED", call["id"], "Map this actual image call to a figure or record an explicit exclusion; a file on disk alone is not delivery.")
         excluded_pages = set()
         for row in self.rows(inventory.get("excluded_pages", []), "inventory", "excluded_pages"):
             key = (row.get("source"), row.get("page"))
@@ -766,6 +855,27 @@ class _Audit:
         if not locations or len(locations) != len(expected):
             self.fail("FIG_REVIEW_LOCATION_SET", identity, "Record every inventory figure location once, in its source order.")
         source = unit.get("source")
+        if self.sources.get(source, {}).get("format") == "docx":
+            native = self.native_sources.get(source)
+            if native is None:
+                self.fail("FIG_REVIEW_NATIVE_SOURCE", identity, "Verify the original DOCX provenance before reviewing its media.")
+                return
+            for index, location in enumerate(locations):
+                label = f"{identity}:source-{index}"
+                if index >= len(expected):
+                    continue
+                try:
+                    original = source_tools._docx_tools().native_figure_location(native, expected[index])
+                except (ValueError, KeyError, TypeError) as error:
+                    self.fail("FIG_REVIEW_NATIVE_LOCATOR", label, str(error))
+                    continue
+                if location != original:
+                    self.fail("FIG_REVIEW_LOCATION_MAPPING", label, "Retain the actual native image call, relationship and original media binding.")
+                image = self.figure_file_reference(location.get("source_media"), base, label)
+                actual = self.figure_file_reference(original["source_media"], self.inventory_base, label + ":original")
+                if image is not None and image != actual:
+                    self.fail("FIG_REVIEW_SOURCE_MEDIA", label, "Compare against the original embedded media of this image call.")
+            return
         for index, location in enumerate(locations):
             label = f"{identity}:source-{index}"
             number = location.get("page")
@@ -808,7 +918,8 @@ class _Audit:
         for unknown in sorted(set(checks) - set(goals)):
             self.fail("FIG_REVIEW_CHECK_UNKNOWN", f"{identity}:{unknown}", "This is not a FIG-A01 through FIG-A28 target.")
         locations, assets = row.get("source_locations"), row.get("final_assets")
-        lengths = {"source_page": len(locations) if isinstance(locations, list) else 0,
+        source_kind = "source_location" if self.sources.get(self.units.get(identity, {}).get("source"), {}).get("format") == "docx" else "source_page"
+        lengths = {source_kind: len(locations) if isinstance(locations, list) else 0,
                    "final_asset": len(assets) if isinstance(assets, list) else 0}
         for check_id, check in checks.items():
             if check_id not in goals:
@@ -839,14 +950,14 @@ class _Audit:
             for pointer in evidence:
                 kind, index = pointer.get("kind"), pointer.get("index")
                 if not isinstance(kind, str) or kind not in lengths or type(index) is not int or not 0 <= index < lengths.get(kind, 0):
-                    self.fail("FIG_REVIEW_EVIDENCE_TARGET", label, "Evidence must point to an existing source_page or final_asset by its zero-based index.")
+                    self.fail("FIG_REVIEW_EVIDENCE_TARGET", label, f"Evidence must point to an existing {source_kind} or final_asset by its zero-based index.")
                     continue
                 observation = pointer.get("observation")
                 if not isinstance(observation, str) or not observation.strip():
                     self.fail("FIG_REVIEW_OBSERVATION", label, "Record what was inspected at this evidence location.")
                 kinds.add(kind)
             visual_target = int(check_id[-2:]) <= 18 or int(check_id[-2:]) >= 26
-            if status == "pass" and visual_target and kinds != {"source_page", "final_asset"}:
+            if status == "pass" and visual_target and kinds != {source_kind, "final_asset"}:
                 self.fail("FIG_REVIEW_COMPARISON", label, "A recorded visual pass needs both source-page and final-image evidence.")
 
     def check_figure_review_edges(self, identity: str, row: dict, base: Path):
@@ -905,11 +1016,12 @@ class _Audit:
                     self.fail("FIG_REVIEW_EDGE_SOURCE", label, "Do not duplicate a source location within one edge observation.")
                 selected.add(location_index)
                 original = locations[location_index]
-                supplied_locator = {key: value for key, value in location.items() if key not in {"index", "page_render"}}
-                original_locator = {key: value for key, value in original.items() if key != "page_render"}
+                file_key = "source_media" if "native_locator" in original else "page_render"
+                supplied_locator = {key: value for key, value in location.items() if key not in {"index", file_key}}
+                original_locator = {key: value for key, value in original.items() if key != file_key}
                 if json.dumps(supplied_locator, sort_keys=True) != json.dumps(original_locator, sort_keys=True):
                     self.fail("FIG_REVIEW_EDGE_SOURCE", label, "Retain the exact page and source locator used for this edge comparison.")
-                bound_file(location.get("page_render"), original.get("page_render"), label + f":page-{location_index}")
+                bound_file(location.get(file_key), original.get(file_key), label + f":source-{location_index}")
             covered_locations.update(selected)
         for index, side in sorted(expected - seen):
             self.fail("FIG_REVIEW_EDGE_MISSING", f"{identity}:asset-{index}:{side}", "Retain an explicit observation slot for each side of every final image.")

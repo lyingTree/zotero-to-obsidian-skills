@@ -443,7 +443,14 @@ class UnitReview:
                        for index, location in enumerate(locations)]
         self.terms = {row["id"]: TermReview(self, row) for row in self.row["term_candidates"]}
         self.source_path = Path(writer.source_bindings[self.row["source_id"]]["path"])
+        self.native_source = writer.sources[self.row["source_id"]].get("format") == "docx"
         for location in self.row["source_locations"]:
+            if self.native_source:
+                try:
+                    writer._files.native(self.source_path).resolve_native_locator(location["native_locator"])
+                except (OSError, ValueError) as error:
+                    raise ReviewWriterError("TRW_LOCATION", self.id, str(error)) from error
+                continue
             self._pdf_location(location)
 
     def _pdf_location(self, locator):
@@ -468,6 +475,19 @@ class UnitReview:
         if block_id is not None:
             parents = [block for parent in parents for block in parent.get("block_locations", []) if block.get("block_id") == block_id]
             _require(bool(parents), "TRW_LOCATION", self.id, "The block ID does not belong to this source unit.")
+        if self.native_source:
+            _require(page is None and bbox is None and observation_basis is None,
+                     "TRW_LOCATION", self.id, "Select native XML text by block; do not invent a PDF page or visual observation.")
+            matches = [(parent, index) for parent in parents
+                       for index, _ in enumerate(_matches(parent.get("quote") or "", quote), 1)]
+            parent, position = _choose(matches, occurrence, self.id)
+            locator = {"basis": "native", "native_locator": deepcopy(parent["native_locator"]),
+                       "quote": quote, "occurrence_in_recorded_span": position}
+            if block_id is not None:
+                locator["block_id"] = block_id
+            actual = self.writer._files.native(self.source_path).resolve_native_locator(locator["native_locator"])
+            _require(quote in actual, "TRW_LOCATION", self.id, "The selected quote is absent from the actual native document.")
+            return Selection(self.id, "source", locator, quote, quote, None, selector, self)
         if page is not None:
             parents = [parent for parent in parents if parent["page"] == page]
         if bbox is not None:

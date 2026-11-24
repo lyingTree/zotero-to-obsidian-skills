@@ -7,9 +7,9 @@
 | 阶段 | 当前任务 | 留存产物 | 下一阶段入口 |
 |---|---|---|---|
 | 0 范围 | 确认实际输入与输出范围 | run.json、checks.json 待填骨架 | [项目配置](project-profile.md) |
-| 1 来源 | 建立所有来源的逐页材料 | source-inventory.json、页图、原始文字 | [来源索引说明](delivery-checks.md) |
-| 2 盘点 | 登记来源中的内容单元 | source-map.json、si-map.json | [全文提取](../../literature-fulltext-extract/SKILL.md) |
-| 3 译文 | 按来源块完成中文译稿 | translated.md、si.md | [翻译](../../literature-translate-zh/SKILL.md) |
+| 1 来源 | 建立每份来源的实际材料 | source-inventory.json、PDF页图、DOCX原生块与媒体 | [来源索引说明](delivery-checks.md) |
+| 2 盘点 | 按实际阅读顺序登记内容单元 | 产出队列、source-map.json、si-map.json | [逐块产出](draft-queue.md) |
+| 3 译文 | 将每个单元的完整中文内容落盘 | 来源绑定的片段、translated.md、si.md | [翻译](../../literature-translate-zh/SKILL.md) |
 | 4 结构 | 组装题头与正文对象 | drafts/06 至 08 | [正文排版](../../literature-body-format/SKILL.md) |
 | 5 链接 | 按来源作用域连接对象 | drafts/09、link-map.json | [篇内链接](../../literature-internal-links/SKILL.md) |
 | 6 交付 | 固定最终候选与资源路径 | final.md、delivery-manifest.json、台账文件绑定 | [自动检查](automated-validation.md) |
@@ -17,7 +17,7 @@
 
 ## 逐项台账贯穿各阶段
 
-完整 PDF 任务先调用[完整流程入口](complete-workflow.md)的 `initialize_workflow()`，它保存逐页材料并调用 [`check_records.prepare_check_records(...)`](../scripts/check_records.py)，从实际技能文件生成全量 `catalog` 与待填 `checks`。默认待填集合覆盖各技能及 references 中全部 `A` 编号验收；追踪约束时使用 `additional_ids` 明确加入，或选择 `rule_selection="all"`。每个验收 ID 从 `not_verified` 开始，不因阶段结束而整体转为通过。初始化已经生成的逐页材料直接复用，不重复调用 `prepare_sources()` 覆盖。
+完整 PDF/DOCX 任务先调用[完整流程入口](complete-workflow.md)的 `initialize_workflow()`，它保存实际来源材料并调用 [`check_records.prepare_check_records(...)`](../scripts/check_records.py)，从实际技能文件生成全量 `catalog` 与待填 `checks`。默认待填集合覆盖各技能及 references 中全部 `A` 编号验收；追踪约束时使用 `additional_ids` 明确加入，或选择 `rule_selection="all"`。每个验收 ID 从 `not_verified` 开始，不因阶段结束而整体转为通过。初始化已经生成的来源材料直接复用，不重复调用 `prepare_sources()` 覆盖。
 
 来源文件从准备时绑定实际哈希。最初没有候选时可暂不传候选路径；在阶段 6 前，把已存在的最终候选用 `bind_file()` 得到的路径和哈希填入 `bindings.candidates`。缺少候选绑定时校验会诊断，但这不禁止继续生成候选。每次候选变化都重新核验受影响记录，不通过更新哈希掩盖旧证据失效。已有台账默认不会被 `prepare_check_records()` 覆盖；需要重新生成时先保留旧版本及其实际结论。
 
@@ -108,9 +108,9 @@
 
 ## 阶段验收
 
-- [ ] [EXEC-A01] 每份来源的页数来自实际文件。 <!-- check-type: offline_outcome -->
-- [ ] [EXEC-A02] 每页来源有对应渲染材料。 <!-- check-type: offline_outcome -->
-- [ ] [EXEC-A03] 每页来源有实际查看记录。 <!-- check-type: offline_outcome -->
+- [ ] [EXEC-A01] 每份 PDF 的页数来自实际文件。 <!-- check-type: offline_outcome -->
+- [ ] [EXEC-A02] 每页 PDF 有对应渲染材料。 <!-- check-type: offline_outcome -->
+- [ ] [EXEC-A03] 每页 PDF 有实际查看记录。 <!-- check-type: offline_outcome -->
 - [ ] [EXEC-A04] 每份书目的边界已确定。 <!-- check-type: offline_outcome -->
 - [ ] [EXEC-A05] 每个来源段落都有交付映射。 <!-- check-type: offline_outcome -->
 - [ ] [EXEC-A06] 每个图内真正表格都有结构化交付。 <!-- check-type: offline_outcome -->

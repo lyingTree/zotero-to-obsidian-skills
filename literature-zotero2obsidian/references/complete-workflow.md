@@ -1,6 +1,8 @@
 # 完整候选的开始与收尾
 
-从 PDF 新建整篇笔记时，使用 `complete_workflow.py` 的完整入口。局部修复仍使用对应子技能。单独的 `validate_note` 或 `validate_delivery` 没有检查整套工作记录是否齐全，不能替代这里的收尾检查。
+从 PDF、原生 DOCX 或两者的组合新建整篇笔记时，使用 `complete_workflow.py` 的完整入口。局部修复仍使用对应子技能。单独的 `validate_note` 或 `validate_delivery` 没有检查整套工作记录是否齐全，不能替代这里的收尾检查。
+
+执行顺序是：实际来源材料 → 来源块与阅读顺序 → 完整内容片段 → 候选组装 → 对源核对与记录 → 最终交付。`next_review_task()` 是已有译文的复核入口；尚无正文时，从[逐块产出队列](draft-queue.md)的 `DraftQueue.next_task()` 开始。
 
 ## 结束条件
 
@@ -36,7 +38,7 @@ RUN_PATH = initialize_workflow(
     work_root=WORK_ROOT,
     sources={
         "main": TASK_ROOT.joinpath("input", "article.pdf"),
-        "supplement": TASK_ROOT.joinpath("input", "supplement.pdf"),
+        "supplement": TASK_ROOT.joinpath("input", "supplement.docx"),
     },
     source_roles={"main": "main", "supplement": "supplement"},
     candidate_path=OUTPUT_ROOT.joinpath("candidate.md"),
@@ -47,11 +49,19 @@ RUN_PATH = initialize_workflow(
 )
 ```
 
-没有 SI 时从两个映射中同时去掉对应来源。中文原文确实无需翻译时，将 `translation_required` 设为 `False`，并在语言分流记录中保存依据。初始化会保存逐页材料、来源哈希、全量验收骨架及 `run.json`；它不会把任何内容判断填成通过。恢复任务时读取已有 `run.json`，不要重新初始化或覆盖旧记录。
+没有 SI 时从两个映射中同时去掉对应来源。中文原文确实无需翻译时，将 `translation_required` 设为 `False`，并在语言分流记录中保存依据。初始化会保存来源材料、来源哈希、全量验收骨架及 `run.json`；它不会把任何内容判断填成通过。恢复任务时读取已有 `run.json`，不要重新初始化或覆盖旧记录。
+
+PDF 来源含实际页图和文字块；DOCX 来源含 `native_blocks`、`media_calls`、`native_media` 与 `native_issues`。DOCX 没有固定页码，不向 PDF 解析器传入 DOCX，也不填写虚构的 `page` 或 `bbox`。段落和表格按 XML 顺序定位，媒体按实际 relationship 绑定。一个逻辑图可以对应多次媒体调用；媒体文件名、relationship 编号和图号不是同一概念。
+
+先读取每件媒体调用的所属块及前后文字，再据来源题注登记图号。保留原生图像字节，逐幅查看内容。发现 `native_issues` 时处理该具体对象；不要把未支持对象静默排除，也不要让一件未决对象阻止其他可完成段落。原生来源映射见[交接约定](pipeline-contract.md)。
 
 提供术语表时，初始化另存 `run.json.records.glossary_candidates` 指向的逐块检索线索。翻译每块前读取它的完整短语命中和核心词线索。词族行只提供原术语表的解释，不代表整个命中短语就是本次概念；按[术语检索步骤](../../literature-translate-zh/references/translation-review.md#自动取得检索线索)决定是否采用。原术语表保持不变。
 
 ## 中间阶段：按对象保存实际判断
+
+先按[逐块产出队列](draft-queue.md)确认阅读顺序并写内容片段。所有实际来源块都要登记到明确单元，或逐块说明排除理由；跨页的同一段可以合并，来源块身份仍各自保留。每个单元保存完整译文、原有引文和对应对象。下一项有尚未写入的正文时，继续该正文；摘要、结论、补充材料已经写出不表示整篇内容完成。
+
+候选组装前检查队列。队列未完成时读取其首个实际缺项，而不是反复运行末尾的几百条待核记录。队列完成后仍需核对段内是否遗漏信息；非空片段和全覆盖计数不证明翻译忠实。来源事实可保存在稳定的逐片段观察记录里，最终候选固定后引用其实际行号和哈希。
 
 沿[分阶段路线](execution-plan.md)完成来源盘点、翻译、排版和链接。`run.json.records` 给出本次必需记录的计划路径；尚未生成的文件应在对应阶段补齐。译文记录按[逐段待办](../../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)推进：先说明全部来源范围，每次闭合当前块，再处理下一块；不要把每段仅有一项判断的半成品留给最终全量收尾。
 
@@ -117,6 +127,8 @@ RERUN_REPORT = record_mapping_rerun(
 最终文件即使被用户指定为 `candidate.md`，也在 `run.json.naming` 单独保存[离线命名计划](../../literature-filename/SKILL.md)。指定交付路径不会自动产生文献的拟用名称，也不能据此宣称真实库冲突已经检查。
 
 ### 图件输出的调用顺序
+
+此段调用适用于 PDF。DOCX 的原生媒体直接使用来源清单中 `native_media[].file` 指向的原始文件；按 `media_calls` 对照所属段落和题注，使用对应 `native_locator` 登记来源。不要为它们构造 PDF 页码、xref 或裁框。
 
 先从完整源页核定图件范围。只有已确定整幅图就是该原始图片对象时，才走直接导出分支。复合图直接使用页面范围渲染。以下变量均取实际图件清单，不从示例猜页码或对象号。
 

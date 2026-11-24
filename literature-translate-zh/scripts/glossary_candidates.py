@@ -172,8 +172,14 @@ def prepare_glossary_candidates(
     inventory_path = Path(inventory_binding["path"])
     inventory = json.loads(inventory_text)
     index = GlossaryIndex(glossary_path)
-    blocks = [(source["id"], page["page"], block)
-              for source in inventory["sources"] for page in source["pages"] for block in page["blocks"]]
+    blocks = []
+    for source in inventory["sources"]:
+        if source.get("format") == "docx":
+            blocks.extend((source["id"], {"native_locator": block["locator"]}, block)
+                          for block in source["native_blocks"])
+            continue
+        blocks.extend((source["id"], {"page": page["page"], "bbox": block["bbox"]}, block)
+                      for page in source["pages"] for block in page["blocks"])
     source_bindings = {}
     for source in inventory["sources"]:
         path = Path(source["path"])
@@ -183,10 +189,10 @@ def prepare_glossary_candidates(
             raise ValueError("Source bytes differ from inventory: " + source["id"])
         source_bindings[source["id"]] = actual
     rows = []
-    for number, (source_id, page_number, block) in enumerate(blocks, 1):
+    for number, (source_id, location, block) in enumerate(blocks, 1):
         result = index.suggest(block["text"])
-        rows.append({"block_id": block["id"], "source_id": source_id, "page": page_number,
-                     "bbox": block["bbox"], "source_text_sha256": result["source_text_sha256"],
+        rows.append({"block_id": block["id"], "source_id": source_id, **location,
+                     "source_text_sha256": result["source_text_sha256"],
                      "matches": result["matches"]})
         if progress:
             progress(number, len(blocks), "source glossary search leads")

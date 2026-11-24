@@ -57,10 +57,32 @@ def scan_source_url_occurrences(inventory: Mapping, *, excluded_blocks=(), exclu
     ignored_blocks, ignored_pages = set(excluded_blocks), set(excluded_pages)
     result = []
     for source in inventory["sources"]:
-        if (not isinstance(source, dict) or not isinstance(source.get("pages"), list)
+        if (not isinstance(source, dict)
                 or not isinstance(source.get("id"), str) or not source["id"]):
             continue  # The main inventory validator diagnoses malformed source records.
-        for page in source["pages"]:
+        if source.get("format") == "docx":
+            blocks = source.get("native_blocks", [])
+            if not isinstance(blocks, list):
+                continue
+            for block in blocks:
+                if (not isinstance(block, dict) or block.get("id") in ignored_blocks
+                        or not isinstance(block.get("id"), str)
+                        or not isinstance(block.get("text"), str)
+                        or not isinstance(block.get("locator"), dict)):
+                    continue
+                for number, (start, end, raw) in enumerate(_url_tokens(block["text"]), 1):
+                    result.append({
+                        "id": f"{block['id']}:url:{number}", "source": source["id"],
+                        "native_locator": block["locator"], "block": block["id"],
+                        "start": start, "end": end, "raw_text": raw,
+                        "lookup_text": _token(raw),
+                        "boundary": "Native XML text lead; verify its source context before using a URL.",
+                    })
+            continue
+        pages = source.get("pages")
+        if not isinstance(pages, list):
+            continue
+        for page in pages:
             if not isinstance(page, dict) or type(page.get("page")) is not int or page["page"] < 1:
                 continue
             if (source["id"], page["page"]) in ignored_pages:
@@ -92,9 +114,23 @@ def _at_location(unit: dict, occurrence: dict) -> bool:
     if not isinstance(records, list):
         return False
     for record in records:
-        if not isinstance(record, dict) or record.get("page") != occurrence["page"]:
+        if not isinstance(record, dict):
             continue
         blocks = record.get("blocks")
+        if "native_locator" in occurrence:
+            if record.get("basis") != "native" or "page" in record:
+                continue
+            if record.get("native_locator") != occurrence["native_locator"]:
+                continue
+            if isinstance(blocks, list) and blocks:
+                if blocks == [occurrence["block"]]:
+                    return True
+                continue
+            if record.get("native_locator") == occurrence["native_locator"]:
+                return True
+            continue
+        if "native_locator" in record or record.get("page") != occurrence.get("page"):
+            continue
         if isinstance(blocks, list) and blocks and occurrence["block"] not in blocks:
             continue
         return True
@@ -161,10 +197,14 @@ def source_url_coverage(inventory: Mapping, *, excluded_blocks=(), excluded_page
             continue
         pages = {record["page"] for record in records if isinstance(record, dict)
                  and type(record.get("page")) is int and record["page"] > 0}
+        if any(isinstance(record, dict) and record.get("basis") == "native"
+               and isinstance(record.get("native_locator"), dict) and "page" not in record
+               for record in records):
+            pages.add(None)  # Native locations are matched by exact blocks/locators below.
         for page in pages:
             for value in values:
                 by_form.setdefault((source, page, value), []).append(identity)
-    edges = {row["id"]: [identity for identity in by_form.get((row["source"], row["page"], row["lookup_text"]), [])
+    edges = {row["id"]: [identity for identity in by_form.get((row["source"], row.get("page"), row["lookup_text"]), [])
                          if identity not in used_units and _at_location(units[identity], row)]
              for row in occurrences if row["id"] not in assigned}
     unit_to_lead = {}

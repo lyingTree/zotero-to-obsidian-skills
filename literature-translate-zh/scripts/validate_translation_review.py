@@ -153,6 +153,7 @@ class _Files:
         self.line_offsets: dict[Path, list[int]] = {}
         self.jsons: dict[Path, Any] = {}
         self.pdf_rects: dict[Path, list[tuple]] = {}
+        self.native_documents: dict[Path, Any] = {}
 
     def digest(self, path: Path) -> str:
         if path not in self.hashes:
@@ -187,6 +188,11 @@ class _Files:
                     raise ValueError("A readable, unencrypted PDF is required for this locator.")
                 self.pdf_rects[path] = [tuple(page.rect * page.derotation_matrix) for page in document]
         return self.pdf_rects[path]
+
+    def native(self, path: Path):
+        if path not in self.native_documents:
+            self.native_documents[path] = CONTRACT._native_tools().NativeDocument(path)
+        return self.native_documents[path]
 
 
 class _Validator:
@@ -304,6 +310,14 @@ class _Validator:
                 start, end = locator.get("start"), locator.get("end")
                 if not _integer(start) or not _integer(end) or not 1 <= start <= end <= len(self.files.pages(path)):
                     raise ValueError("PDF page range is outside the actual document.")
+                return None
+            if "native_locator" in locator:
+                if any(key in locator for key in ("page", "bbox", "coordinate_system")):
+                    raise ValueError("Native OOXML locations cannot invent PDF page coordinates.")
+                native_text = self.files.native(path).resolve_native_locator(locator["native_locator"])
+                if "quote" in locator and (not isinstance(locator["quote"], str)
+                                            or locator["quote"] not in native_text):
+                    raise ValueError("The quote is absent from its actual native XML block.")
                 return None
             if "page" in locator:
                 page = locator["page"]
@@ -441,6 +455,24 @@ class _Validator:
             return
         locations = unit.get("source_locations")
         if not isinstance(locations, list):
+            return
+        if self.sources.get(source_id, {}).get("format") == "docx":
+            parents = [row for row in locations if isinstance(row, dict)]
+            parents.extend(block for row in tuple(parents)
+                           if isinstance(row.get("block_locations"), list)
+                           for block in row["block_locations"] if isinstance(block, dict))
+            matches = [row for row in parents
+                       if row.get("native_locator") == value.get("native_locator")
+                       and isinstance(value.get("native_locator"), dict)]
+            if not matches:
+                self.finding("TRN_SOURCE_SPAN_OUTSIDE_UNIT", identity,
+                             "This native XML occurrence is outside the recorded source unit.")
+                return
+            quote = value.get("quote")
+            if _nonempty(quote) and not any(isinstance(row.get("quote"), str)
+                                            and quote in row["quote"] for row in matches):
+                self.finding("TRN_SOURCE_SPAN_OUTSIDE_UNIT", identity,
+                             "The exact quote is outside the native text recorded for this unit.")
             return
         pages = {row.get("page") for row in locations if isinstance(row, dict) and _integer(row.get("page"))}
         if _integer(value.get("page")) and value["page"] not in pages:

@@ -88,9 +88,13 @@ class RichTableTests(unittest.TestCase):
         data = workbook()
         data["sheets"][1]["rows"][0]["cells"]["source"] = "[bad](#^absent)"
         findings = validator.validate_note(note(data, as_json=True))
-        self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0].line, 3)
-        self.assertIn("工作表 2", findings[0].message)
+        self.assertEqual(len(findings), 5)
+        self.assertTrue(all(item.line == 3 for item in findings))
+        missing = [item for item in findings if item.code == "MISSING_ANCHOR"]
+        self.assertEqual(len(missing), 1)
+        self.assertIn("工作表 2", missing[0].message)
+        self.assertEqual(sum(item.code == "TABLE_COLUMNS_FLOW_STYLE" for item in findings), 2)
+        self.assertEqual(sum(item.code == "TABLE_ROWS_FLOW_STYLE" for item in findings), 2)
 
     def test_second_sheet_structure_is_not_inherited_from_first(self):
         data = workbook()

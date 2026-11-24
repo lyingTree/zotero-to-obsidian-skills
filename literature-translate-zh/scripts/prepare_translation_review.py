@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 import hashlib
+import importlib.util
 import json
 import math
 from pathlib import Path
@@ -124,6 +125,41 @@ def _valid_box(box: object) -> bool:
             and box[0] < box[2] and box[1] < box[3])
 
 
+def _native_tools():
+    path = Path(__file__).resolve().parents[2].joinpath(
+        "literature-zotero2obsidian", "scripts", "docx_source_inventory.py")
+    key = "literature_translation_native_" + hashlib.sha256(str(path).encode()).hexdigest()[:12]
+    if key in sys.modules:
+        return sys.modules[key]
+    spec = importlib.util.spec_from_file_location(key, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[key] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _expand_native_locations(unit: Mapping, source: Mapping, locations: list) -> list[dict]:
+    native = _native_tools()
+    blocks = _index(source.get("native_blocks"), f"{unit.get('id')}: native source blocks")
+    expanded = []
+    for location in locations:
+        errors = native.native_evidence_errors(source, location)
+        if errors:
+            raise ValueError(f"{unit.get('id')}: " + " ".join(errors))
+        result = deepcopy(location)
+        result["block_locations"] = [
+            {"block_id": key, "basis": "native", "native_locator": deepcopy(blocks[key]["locator"]),
+             "quote": blocks[key]["text"]}
+            for key in location["blocks"]
+        ]
+        if not result.get("quote"):
+            result["quote"] = native.source_native_text(source, location)
+        expanded.append(result)
+    return expanded
+
+
 def expand_source_locations(unit: Mapping, source: Mapping) -> list[dict]:
     """Resolve actual inventory block IDs without changing scope or source bytes.
 
@@ -141,6 +177,8 @@ def expand_source_locations(unit: Mapping, source: Mapping) -> list[dict]:
     locations = unit.get("evidence")
     if not isinstance(locations, list) or not locations:
         raise ValueError(f"{identity}: source locations are required")
+    if source.get("format") == "docx":
+        return _expand_native_locations(unit, source, locations)
     pages = None
     expanded = []
     for location in locations:
