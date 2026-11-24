@@ -6,7 +6,7 @@ use serde_json::{json,Map,Value};
 use std::collections::BTreeSet;
 
 pub const FIELDS:&[(&str,&[&str])]=&[
- ("blocks",&["source_id","source_attachment","source_locator","original_sha256","decision","target_units","target_unit"]),
+ ("blocks",&["source_id","source_attachment","source_locator","source_locators","source_blocks","joiner","original_sha256","decision","target_units","target_unit"]),
  ("units",&["source_id","source_role","source_attachment","source_locator","registered_unit","target","candidate_locator","resources"]),
  ("anchors",&["target_id","target_unit","source_id","candidate_locator"]),
  ("links",&["source_id","origin_unit","origin_block","candidate_locator","href","display_text","source_display_text","syntax","image","target_id","target_unit","target_path"]),
@@ -131,15 +131,26 @@ pub fn record_mapping_rerun(run_path:&std::path::Path,deliveries:&Value,destinat
     }
     ensure!(original.contains_key("source_map")&&original.contains_key("link_map"),"Keep original source and link maps");
     let identity=run["identity"]["sources"].as_array().filter(|a|!a.is_empty()).context("Original source bindings required")?;
+    // Refuse duplicate source paths and a contradictory declared scope before
+    // regenerating any actual mapping output.
+    let mut source_paths=BTreeSet::new();
     let roles=run["scope"]["source_roles"].as_object().context("Original source roles required")?;
     let mut expected=Map::new();
     for row in identity{
         let id=row["id"].as_str().filter(|s|!s.is_empty()).context("Original source ID required")?;
         let role=roles.get(id).context("Original source role required")?;
-        let b=json!({"path":path_text(&base.join(path(&row["path"])?) )?,"sha256":row["sha256"],"role":role});
+        ensure!(matches!(role.as_str(),Some("main"|"supplement")),"Invalid original source role");
+        let original_path=files::canonical(&base.join(path(&row["path"])?) )?;
+        ensure!(source_paths.insert(original_path.clone()),"Duplicate original source attachment");
+        let b=json!({"path":path_text(&original_path)?,"sha256":row["sha256"],"role":role});
         ensure!(expected.insert(id.into(),b).is_none(),"Duplicate original source ID");
     }
     ensure!(expected.keys().eq(roles.keys()),"Original source scope differs");
+    if let Some(scope)=run["scope"].get("source_ids"){
+        let list=scope.as_array().context("Original source IDs must be an array")?;
+        let ids:BTreeSet<_>=list.iter().map(|v|v.as_str().context("Invalid source scope ID")).collect::<Result<_>>()?;
+        ensure!(ids.len()==list.len()&&ids==expected.keys().map(String::as_str).collect(),"Original declared source scope differs");
+    }
     let expected=Value::Object(expected);let original=Value::Object(original);
     let old=handoff_native::validate_full(&inventory,&candidate,&original,&expected,&mut progress).context("Resolve original native mapping diagnostics before rerun")?;
     let dest=std::path::absolute(destination)?;
@@ -156,6 +167,12 @@ pub fn record_mapping_rerun(run_path:&std::path::Path,deliveries:&Value,destinat
     let generation=handoff_native::write(&inventory,&candidate,deliveries,&paths,&expected,&mut progress)?;
     ensure!(generation["records_ready"]==true,"Actual mapping rerun generation failed: {}",generation["findings"]);
     let new=handoff_native::validate_full(&inventory,&candidate,&paths,&expected,&mut progress).context("Actual rerun validation failed")?;
+    for name in original.as_object().unwrap().keys(){
+        ensure!(generation["checked_files"][name]==new.checked[name],"A generated map changed before independent validation: {name}");
+    }
+    for name in ["source_inventory","candidate"]{
+        ensure!(old.checked[name]==new.checked[name]&&generation["checked_files"][name]==old.checked[name],"A bound source/candidate changed during actual rerun: {name}");
+    }
     old.bindings.verify()?;new.bindings.verify()?;run_inputs.verify()?;
     let mut report=compare(&old.docs,&new.docs)?;
     let mut inputs=Map::new();inputs.insert("run".into(),run_binding);

@@ -108,3 +108,55 @@ fn author_metadata_requires_literal_affiliation_mapping_or_reason(){
     let r=f.write();
     assert_eq!(r["records_ready"],false);assert!(r["findings"][0]["message"].as_str().unwrap().contains("MAP_AFFILIATION_REFERENCE"),"{r}");
 }
+
+#[test]
+fn validates_explicit_merged_block_view_and_rerun_reports_changed_partition(){
+    let f=Fixture::new();assert_eq!(f.write()["records_ready"],true);
+    let mut source=pipeline::read_json(&f.map("source_map")).unwrap();
+    let rows=source["blocks"].as_array().unwrap();
+    let mut combined=rows[0].clone();
+    combined["block_id"]=json!("merged-main");
+    combined["source_blocks"]=json!(["b1","b2"]);
+    combined["source_locators"]=json!([rows[0]["source_locator"],rows[1]["source_locator"]]);
+    combined.as_object_mut().unwrap().remove("source_locator");
+    combined["joiner"]=json!("\n");
+    let original=format!("{}\n{}",rows[0]["original_text"].as_str().unwrap(),rows[1]["original_text"].as_str().unwrap());
+    combined["original_text"]=json!(original);
+    combined["original_sha256"]=json!(files::digest(original.as_bytes()));
+    combined["target_units"]=json!(["body","call","reference"]);
+    combined.as_object_mut().unwrap().remove("target_unit");
+    combined["kind"]=json!("mixed");
+    source["blocks"]=json!([combined]);
+    save(&f.map("source_map"),&source);
+    let mut links=pipeline::read_json(&f.map("link_map")).unwrap();
+    links["internal_links"][0]["origin_block"]=json!("merged-main");
+    save(&f.map("link_map"),&links);
+    let r=f.validate();assert_eq!(r["records_ready"],true,"{r}");
+    let p=mapping_compare::record_mapping_rerun(&f.run,&f.deliveries,&f.root.path().join("merged-rerun"),|_,_,_|{}).unwrap();
+    let r=pipeline::read_json(&p).unwrap();
+    assert_eq!(r["actual_rerun_performed"],true);assert_eq!(r["mapping_equal"],false);
+    let mut bad=source.clone();bad["blocks"][0]["joiner"]=json!(" ");
+    save(&f.map("source_map"),&bad);
+    assert_eq!(f.validate()["records_ready"],false);
+    let mut bad=source.clone();bad["blocks"][0]["source_blocks"]=json!(["b1","b1"]);
+    save(&f.map("source_map"),&bad);
+    assert_eq!(f.validate()["records_ready"],false);
+    let mut bad=source.clone();bad["blocks"][0]["target_units"]=json!(["body","reference"]);
+    save(&f.map("source_map"),&bad);
+    assert_eq!(f.validate()["records_ready"],false);
+    save(&f.map("source_map"),&source);
+    links["internal_links"][0]["origin_block"]=json!("s1");
+    save(&f.map("link_map"),&links);
+    assert_eq!(f.validate()["records_ready"],false);
+}
+
+#[test]
+fn rerun_checks_explicit_original_source_scope_before_writing(){
+    let f=Fixture::new();assert_eq!(f.write()["records_ready"],true);
+    let mut run=pipeline::read_json(&f.run).unwrap();
+    run["scope"]["source_ids"]=json!(["main"]);
+    save(&f.run,&run);
+    let output=f.root.path().join("invalid-scope-rerun");
+    assert!(mapping_compare::record_mapping_rerun(&f.run,&f.deliveries,&output,|_,_,_|{}).is_err());
+    assert!(!output.exists());
+}

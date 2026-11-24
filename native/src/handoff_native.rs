@@ -421,6 +421,75 @@ fn check_rows(actual:&Value,expected:&Value,key:&str,name:&str)->Result<()>{
         if let Some(v)=got.get("target_unit"){ensure!(want.get("target_unit")==Some(v),"MAP_BLOCK_TARGET_SET: {id}");}
     }Ok(())
 }
+// A historical block view may explicitly merge several actual source blocks.
+// Validate the partition and the hash of the joined original text, rather than
+// pretending a generated per-block view is its only legitimate representation.
+fn check_block_partition(c:&Ctx,actual:&Value,expected:&Value,name:&str)->Result<BTreeMap<String,BTreeSet<String>>>{
+    let a=index(actual,"block_id")?;let b=index(expected,"block_id")?;
+    let mut aliases=BTreeMap::new();let mut covered=BTreeSet::new();let mut orders=BTreeSet::new();
+    for(id,row)in a{
+        let originals=match row.get("source_blocks"){
+            Some(v)=>v.as_array().filter(|a|!a.is_empty()).context("MAP_BLOCK_UNKNOWN: source_blocks")?.iter()
+                .map(|v|Ok(text(v,"original block")?.to_owned())).collect::<Result<Vec<_>>>()?,
+            None=>vec![id.clone()],
+        };
+        let mut identities=BTreeSet::new();let mut locations=vec![];let mut readings=vec![];
+        let mut units=BTreeSet::new();let mut source=None;let mut reasons=BTreeSet::new();let mut excluded=None;
+        for bid in &originals{
+            ensure!(identities.insert(bid.clone())&&covered.insert(bid.clone()),"MAP_BLOCK_DUPLICATE_COVERAGE: {bid}");
+            let want=b.get(bid).context("MAP_BLOCK_UNKNOWN: original belongs to another source view")?;
+            let block=c.blocks.get(bid).context("MAP_BLOCK_UNKNOWN")?;
+            let sid=block.source.as_str();
+            ensure!(source.is_none_or(|s|s==sid),"MAP_BLOCK_SOURCE: merged block crosses sources");source=Some(sid);
+            ensure!(row["source_id"]==sid&&row["source_attachment"]==want["source_attachment"],"MAP_BLOCK_SOURCE: {id}");
+            let is_excluded=want["decision"]=="exclude";
+            ensure!(excluded.is_none_or(|s|s==is_excluded),"MAP_BLOCK_DECISION: kept and excluded blocks cannot be merged");excluded=Some(is_excluded);
+            if is_excluded{reasons.insert(want["reason"].as_str().context("MAP_EXCLUSION_REASON")?);}
+            locations.push(block.locator());readings.push(block.record["text"].as_str().context("MAP_BLOCK_TEXT")?);
+            for u in want["target_units"].as_array().context("MAP_BLOCK_TARGET_SET")?{units.insert(text(u,"target unit")?.to_owned());}
+        }
+        let locator=row.get("source_locators").or_else(||row.get("source_locator")).context("MAP_BLOCK_LOCATOR")?;
+        if let Some(v)=locator.as_array(){ensure!(v==&locations,"MAP_BLOCK_LOCATOR: {id}");}
+        else{ensure!(locations.len()==1&&locator==&locations[0],"MAP_BLOCK_LOCATOR: {id}");}
+        if let (Some(one),Some(many))=(row.get("source_locator"),row.get("source_locators")){
+            ensure!(one==many||locations.len()==1&&one==&locations[0]&&many==&json!(locations),"MAP_BLOCK_LOCATOR: conflicting aliases");
+        }
+        let joiner=match row.get("joiner"){Some(v)=>v.as_str().context("MAP_BLOCK_JOINER")?,None if originals.len()==1=>"",None=>anyhow::bail!("MAP_BLOCK_JOINER: merged blocks require an explicit joiner")};
+        let original=readings.join(joiner);
+        ensure!(row["original_sha256"]==files::digest(original.as_bytes())&&row.get("original_text").is_none_or(|v|v==&json!(original)),"MAP_BLOCK_ORIGINAL_HASH: {id}");
+        let order=row["order"].as_u64().context("MAP_BLOCK_ORDER")?;
+        ensure!(orders.insert((source.unwrap().to_owned(),order)),"MAP_BLOCK_ORDER: duplicate source order");
+        ensure!(nonempty(&row["kind"])&&nonempty(&row["reason"])&&nonempty(&row["status"]),"MAP_BLOCK_DECISION: {id}");
+        if let Some(s)=row.get("review_status"){ensure!(nonempty(s),"MAP_RECORD_STATUS: {id}");}
+        let values=match row.get("target_units"){
+            Some(v)=>v.as_array().context("MAP_BLOCK_TARGET_SET")?.clone(),
+            None=>row.get("target_unit").cloned().into_iter().collect(),
+        };
+        let mut actual_units=BTreeSet::new();
+        for v in &values{ensure!(actual_units.insert(text(v,"target unit")?.to_owned()),"MAP_DUPLICATE_REFERENCE");}
+        if let Some(v)=row.get("target_unit"){ensure!(actual_units.contains(text(v,"target unit")?),"MAP_BLOCK_TARGET_SET: contradictory singular target");}
+        ensure!(actual_units==units,"MAP_BLOCK_TARGET_SET: {id}");
+        if excluded==Some(true){
+            ensure!(row["decision"]=="exclude"&&units.is_empty()&&reasons.len()==1&&reasons.contains(text(&row["reason"],"exclusion reason")?),"MAP_EXCLUSION_CONFLICT: {id}");
+        }else{ensure!(row["decision"]=="keep"&&!units.is_empty(),"MAP_BLOCK_DECISION: {id}");}
+        aliases.insert(id,identities);
+    }
+    ensure!(covered==b.keys().cloned().collect(),"MAP_BLOCK_MISSING: {name}");
+    Ok(aliases)
+}
+fn check_link_origins(actual:&Value,expected:&Value,aliases:&BTreeMap<String,BTreeSet<String>>,name:&str)->Result<()>{
+    let a=index(actual,"id")?;let b=index(expected,"id")?;
+    ensure!(a.keys().eq(b.keys()),"MAP_COLLECTION_COVERAGE: {name}");
+    let mut normalized=vec![];
+    for(id,want)in b{
+        let mut got=a[&id].clone();
+        let recorded=text(&got["origin_block"],"recorded origin block")?;
+        let original=text(&want["origin_block"],"original origin block")?;
+        ensure!(aliases.get(recorded).is_some_and(|ids|ids.contains(original)),"MAP_LINK_ORIGIN_BLOCK: {id}");
+        got["origin_block"]=json!(original);normalized.push(got);
+    }
+    check_rows(&json!(normalized),expected,"id",name)
+}
 pub(crate) struct VerifiedMaps{pub docs:Value,pub checked:Map<String,Value>,pub bindings:Bindings}
 pub(crate) fn validate_full(inventory:&Path,candidate:&Path,paths:&Value,expected:&Value,progress:&mut impl FnMut(usize,usize,&str))->Result<VerifiedMaps>{
     let mut c=Ctx::load(inventory,candidate,expected,true,progress)?;let dest=map_paths(paths,&c.names(),false,&c.bindings)?;
@@ -435,13 +504,21 @@ pub(crate) fn validate_full(inventory:&Path,candidate:&Path,paths:&Value,expecte
         checked.insert(name.clone(),b);actual.insert(name.clone(),v);
     }
     let docs=c.derive(&json!(deliveries),progress)?;
-    for name in dest.keys(){
+    let mut aliases=BTreeMap::new();
+    for name in dest.keys().filter(|n|n.as_str()!="link_map"){
         let got=&actual[name];let want=&docs[name];
         ensure!(got["source_fidelity"]=="not_assessed"&&nonempty(&got["status"])&&nonempty(&got["review_status"]),"MAP_RECORD_STATUS: {name}");
-        let groups=if name=="link_map"{vec![("anchors","id"),("internal_links","id"),("library_matches","id"),("external_links","id"),("resource_links","id"),("unresolved","id")]}
-        else{vec![("sources","id"),("blocks","block_id"),("units","unit"),("metadata","unit"),("objects","unit"),("references","unit"),("citations","unit")]};
-        for(group,key)in groups{check_rows(&got[group],&want[group],key,&format!("{name}.{group}"))?;}
+        for(id,group)in check_block_partition(&c,&got["blocks"],&want["blocks"],name)?{
+            ensure!(aliases.insert(id.clone(),group).is_none(),"MAP_BLOCK_ID: duplicate view identity {id}");
+        }
+        for(group,key)in [("sources","id"),("units","unit"),("metadata","unit"),("objects","unit"),("references","unit"),("citations","unit")]{
+            check_rows(&got[group],&want[group],key,&format!("{name}.{group}"))?;
+        }
     }
+    let got=&actual["link_map"];let want=&docs["link_map"];
+    ensure!(got["source_fidelity"]=="not_assessed"&&nonempty(&got["status"])&&nonempty(&got["review_status"]),"MAP_RECORD_STATUS: link_map");
+    for group in ["anchors","unresolved"]{check_rows(&got[group],&want[group],"id",&format!("link_map.{group}"))?;}
+    for group in LINKS{check_link_origins(&got[*group],&want[*group],&aliases,&format!("link_map.{group}"))?;}
     c.bindings.verify()?;Ok(VerifiedMaps{docs:Value::Object(actual),checked,bindings:c.bindings})
 }
 pub fn validate(inventory:&Path,candidate:&Path,paths:&Value,expected:&Value,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
