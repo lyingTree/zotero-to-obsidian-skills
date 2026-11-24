@@ -81,6 +81,43 @@ fn publish(p:&Path,bytes:&[u8])->Result<Value>{
     ensure!(b["sha256"]==files::digest(bytes),"Evidence changed during publication");Ok(b)
 }
 fn write_json(p:&Path,v:&Value)->Result<Value>{let mut bytes=serde_json::to_vec_pretty(v)?;bytes.push(b'\n');publish(p,&bytes)}
+fn mask_identity(v:&Value)->Result<Option<(u32,u16)>>{
+    if v.is_null()||v["direct_or_other"]==true{return Ok(None);}
+    Ok(Some((u32::try_from(v["xref"].as_u64().context("Mask XRef required")?)?,
+        u16::try_from(v["generation"].as_u64().context("Mask generation required")?)?)))
+}
+// Keep raw mask stream evidence independently of the standalone-image decoder.
+// A missing/unsupported stream is never converted into a successful asset.
+fn mask_record(backend:&Backend,id:(u32,u16),root:Option<&Path>)->Result<Value>{
+    let (x,g)=id;
+    match backend.image_stream(x,g){
+        Ok(bytes)=>{
+            let mut result=json!({"image_xref":x,"generation":g,"encoded_stream_sha256":files::digest(bytes),"encoded_stream_bytes":bytes.len()});
+            if bytes.len()<=MAX_STREAM{
+                result["status"]=json!("raw_stream_indexed");
+                if let Some(root)=root{result["asset"]=publish(&root.join(format!("mask-{x:06}-g{g}.bin")),bytes)?;}
+            }else{result["status"]=json!("blocked_budget");}
+            Ok(result)
+        }
+        Err(_)=>Ok(json!({"image_xref":x,"generation":g,"status":"unresolved_stream","review_required":true})),
+    }
+}
+fn replay_mask(backend:&Backend,locator:&Value,record:&Value)->Result<()>{
+    let Some(id)=mask_identity(locator)?else{
+        ensure!((locator.is_null()&&record.is_null())||(locator["direct_or_other"]==true&&record==&json!({"status":"unresolved_direct_or_other","review_required":true})),"Mask locator differs");
+        return Ok(());
+    };
+    let expected=mask_record(backend,id,None)?;
+    let mut actual=record.clone();
+    let asset=actual.as_object_mut().context("Actual mask evidence record required")?.remove("asset");
+    ensure!(actual==expected,"Mask stream identity or bytes differ from actual PDF");
+    if expected["status"]=="raw_stream_indexed"{
+        let b=asset.context("Missing actual encoded mask asset")?;
+        validate_binding(&b)?;
+        ensure!(b["sha256"]==expected["encoded_stream_sha256"],"Raw PDF mask bytes differ");
+    }else{ensure!(asset.is_none(),"Blocked mask must not claim an exported asset");}
+    Ok(())
+}
 fn validate_binding(v:&Value)->Result<PathBuf>{
     let p=path(&v["path"])?;check_write::no_link(&p)?;
     ensure!(check_ledger::bind_file(&p)?["sha256"]==v["sha256"],"Changed PDF inventory evidence: {}",p.display());
@@ -136,6 +173,7 @@ pub fn prepare_source(source:&Path,id:&str,root:&Path,dpi:u64,ocr:Option<&OcrSet
     let image_dir=root.join("image-objects");fs::create_dir(&image_dir)?;
     let mut pages=Vec::with_capacity(backend.len());
     let mut objects=BTreeMap::<(u32,u16),Value>::new();
+    let mut masks=BTreeMap::<(u32,u16),Value>::new();
     let mut lazy=LazyOcr{options:ocr,engine:None,error:None,accelerated:Default::default()};
     for n in 1..=backend.len(){
         let page=n as u64;let prefix=format!("page-{n:04}");
@@ -173,6 +211,16 @@ pub fn prepare_source(source:&Path,id:&str,root:&Path,dpi:u64,ocr:Option<&OcrSet
             if bytes.len()<=MAX_STREAM{
                 row["encoded_stream"]=publish(&image_dir.join(format!("{stem}.bin")),bytes)?;
             }else{row["encoded_stream_status"]=json!("blocked_budget");}
+            for key in ["smask","mask"]{
+                let locator=&indexed[key];
+                if let Some(mid)=mask_identity(locator)?{
+                    ensure!(mid!=(xref,generation),"Recursive PDF image mask");
+                    if !masks.contains_key(&mid){masks.insert(mid,mask_record(&backend,mid,Some(&image_dir))?);}
+                    row[format!("{key}_stream")]=masks[&mid].clone();
+                }else if locator["direct_or_other"]==true{
+                    row[format!("{key}_stream")]=json!({"status":"unresolved_direct_or_other","review_required":true});
+                }
+            }
             // Raw stream identity is retained even if a display-dependent
             // image cannot safely be exported as a standalone figure asset.
             match backend.export_indexed(page,xref,&image_dir.join(&stem),&structure){
@@ -192,7 +240,7 @@ pub fn prepare_source(source:&Path,id:&str,root:&Path,dpi:u64,ocr:Option<&OcrSet
     }
     backend.verify()?;if let Some(o)=lazy.options{o.binding()?;}
     Ok(json!({"format":"pdf","inventory_backend":BACKEND,"backend_revision":PDFCRAFT_REV,"page_count":backend.len(),
-        "pages":pages,"image_objects":objects.into_values().collect::<Vec<_>>(),"source_fidelity":"not_assessed",
+        "pages":pages,"image_objects":objects.into_values().collect::<Vec<_>>(),"image_dependency_schema":1,"source_fidelity":"not_assessed",
         "source_inventory_ready":false,"evidence_boundary":BOUNDARY}))
 }
 /// Independently replay source parsing/rasterization and compare actual
@@ -261,6 +309,8 @@ pub fn replay(source:&Value,p:&Path,mut progress:impl FnMut(usize,usize,&str))->
         checked+=1;progress(i+1,pages.len(),"independent PdfCraft source replay");
     }
     let records=source["image_objects"].as_array().context("Retain actual image objects")?;
+    let dependencies=source.get("image_dependency_schema");
+    ensure!(dependencies.is_none()||dependencies==Some(&json!(1)),"Unknown image dependency evidence schema");
     ensure!(records.len()==actual_objects.len(),"PDF image object inventory count differs");
     let mut seen=BTreeSet::new();
     let scratch=tempfile::tempdir()?;
@@ -275,6 +325,9 @@ pub fn replay(source:&Value,p:&Path,mut progress:impl FnMut(usize,usize,&str))->
             validate_binding(&row["encoded_stream"])?;
             ensure!(row["encoded_stream"]["sha256"]==files::digest(bytes),"Raw PDF stream bytes differ");
         }else{ensure!(row["encoded_stream_status"]=="blocked_budget","Missing raw stream budget state");}
+        if dependencies.is_some(){
+            for key in ["smask","mask"]{replay_mask(&backend,&actual[key],&row[format!("{key}_stream")])?;}
+        }
         // Re-run the direct extraction under the same actual occurrence
         // contract. It may legitimately require rendering rather than a raw asset.
         let index=&pages[(*page-1) as usize]["image_index"];
@@ -291,6 +344,6 @@ pub fn replay(source:&Value,p:&Path,mut progress:impl FnMut(usize,usize,&str))->
     backend.verify()?;
     Ok(json!({"backend":BACKEND,"source_file":backend.source_binding(),"page_count":checked,
         "image_object_count":seen.len(),"same_backend_replay_complete":true,"pending_review":blocked,
-        "independent_visual_parity":"not_assessed","ocr_accuracy":"not_assessed","source_fidelity":"not_assessed",
+        "image_dependency_replay_complete":dependencies.is_some(),"independent_visual_parity":"not_assessed","ocr_accuracy":"not_assessed","source_fidelity":"not_assessed",
         "source_checks_complete":false,"delivery_ready":false,"boundary":BOUNDARY}))
 }

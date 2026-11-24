@@ -38,17 +38,21 @@ fn prepare_impl(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dp
     ensure!((72..=600).contains(&dpi),"dpi must be between 72 and 600");
     ensure!(roles.is_null()||roles.is_object(),"source_roles must be an object");
     let mut ids=Vec::with_capacity(map.len());
+    let mut portable_ids=std::collections::BTreeSet::new();
+    let mut actual_sources=std::collections::BTreeSet::new();
+    if let Some(roles)=roles.as_object(){ensure!(roles.keys().all(|id|map.contains_key(id)),"Source role names an absent source");}
     let mut bound=Vec::with_capacity(map.len());
     // Reject non-native inputs before creating any evidence output.
     for (id,v) in map{
-        ensure!(id_ok(id),"Invalid source ID: {id}");
+        ensure!(id_ok(id)&&portable_ids.insert(id.to_ascii_lowercase()),"Invalid or case-conflicting source ID: {id}");
         let p=files::canonical(&path(v)?)?;
+        ensure!(actual_sources.insert(p.clone()),"Duplicate actual source attachment: {id}");
         let extension=p.extension().and_then(|s|s.to_str()).unwrap_or("").to_ascii_lowercase();
         if docx_only{ensure!(extension=="docx","UNMIGRATED_PDF_INVENTORY: {id}; this entrypoint is DOCX-only");}
         else{ensure!(matches!(extension.as_str(),"docx"|"pdf"),"Unsupported source format: {id}");}
         if extension=="pdf"{crate::pdf_structure::Pdf::open(&p).with_context(||format!("{id}: accessible PDF required"))?;}
         let role=roles.get(id).cloned().unwrap_or(json!("pending"));
-        ensure!(role.is_string(),"source role must be a string");
+        ensure!(matches!(role.as_str(),Some("main"|"supplement"|"pending")),"Source role must be main, supplement or pending");
         ids.push((id,p.clone(),role));bound.push(binding(&p)?);
     }
     if let Some(o)=ocr{o.binding()?;}

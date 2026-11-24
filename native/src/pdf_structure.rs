@@ -343,7 +343,26 @@ fn img_chain(doc:&Document,d:&Dictionary)->Result<Vec<(Filter,Params)>>{
     }
     Ok(out)
 }
-struct Samples{w:u32,h:u32,channels:usize,bytes:Vec<u8>,jpeg:bool,filters:Vec<String>}
+struct Samples{w:u32,h:u32,channels:usize,bits:usize,bytes:Vec<u8>,jpeg:bool,preserve_jpeg:bool,filters:Vec<String>}
+// PDF rows are independently byte-padded and samples are MSB-first.
+// Convert the supported integer sample domain to 8-bit PNG channels.
+fn unpack_samples(raw:&[u8],w:u32,h:u32,channels:usize,bits:usize)->Result<Vec<u8>>{
+    ensure!(matches!(bits,1|2|4|8),"Unsupported packed PDF samples");
+    let samples=(w as usize).checked_mul(channels).context("Image row size overflow")?;
+    let stride=samples.checked_mul(bits).context("Image row bits overflow")?.div_ceil(8);
+    ensure!(raw.len()==stride.checked_mul(h as usize).context("Image size overflow")?,"Packed PDF sample size differs");
+    if bits==8{return Ok(raw.to_vec());}
+    let max=(1u16<<bits)-1;
+    let mut result=Vec::with_capacity(samples.checked_mul(h as usize).context("Image sample count overflow")?);
+    for row in raw.chunks_exact(stride){
+        for n in 0..samples{
+            let pos=n*bits;let shift=8-bits-pos%8;
+            let value=(u16::from(row[pos/8])>>shift)&max;
+            result.push((value*255/max) as u8);
+        }
+    }
+    Ok(result)
+}
 fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>{
     let d=&stream.dict;
     let w=u32::try_from(img_int(doc,d,b"Width",None)?)?;let h=u32::try_from(img_int(doc,d,b"Height",None)?)?;
@@ -352,24 +371,33 @@ fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>
         Some(b"DeviceRGB")=>3,Some(b"DeviceGray")=>1,_=>return Err(anyhow!("PAGE_RENDER_REQUIRED: ICC, CMYK, indexed or resource-defined ColorSpace")),
     };
     ensure!(!mask||channels==1,"PAGE_RENDER_REQUIRED: non-gray SMask");
-    ensure!(img_int(doc,d,b"BitsPerComponent",None)?==8,"PAGE_RENDER_REQUIRED: non-8-bit samples");
+    let bits=usize::try_from(img_int(doc,d,b"BitsPerComponent",None)?)?;
+    ensure!(matches!(bits,1|2|4|8),"PAGE_RENDER_REQUIRED: unsupported sample depth");
     for key in [b"Mask".as_slice(),b"Matte",b"OC",b"Alternates"]{
         ensure!(img_value(doc,d,key)?.is_none(),"PAGE_RENDER_REQUIRED: {}",String::from_utf8_lossy(key));
     }
     ensure!(img_int(doc,d,b"SMaskInData",Some(0))?==0&&matches!(img_value(doc,d,b"ImageMask")?,None|Some(Object::Boolean(false))),
         "PAGE_RENDER_REQUIRED: SMaskInData or ImageMask");
-    let invert=match img_value(doc,d,b"Decode")?{
-        None=>false,Some(v) if mask=>{let a=array::<2>(doc,v)?;ensure!(a==[0.,1.]||a==[1.,0.],"PAGE_RENDER_REQUIRED: SMask Decode");a==[1.,0.]},
-        _=>return Err(anyhow!("PAGE_RENDER_REQUIRED: explicit Decode")),
-    };
+    let mut invert=vec![false;channels];
+    if let Some(v)=img_value(doc,d,b"Decode")?{
+        let a=v.as_array()?;
+        ensure!(a.len()==2*channels,"PAGE_RENDER_REQUIRED: invalid Decode array length");
+        for (channel,pair) in a.chunks_exact(2).enumerate(){
+            let low=number(deref(doc,&pair[0])?)?;let high=number(deref(doc,&pair[1])?)?;
+            ensure!((low,high)==(0.,1.)||(low,high)==(1.,0.),"PAGE_RENDER_REQUIRED: non-identity/non-inverting Decode");
+            invert[channel]=low==1.;
+        }
+    }
     if mask{if let Some(v)=img_value(doc,d,b"SMask")?{ensure!(v.as_name().ok()==Some(b"None".as_slice()),"PAGE_RENDER_REQUIRED: nested SMask");}}
     ensure!(stream.content.len()<=128*1024*1024,"Encoded image exceeds byte budget");
     let chain=img_chain(doc,d)?;
     let names=chain.iter().map(|(f,_)|f.name().to_owned()).collect::<Vec<_>>();
     let size=(w as usize)*(h as usize)*channels;
+    let stride=(w as usize).checked_mul(channels).and_then(|n|n.checked_mul(bits)).context("Image row bits overflow")?.div_ceil(8);
+    let packed_size=stride.checked_mul(h as usize).context("Image byte budget overflow")?;
     let jpeg=chain.len()==1&&chain[0].0==Filter::Dct;
     let mut bytes=if jpeg{
-        ensure!(img_value(doc,d,b"DecodeParms")?.is_none(),"PAGE_RENDER_REQUIRED: JPEG DecodeParms");
+        ensure!(bits==8&&img_value(doc,d,b"DecodeParms")?.is_none(),"PAGE_RENDER_REQUIRED: JPEG depth or DecodeParms");
         let mut dec=JpegDecoder::new(Cursor::new(&stream.content))?;
         ensure!(dec.dimensions()==(w,h),"JPEG dimensions differ from PDF dictionary");
         ensure!(dec.icc_profile()?.is_none()&&dec.orientation()?==image::metadata::Orientation::NoTransforms,
@@ -379,12 +407,19 @@ fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>
         let mut data=vec![0u8;size];dec.read_image(&mut data)?;data
     }else{
         ensure!(chain.iter().all(|(f,_)|f.is_decodable()),"PAGE_RENDER_REQUIRED: unsupported image codec");
+        ensure!(bits==8||chain.iter().all(|(_,p)|p.predictor==1),"PAGE_RENDER_REQUIRED: packed samples with predictor");
         let mut work=512u64*1024*1024;
-        filters::decode_within(&chain,&stream.content,size.checked_add(h as usize).context("Sample budget overflow")?,&mut work)?
+        let raw=filters::decode_within(&chain,&stream.content,packed_size.checked_add(h as usize).context("Sample budget overflow")?,&mut work)?;
+        if bits==8{raw}else{unpack_samples(&raw,w,h,channels,bits)?}
     };
     ensure!(bytes.len()==size,"Decoded sample size differs from actual PDF image dimensions");
-    if invert{for b in &mut bytes{*b=255-*b;}}
-    Ok(Samples{w,h,channels,bytes,jpeg,filters:names})
+    if invert.iter().any(|b|*b){
+        for pixel in bytes.chunks_exact_mut(channels){
+            for (sample,reverse) in pixel.iter_mut().zip(&invert){if *reverse{*sample=255-*sample;}}
+        }
+    }
+    let preserve_jpeg=jpeg&&!invert.iter().any(|b|*b);
+    Ok(Samples{w,h,channels,bits,bytes,jpeg,preserve_jpeg,filters:names})
 }
 fn image_png(s:&Samples,alpha:Option<&[u8]>)->Result<Vec<u8>>{
     let mut out=Vec::new();
@@ -445,7 +480,7 @@ pub(crate) fn export_indexed(pdf:&Pdf,source:&Path,before:&Value,page:u64,xref:u
             if lo!=255{alpha=Some(a.bytes);}
         }
     }
-    let png=if s.jpeg&&alpha.is_none(){None}else{Some(image_png(&s,alpha.as_deref())?)};
+    let png=if s.preserve_jpeg&&alpha.is_none(){None}else{Some(image_png(&s,alpha.as_deref())?)};
     let (data,ext,method)=match png.as_ref(){
         Some(b)=>(b.as_slice(),"png",if alpha.is_some(){"smask_composited_png"}else{"lossless_sample_png"}),
         None=>(stream.content.as_slice(),"jpeg","original_extracted_bytes"),
@@ -465,7 +500,7 @@ pub(crate) fn export_indexed(pdf:&Pdf,source:&Path,before:&Value,page:u64,xref:u
     Ok(json!({"schema_version":1,"source_file":before,"page":page,"image_xref":xref,"source_locations":locations,
         "source_index_status":index["status"],"source_index_issues":issues,"page_rotation":geo.rotation,
         "page_to_rotated_page_transform":geo.rotated,"coordinate_system":index["coordinate_system"],
-        "source_object":{"image_xref":xref,"generation":generation,"width":s.w,"height":s.h,"bits_per_component":8,
+        "source_object":{"image_xref":xref,"generation":generation,"width":s.w,"height":s.h,"bits_per_component":s.bits,
             "pdf_colorspace":if s.channels==3{"/DeviceRGB"}else{"/DeviceGray"},"filters":s.filters,
             "original_encoded_extension":if s.jpeg{Some("jpeg")}else{None},"pdf_stream_sha256":files::digest(&stream.content),
             "decoded_samples_sha256":files::digest(&s.bytes),"smask":mask,"figure_completeness":"not_assessed"},

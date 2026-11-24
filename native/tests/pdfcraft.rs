@@ -174,3 +174,48 @@ fn scan_without_ocr_resources_preserves_page_and_requires_review(){
     let mut changed=s.clone();changed["image_objects"]=json!([]);
     assert!(pdf_inventory::replay(&changed,&pdf,|_,_,_|{}).is_err());
 }
+
+#[test]
+fn native_packed_pdf_samples_and_bound_mask_dependencies(){
+    use z2o_native::{pdf_structure::export_image_object,source_prepare,pdf_inventory,pipeline};
+    let tmp=tempfile::tempdir().unwrap();let root=tmp.path();let pdf=root.join("packed.pdf");
+    let mut doc=Document::with_version("1.5");let pages=doc.new_object_id();
+    // Three two-bit grayscale samples per row; two padding bits are ignored.
+    let mask=doc.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Image","Width"=>3,"Height"=>2,"BitsPerComponent"=>2,"ColorSpace"=>"DeviceGray","Decode"=>vec![1.into(),0.into()]},vec![0b00011011,0b11100111]));
+    let obj=doc.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Image","Width"=>3,"Height"=>2,"BitsPerComponent"=>2,"ColorSpace"=>"DeviceGray","SMask"=>mask},vec![0b00011011,0b11100111]));
+    let content=doc.add_object(Stream::new(dictionary!{},b"q 30 0 0 20 10 10 cm /Img Do Q".to_vec()));
+    let page=doc.add_object(dictionary!{"Type"=>"Page","Parent"=>pages,"Contents"=>content,"Resources"=>dictionary!{"XObject"=>dictionary!{"Img"=>obj}}});
+    doc.objects.insert(pages,Object::Dictionary(dictionary!{"Type"=>"Pages","Kids"=>vec![Object::Reference(page)],"Count"=>1,"MediaBox"=>vec![0.into(),0.into(),100.into(),100.into()]}));
+    let catalog=doc.add_object(dictionary!{"Type"=>"Catalog","Pages"=>pages});doc.trailer.set("Root",catalog);doc.save(&pdf).unwrap();
+    let export=export_image_object(&pdf,1,obj.0,&root.join("packed"),None).unwrap();
+    assert_eq!(export["source_object"]["bits_per_component"],2);
+    let image=image::open(root.join("packed.png")).unwrap().into_luma_alpha8();
+    assert_eq!(image.get_pixel(0,0).0,[0,255]);assert_eq!(image.get_pixel(1,0).0,[85,170]);assert_eq!(image.get_pixel(2,0).0,[170,85]);
+    assert_eq!(image.get_pixel(0,1).0,[255,0]);assert_eq!(image.get_pixel(1,1).0,[170,85]);assert_eq!(image.get_pixel(2,1).0,[85,170]);
+    let inv=source_prepare::prepare_sources(&json!({"main":pdf}),&root.join("work"),&json!({"main":"main"}),None,72,None,|_,_,_|{}).unwrap();
+    let inventory=pipeline::read_json(&inv).unwrap();let source=&inventory["sources"][0];
+    assert_eq!(source["image_dependency_schema"],1);
+    let recorded=&source["image_objects"][0]["smask_stream"];
+    assert_eq!(recorded["image_xref"],mask.0);
+    assert_eq!(fs::read(recorded["asset"]["path"].as_str().unwrap()).unwrap(),vec![0b00011011,0b11100111]);
+    assert_eq!(pdf_inventory::replay(source,&pdf,|_,_,_|{}).unwrap()["image_dependency_replay_complete"],true);
+    fs::write(recorded["asset"]["path"].as_str().unwrap(),b"tampered").unwrap();
+    assert!(pdf_inventory::replay(source,&pdf,|_,_,_|{}).is_err());
+}
+
+#[test]
+fn source_preflight_rejects_ambiguous_roles_and_case_conflicting_ids(){
+    use z2o_native::source_prepare;
+    let tmp=tempfile::tempdir().unwrap();let root=tmp.path();let pdf=root.join("main.pdf");fixture(&pdf);
+    let other=root.join("other.pdf");fixture(&other);
+    for (i,(sources,roles)) in [
+        (json!({"Main":pdf,"main":other}),json!({})),
+        (json!({"main":pdf,"supplement":pdf}),json!({})),
+        (json!({"main":pdf}),json!({"other":"supplement"})),
+        (json!({"main":pdf}),json!({"main":"unknown"})),
+    ].into_iter().enumerate(){
+        let work=root.join(format!("bad-{i}"));
+        assert!(source_prepare::prepare_sources(&sources,&work,&roles,None,72,None,|_,_,_|{}).is_err());
+        assert!(!work.exists());
+    }
+}
