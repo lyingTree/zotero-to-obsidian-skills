@@ -935,6 +935,54 @@ class NativeDeliveryPreparationComparison(unittest.TestCase):
 
 
 
+class NativeTextVisualConflictComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_conflict_record_matches_reference_and_rejects_changed_evidence(self):
+        import fitz
+        import handoff_maps
+        import prepare_source_inventory
+        pdf = self.root.joinpath("synthetic.pdf")
+        with fitz.open() as doc:
+            page = doc.new_page(width=300, height=200)
+            page.insert_text((20, 40), "Actual source text.")
+            doc.save(pdf)
+        inv = prepare_source_inventory.prepare_sources({"main": pdf}, self.root.joinpath("evidence"),
+            source_roles={"main": "main"}, progress=None)
+        inventory = json.loads(inv.read_text(encoding="utf-8"))
+        source = inventory["sources"][0]
+        inventory["units"] = [{"id": "paragraph", "kind": "paragraph", "source": "main",
+                               "evidence": [{"page": 1, "basis": "visual", "bbox": [0, 0, 200, 100]}]}]
+        py = inv.with_name("py-inventory.json")
+        rs = inv.with_name("rs-inventory.json")
+        for p in (py, rs):
+            p.write_text(json.dumps(inventory), encoding="utf-8")
+        kwargs = dict(conflict_id="conflict-1", page_number=1, text_locator={"kind": "lines", "start": 1, "end": 1},
+                      text_layer_text="Actual source text.", visible_text="Actual source text?",
+                      bbox=[0, 0, 200, 100],
+                      decision={"status": "resolved", "selected_text": "Actual source text?", "reason": "Explicit fixture observation", "observed": True})
+        expected = handoff_maps.record_text_visual_conflict(py, "paragraph", **kwargs)
+        actual = self.invoke("handoff_maps.record_text_visual_conflict", str(rs), "paragraph", **kwargs)
+        self.assertEqual(actual, expected)
+        self.assertEqual(json.loads(py.read_text(encoding="utf-8")), json.loads(rs.read_text(encoding="utf-8")))
+        before = rs.read_bytes()
+        for changes in ({}, {"conflict_id": "other", "page_number": 2},
+                        {"conflict_id": "other", "bbox": [0, 0, 9999, 9999]},
+                        {"conflict_id": "other", "text_layer_text": "absent reading"},
+                        {"conflict_id": "other", "decision": {"status": "resolved", "reason": "Explicit", "selected_text": "not recorded"}}):
+            with self.assertRaises(ValueError):
+                handoff_maps.record_text_visual_conflict(py, "paragraph", **{**kwargs, **changes})
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("handoff_maps.record_text_visual_conflict", str(rs), "paragraph", **{**kwargs, **changes})
+            self.assertEqual(rs.read_bytes(), before)
+        render = Path(source["pages"][0]["render"]["path"])
+        render.write_bytes(render.read_bytes() + b"changed")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("handoff_maps.record_text_visual_conflict", str(rs), "paragraph", **{**kwargs, "conflict_id": "other"})
+        self.assertEqual(rs.read_bytes(), before)
+
+
 class NativeWorkflowDraftComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp
     invoke = ReferenceComparison.invoke

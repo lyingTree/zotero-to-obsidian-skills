@@ -31,6 +31,7 @@ pub mod draft_queue;
 pub mod delivery_prepare;
 pub mod workflow;
 pub mod mapping_compare;
+pub mod handoff_conflicts;
 pub mod pdf_structure;
 pub mod translation_validate;
 pub mod translation_writer;
@@ -108,6 +109,7 @@ pub const OPERATIONS: &[&str] = &[
     "validate_delivery.scan_markdown_links",
     "validate_delivery.write_delivery_manifest",
     "handoff_maps.make_source_unit",
+    "handoff_maps.record_text_visual_conflict",
     "mapping_rerun.compare_stable_projections",
     "pdf_image_objects.index_page_structure",
     "prepare_source_inventory.prepare_pdf_structure_evidence",
@@ -729,6 +731,17 @@ pub fn invoke(request: Value) -> Result<Value> {
         "complete_workflow.write_manifest" => {
             let run=path(&c.positional("run_path")?)?;let deliveries=c.positional("deliveries")?;c.finish()?;
             json!(path_text(&delivery_prepare::write_workflow_manifest(&run,&deliveries)?)?)
+        }
+        "handoff_maps.record_text_visual_conflict" => {
+            let p=path(&c.positional("inventory_path")?)?;
+            let unit=string(&c.positional("unit_id")?,"unit_id")?;
+            let id=string(&c.required("conflict_id")?,"conflict_id")?;
+            let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
+            let locator=c.required("text_locator")?;let layer=c.required("text_layer_text")?;
+            let visible=c.required("visible_text")?;let bbox=c.required("bbox")?;let decision=c.required("decision")?;
+            c.finish()?;
+            handoff_conflicts::record(&p,&unit,handoff_conflicts::Conflict{conflict_id:&id,page_number:page,
+                text_locator:&locator,text_layer_text:&layer,visible_text:&visible,bbox:&bbox,decision:&decision})?
         }
         "mapping_rerun.compare_stable_projections" => {
             let a=c.positional("baseline")?;let b=c.positional("current")?;c.finish()?;mapping_compare::compare(&a,&b)?

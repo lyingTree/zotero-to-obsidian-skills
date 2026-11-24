@@ -113,3 +113,7 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 ### 原生工作流初始化与断点续作增量
 
 新增 `complete_workflow.initialize_workflow` 的 DOCX 原生入口：冻结规则/技能文件和原始附件，调用真实来源清单、全量 pending 台账及不可变起草队列生成器，最后独占发布 run.json。PDF 输入在产生工作目录前明确阻断。`resume_workflow` 从真实运行记录和冻结来源只读恢复 setup/draft/assemble 阶段，重新核对角色、原始附件和已写片段哈希；当候选已存在并进入 review 阶段时，完整映射/交付检查未迁移，明确返回 UNMIGRATED_WORKFLOW_INSPECTION，不产生接受结论。新增 DOCX 参考差分和来源变更负例。尚不等价于完整工作流。
+
+### 文本层与可见页冲突记录增量
+
+新增 `handoff_maps.record_text_visual_conflict` 原生写入器。按实际源页和已登记单元、文件哈希、Unicode 码点或行范围、真实页边界验证双方读法、显式选择及观察状态；允许保留未决记录，拒绝伪造来源和重复冲突 ID，协作锁保护清单写入。新增真实 PDF 的参考差分、重复/范围/读法/变更证据负例。完整映射生成及最终冲突状态验收仍待迁移。
