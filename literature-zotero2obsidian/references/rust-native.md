@@ -183,3 +183,7 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 ### 原生 handoff maps 与实际 mapping rerun
 
 新增 `handoff_maps.write_handoff_maps`、`handoff_maps.validate_handoff_maps`、`mapping_rerun.record_mapping_rerun` 原生候选实现。真实绑定来源清单、候选 Markdown、显式 delivery selector 及源块身份，生成主文献/补充材料/链接视图；检查来源集合、块覆盖、排除、引用目标及资源哈希。支持 anchor、唯一 LF quote、LF 行范围 SHA-256；输出原始 Unicode code-point、CRLF 和精确 snippet 哈希。枚举 Markdown、Wiki、reference、HTML、autolink、裸 URL 和 Rich Table v2/v3 scalar links；表格保留 JSON pointer 和 value SHA-256，不能唯一恢复序列化位置时要求明确完整 fence 归属。未支持的多行引用定义、HTML 媒体等显式阻断。生成记录保持 pending/extracted，无真实库匹配或观察推断。校验重新从实际绑定输入与保留的 delivery 推导预期记录并检查全部分类集合；旧版手工精简/合并块表示及复杂 locator 尚未全部迁移。实际 rerun 创建新目录、重新生成并校验映射，再比较稳定字段，保留原映射和实际输入绑定，不写验收通过。新增合成 PDF、CRLF/Unicode、覆盖缺失、篡改、真正 rerun 与 Python 主/补充材料稳定投影差分测试。尚待编译及历史回归，全部正式发布门禁保持。
+
+### 原生草稿后工作流审查与交付验收候选
+
+新增 `complete_workflow.write_maps`、`inspect_workflow`、`require_completed_records`、`validate_delivery.validate_delivery`。工作流审查核对原始 skill 文件集合/哈希、来源身份/角色/范围、必需记录、命名、原子检查账本、交付清单绑定、映射、翻译及版式 disposition。resume 在草稿完成且候选存在时返回实际首个待修记录；缺失记录按原依赖顺序处理。交付验证调用已迁移的来源重放/OOXML 证据、实际候选目标和映射推导，检查来源页/块/媒体覆盖、元数据有无、来源 URL、Rich Table v2/v3 worksheet/尺寸/merge、公式/图像/引用/标题目标、实际本地图像解码与资产绑定、术语、翻译、原子检查账本，并检查图件快照、来源位置、28 项原子目标及逐资产四边记录。现阶段较严格要求显式映射契约；未支持的旧版手工精简映射及一些复杂候选布局仍需补齐。`NATIVE_DELIVERY_PARITY_PENDING` 仍明确阻断完成；即使 subset 无误也不标记最终交付通过。新增缺失记录、来源空集及篡改清单的原生回归测试，所有新代码等待 CI。上一轮 27c653a 的 266/266 差分、真实 CPU OCR 和安装器检查已通过。

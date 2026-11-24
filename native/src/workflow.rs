@@ -255,6 +255,254 @@ pub fn resume(run_path:&Path)->Result<Value>{
             "candidate_path":path_text(&candidate)?,"message":"Assemble the saved fragments to a new version with DraftQueue.assemble(), then format the complete candidate and continue its source checks."});
         return Ok(result);
     }
-    // Do not replace the original complete inspector with a weaker checklist.
-    anyhow::bail!("UNMIGRATED_WORKFLOW_INSPECTION: candidate exists; full mapping and delivery validation must be native before review routing can be certified")
+    let report=inspect(&run_path,|_,_,_|{})?;
+    ensure!(check_ledger::bind_file(&run_path)?==bound&&check_ledger::bind_file(&queue_path)?==snapshot["binding"],"Workflow or queue changed during review inspection");
+    let findings=report["findings"].as_array().context("Workflow inspection findings")?;
+    result["phase"]=json!("review");result["records_ready"]=report["records_ready"].clone();result["record_finding_count"]=json!(findings.len());
+    if report["records_ready"]==true{
+        result["next_action"]=json!({"stage":"records_complete","message":"File-record checks are complete; report only the source comparisons actually performed. Source fidelity remains unassessed."});
+        return Ok(result);
+    }
+    let first=findings.first().context("Unresolved workflow must contain findings")?;
+    let mut selected=first;
+    if first["code"]=="WORKFLOW_RECORD_MISSING"{
+        for name in ["source_inventory","source_map","si_map","link_map","translation_review","terminology","checks","delivery_manifest"]{
+            if let Some(f)=findings.iter().find(|f|f["code"]=="WORKFLOW_RECORD_MISSING"&&f["target"]==name){selected=f;break;}
+        }
+    }
+    let mut action=selected.clone();action["stage"]=json!("repair_record");
+    if let Some(name)=selected["target"].as_str(){if let Some(v)=records.get(name){action["record_path"]=json!(path_text(&actual_path(v,base,name)?)?);}}
+    result["next_action"]=action;Ok(result)
+}
+
+
+// Review is read-only. Keep original source/skill scope, all required record
+// checks and explicit final delivery blockers. Never infer readiness from an
+// empty subset or route around an unfinished source comparison.
+use crate::handoff_native::Bindings;
+struct Review{
+    findings:Vec<Value>,checked:Map<String,Value>,files:Bindings,pending:Value,stages:Map<String,Value>,
+}
+impl Review{
+    fn new()->Self{Self{findings:vec![],checked:Map::new(),files:Bindings::new(),pending:json!([]),stages:Map::new()}}
+    fn fail(&mut self,code:&str,target:&str,msg:impl AsRef<str>){self.findings.push(json!({"code":code,"target":target,"message":msg.as_ref()}));}
+    fn issue(&mut self,code:&str,target:&str,r:Result<()>){if let Err(e)=r{self.fail(code,target,format!("{e:#}"));}}
+    fn bind(&mut self,p:&Path,label:&str)->Result<Value>{
+        let b=self.files.capture(p)?;self.checked.insert(label.into(),b.clone());Ok(b)
+    }
+    fn record(&mut self,v:&Value,base:&Path,name:&str)->Option<(PathBuf,Value)>{
+        let result=(||->Result<(PathBuf,Value)>{
+            let p=files::canonical(&actual_path(v,base,name)?)?;
+            ensure!(fs::metadata(&p)?.len()<=128*1024*1024,"Record exceeds JSON input budget");
+            let (raw,b)=files::read_bound(&p)?;
+            ensure!(b==self.bind(&p,name)?&&raw.len()<=128*1024*1024,"Record changed during reading");
+            let v=crate::parse_json(std::str::from_utf8(&raw)?.trim_start_matches('\u{feff}'))?;
+            ensure!(v.as_object().is_some_and(|m|!m.is_empty()),"A nonempty record object is required");
+            Ok((p,v))
+        })();
+        match result{Ok(v)=>Some(v),Err(e)=>{self.fail("WORKFLOW_RECORD_MISSING",name,format!("{e:#}"));None}}
+    }
+    fn import(&mut self,v:&Value){
+        if let Some(rows)=v["findings"].as_array(){for r in rows{
+            if r.get("level").is_some()&&r["level"]!="error"{continue;}
+            self.fail(r["code"].as_str().unwrap_or("WORKFLOW_VALIDATION"),r["object_id"].as_str().unwrap_or("record"),
+                r["message"].as_str().unwrap_or("Unresolved record finding"));
+        }}
+    }
+    fn report(self)->Value{
+        let ready=self.findings.is_empty();
+        json!({"findings":self.findings,"checked_files":self.checked,"pending_acceptance":self.pending,
+            "source_fidelity":"not_assessed","records_ready":ready,"stage_reports":self.stages,
+            "boundary":"Record completeness and syntax do not establish source fidelity."})
+    }
+}
+fn source_scope(run:&Value,base:&Path)->Result<Value>{
+    let roles=run["scope"]["source_roles"].as_object().context("Original source roles required")?;
+    let original=run["identity"]["sources"].as_array().filter(|v|!v.is_empty()).context("Original source bindings required")?;
+    let mut rows=Map::new();
+    for source in original{
+        let id=source["id"].as_str().filter(|s|!s.trim().is_empty()).context("Original source ID")?;
+        let role=roles.get(id).filter(|v|matches!(v.as_str(),Some("main"|"supplement"))).context("Original source role")?;
+        let p=actual_path(&source["path"],base,"original source")?;
+        let b=check_ledger::bind_file(&p)?;
+        ensure!(b["sha256"]==source["sha256"],"Original source changed: {id}");
+        let mut row=b;row["role"]=role.clone();
+        ensure!(rows.insert(id.into(),row).is_none(),"Duplicate source ID: {id}");
+    }
+    let declared=run["scope"]["source_ids"].as_array().context("Original source scope")?;
+    let ids:BTreeSet<_>=declared.iter().map(|v|v.as_str().context("Invalid source scope ID")).collect::<Result<_>>()?;
+    ensure!(ids.len()==declared.len()&&rows.keys().eq(roles.keys())&&ids==rows.keys().map(String::as_str).collect(),"Original source scope or role set differs");
+    Ok(Value::Object(rows))
+}
+pub fn write_maps(run_path:&Path,deliveries:&Value,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    let (raw,b)=files::read_bound(run_path)?;let rp=path(&b["path"])?;
+    let run=crate::parse_json(std::str::from_utf8(&raw)?)?;
+    ensure!(run["workflow_profile"]==PROFILE,"Actual complete workflow run required");
+    let base=rp.parent().context("Workflow directory")?;let expected=source_scope(&run,base)?;
+    let inventory=actual_path(&run["records"]["source_inventory"],base,"source inventory")?;
+    let candidate=actual_path(&run["config"]["candidate_path"],base,"candidate")?;
+    let mut paths=Map::new();
+    for name in ["source_map","si_map","link_map"]{
+        if let Some(v)=run["records"].get(name){paths.insert(name.into(),json!(path_text(&actual_path(v,base,name)?)?));}
+    }
+    ensure!(check_ledger::bind_file(&rp)?==b,"Workflow changed before mapping");
+    let report=crate::handoff_native::write(&inventory,&candidate,deliveries,&Value::Object(paths),&expected,&mut progress)?;
+    ensure!(check_ledger::bind_file(&rp)?==b,"Workflow changed during mapping; preserve newly generated evidence");
+    ensure!(source_scope(&run,base)?==expected,"Original sources changed during mapping");Ok(report)
+}
+pub fn inspect(run_path:&Path,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    let mut a=Review::new();
+    let outcome=(||->Result<()>{
+        let rp=files::canonical(run_path)?;let base=rp.parent().context("Workflow directory")?;
+        let Some((_,run))=a.record(&json!(path_text(&rp)?),base,"run")else{return Ok(());};
+        if run["workflow_profile"]!=PROFILE{a.fail("WORKFLOW_PROFILE","run","Use the actual complete-workflow run record.");return Ok(());}
+        let (config,scope,records)=(&run["config"],&run["scope"],&run["records"]);
+        if !config.is_object()||!scope.is_object()||!records.is_object(){a.fail("WORKFLOW_SCHEMA","run","config, scope and records must be objects.");return Ok(());}
+        let r=(||->Result<()>{
+            let baseline=run["versions"]["files"].as_array().filter(|a|!a.is_empty()).context("Retain actual skill input baseline")?;
+            let skills=files::canonical(&actual_path(&config["skills_root"],base,"skills root")?)?;
+            let mut expected=BTreeSet::new();
+            for b in baseline{
+                let p=path(&b["path"])?;
+                let actual=a.files.capture(&p)?;
+                ensure!(actual==*b&&expected.insert(path(&actual["path"])?),"Skill input changed or duplicated: {}",p.display());
+            }
+            let current:BTreeSet<_>=skill_input_paths(&skills)?.into_iter().collect();
+            ensure!(expected==current,"Skill input file set changed after initialization");
+            Ok(())
+        })();a.issue("WORKFLOW_SKILL_BASELINE","versions.files",r);
+        let expected=match source_scope(&run,base){Ok(v)=>v,Err(e)=>{a.fail("WORKFLOW_SOURCE_BASELINE","identity.sources",format!("{e:#}"));Value::Null}};
+        if let Some(rows)=expected.as_object(){
+            for(id,v)in rows{if let Err(e)=a.files.recorded(v,base){a.fail("WORKFLOW_SOURCE_BINDING",id,format!("{e:#}"));}}
+        }
+        let mut required=BTreeSet::from(["source_inventory","source_map","link_map","checks","delivery_manifest"]);
+        if scope["translation_required"]==true{required.insert("translation_review");}
+        else if scope["translation_required"]!=false{a.fail("WORKFLOW_SCOPE","translation_required","Declare whether translation is required.");}
+        if config["glossary_path"].as_str().is_some_and(|s|!s.trim().is_empty()){required.insert("terminology");}
+        if scope["source_roles"].as_object().is_some_and(|m|m.values().any(|v|v=="supplement")){required.insert("si_map");}
+        let mut loaded=BTreeMap::<String,(PathBuf,Value)>::new();
+        if let Some((p,v))=a.record(&records["source_inventory"],base,"source_inventory"){
+            let r=(||->Result<()>{
+                let sources=v["sources"].as_array().context("Inventory sources must be an array")?;
+                if sources.iter().any(|s|s["role"]=="supplement"){required.insert("si_map");}
+                let mut actual=Map::new();
+                for s in sources{
+                    let id=s["id"].as_str().context("Inventory source ID")?;
+                    let b=a.files.recorded(s,p.parent().unwrap())?;
+                    let mut row=b;row["role"]=s["role"].clone();
+                    ensure!(actual.insert(id.into(),row).is_none(),"Duplicate inventory source ID");
+                }
+                ensure!(Value::Object(actual)==expected,"Inventory source set, identity or role differs from original scope");
+                Ok(())
+            })();a.issue("WORKFLOW_SOURCE_COVERAGE","source_inventory.sources",r);
+            loaded.insert("source_inventory".into(),(p,v));
+        }
+        let total=required.len().saturating_sub(1);
+        for(i,name)in required.iter().filter(|s|**s!="source_inventory").enumerate(){
+            if let Some(v)=a.record(&records[*name],base,name){loaded.insert((*name).into(),v);}
+            progress(i+1,total,name);
+        }
+        for(name,fields)in [("source_map",&["blocks","objects","references","citations"][..]),("si_map",&["sources","blocks","objects"][..]),
+            ("link_map",&["anchors","internal_links","library_matches","unresolved"][..])]{
+            if let Some((_,v))=loaded.get(name){for field in fields{
+                if !v[*field].is_array()&&!v[*field].is_object(){a.fail("WORKFLOW_MAP_FIELD_MISSING",&format!("{name}.{field}"),"Retain the actual object collection.");}
+            }}
+        }
+        let candidate=match actual_path(&config["candidate_path"],base,"candidate").and_then(|p|files::canonical(&p)){
+            Ok(p)=>match a.bind(&p,"candidate"){Ok(_)=>Some(p),Err(e)=>{a.fail("WORKFLOW_CANDIDATE_MISSING","candidate",e.to_string());None}},
+            Err(e)=>{a.fail("WORKFLOW_CANDIDATE_MISSING","candidate",e.to_string());None}
+        };
+        let naming=&run["naming"];
+        if !naming["filename"].as_str().is_some_and(|s|!s.trim().is_empty()){a.fail("WORKFLOW_NAMING_MISSING","run.naming.filename","Record the source-based naming plan.");}
+        else if naming["status"]=="pending"{a.fail("WORKFLOW_NAMING_PENDING","run.naming","Resolve the naming decision.");}
+        let r=(||->Result<()>{
+            let d=if let Some(p)=&candidate{json!(path_text(p)?)}else{Value::Null};
+            let report=crate::naming::validate_plan(naming,&d)?;
+            for f in report["findings"].as_array().context("Naming findings")?{
+                a.fail(f["code"].as_str().unwrap_or("NAMING_PLAN"),&format!("run.naming{}",f["field"].as_str().unwrap_or("")),f["message"].as_str().unwrap_or("Invalid naming plan"));
+            }
+            if report["plan_status"]=="blocked"{a.fail("WORKFLOW_NAMING_BLOCKED","run.naming/status","Resolve the naming obstruction.");}
+            a.stages.insert("naming".into(),report);Ok(())
+        })();a.issue("WORKFLOW_NAMING","run.naming",r);
+        if let Some((p,l))=loaded.get("checks"){
+            let r=(||->Result<()>{
+                ensure!(files::canonical(&actual_path(&l["skills_root"],p.parent().unwrap(),"ledger skills root")?)?==
+                    files::canonical(&actual_path(&config["skills_root"],base,"original skills root")?)?,"Ledger uses another skill catalog");
+                ensure!(run["versions"]["rule_files"].is_array()&&l["rule_files"]==run["versions"]["rule_files"],"Ledger rule files differ from original catalog");
+                let report=crate::check_validate::validate(p,&mut progress)?;
+                a.import(&report);
+                let count=report["expected_count"].as_u64().unwrap_or(0);
+                if count==0{a.fail("WORKFLOW_CHECK_EMPTY","checks","Keep the full acceptance catalog.");}
+                a.pending=check_ledger::pending_batch(p,usize::try_from(count.max(1))?,None)?;
+                for(key,code)in [("offline_unresolved_ids","WORKFLOW_CHECK_PENDING"),("unclassified_ids","WORKFLOW_CHECK_UNCLASSIFIED")]{
+                    for id in report[key].as_array().context("Atomic check report schema")?{a.fail(code,id.as_str().unwrap_or("check"),"Complete the original file goal with its own scope and evidence.");}
+                }
+                if let Some((ip,inv))=loaded.get("source_inventory"){
+                    ensure!(files::canonical(&actual_path(&inv["checks_path"],ip.parent().unwrap(),"inventory check pointer")?)?==*p,"Inventory must bind this exact check ledger");
+                }
+                a.stages.insert("checks".into(),report);Ok(())
+            })();a.issue("WORKFLOW_CHECK_BINDING","checks",r);
+        }
+        if let Some((p,m))=loaded.get("delivery_manifest"){
+            if m["figure_edge_reviews_required"]!=true{a.fail("WORKFLOW_FIGURE_EDGES_REQUIRED","delivery_manifest.figure_edge_reviews_required","Final per-asset edge observations required.");}
+            for (field,name)in [("inventory","source_inventory"),("checks","checks"),("translation_review","translation_review"),("terminology","terminology"),("candidate","candidate")]{
+                if let Some(expected)=a.checked.get(name){
+                    if m[field]!=*expected{a.fail("WORKFLOW_MANIFEST_BINDING",field,"Bind the exact inspected file and hash.");}
+                }
+            }
+            match crate::delivery_validate::validate_delivery(p,&mut progress){
+                Ok(report)=>{a.import(&report);a.stages.insert("delivery".into(),report);},
+                Err(e)=>a.fail("WORKFLOW_DELIVERY","delivery_manifest",format!("{e:#}"))
+            }
+        }
+        if let (Some(cp),Some((ip,_)))=(&candidate,loaded.get("source_inventory")){
+            let mut paths=Map::new();
+            for name in ["source_map","si_map","link_map"]{
+                if let Some((p,_))=loaded.get(name){paths.insert(name.into(),json!(path_text(p)?));}
+            }
+            let report=crate::handoff_native::validate(ip,cp,&Value::Object(paths),&expected,&mut progress)?;
+            a.import(&report);
+            if report["records_ready"]!=true{a.fail("WORKFLOW_MAPS_UNRESOLVED","handoff_maps","Complete source and link mappings for this exact scope.");}
+            a.stages.insert("handoff".into(),report);
+        }
+        if let Some((p,_))=loaded.get("translation_review"){
+            let ip=loaded.get("source_inventory").map(|(p,_)|p.as_path());
+            let report=crate::translation_validate::validate(p,ip,candidate.as_deref())?;
+            a.import(&report);
+            if report["records_ready"]!=true{a.fail("WORKFLOW_TRANSLATION_UNRESOLVED","translation_review","Complete the remaining translation goals.");}
+            a.stages.insert("translation".into(),report);
+        }
+        if let Some(cp)=&candidate{
+            for f in crate::validate::validate_file(cp){if f.level=="error"{a.fail(f.code,&format!("candidate:{}",f.line),f.message);}}
+            match crate::presentation::lint_file(cp){
+                Ok(prompts) if !prompts.is_empty()=>{
+                    let mut rows=vec![];
+                    if let Some((_,v))=a.record(&records["presentation_review"],base,"presentation_review"){
+                        if v["bindings"]["candidate"]!=a.checked["candidate"]{a.fail("WORKFLOW_PRESENTATION_BINDING","presentation_review.bindings.candidate","Bind the current candidate before reusing prompt decisions.");}
+                        if let Some(items)=v["items"].as_array().filter(|a|a.iter().all(Value::is_object)){rows=items.clone();}
+                        else{a.fail("WORKFLOW_PRESENTATION_SCHEMA","presentation_review.items","Each disposition must be an object.");}
+                    }
+                    for prompt in prompts{
+                        let found:Vec<_>=rows.iter().filter(|r|r["code"]==prompt.code&&r["line"].as_u64()==Some(prompt.line as u64)).collect();
+                        if found.len()!=1||found[0]["status"]!="not_an_issue"||!found[0]["reason"].as_str().is_some_and(|s|!s.trim().is_empty()){
+                            a.fail("WORKFLOW_PRESENTATION_UNRESOLVED",&format!("{}:{}",prompt.code,prompt.line),prompt.message);
+                        }
+                    }
+                },
+                Ok(_)=>{},
+                Err(e)=>a.fail("WORKFLOW_PRESENTATION","candidate",format!("{e:#}")),
+            }
+        }
+        a.files.verify()?;
+        Ok(())
+    })();a.issue("WORKFLOW_INSPECTION","run",outcome);
+    // A malformed or incomplete run must never produce an empty finding set
+    // that looks like qualified delivery.
+    if a.findings.is_empty(){a.fail("NATIVE_WORKFLOW_PARITY_PENDING","run","Complete historical delivery equivalence remains unqualified.");}
+    Ok(a.report())
+}
+pub fn require_completed(run:&Path,progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    let report=inspect(run,progress)?;
+    ensure!(report["records_ready"]==true,"Local records are unfinished; continue the actual unresolved requirements: {}",report["findings"]);
+    Ok(report)
 }

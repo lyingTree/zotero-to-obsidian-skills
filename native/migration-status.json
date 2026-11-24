@@ -42,7 +42,7 @@
     },
     "source_delivery_mapping_and_review_ledger": {
       "qualified": false,
-      "blocker": "Explicit native handoff generation, rederived validation and actual mapping rerun candidate implemented; compact/merged historical representations, complex locator parity and final delivery validation remain"
+      "blocker": "Native handoff/rerun and delivery validation subsets now include header/source accounting, targets, tables, figure atomic and edge records, terminology and acceptance ledgers; full historical representations, PDF fidelity and complete delivery parity remain"
     },
     "translation_review_lifecycle": {
       "qualified": false,
@@ -50,7 +50,7 @@
     },
     "native_complete_workflow": {
       "qualified": false,
-      "blocker": "Native mixed-source initialization, draft queue, explicit handoff and actual mapping rerun candidate; post-draft complete inspection and final delivery validation remain"
+      "blocker": "Native mixed PDF/DOCX initialization, draft queue, handoff/rerun and post-draft workflow inspection/resume implemented; final delivery equivalence remains unqualified"
     },
     "native_installation_and_external_integration": {
       "qualified": false,

@@ -253,6 +253,20 @@ impl Candidate{
         let text=self.raw.get(s.start..s.end).filter(|s|!s.is_empty()).context("Invalid character range")?;
         Ok(json!({"kind":"characters","unit":"unicode_code_points","start":self.offsets.index(s.start),"end":self.offsets.index(s.end),"sha256":files::digest(text.as_bytes())}))
     }
+    pub(crate) fn visible_target(&self,span:Span)->Result<&str>{
+        self.visible.target.get(span.start..span.end).context("Invalid visible candidate target")
+    }
+    pub(crate) fn table_records(&self)->Result<Vec<(Span,Value)>>{
+        let mut out=Vec::new();
+        for t in &self.visible.tables{
+            let body=&self.raw[t.body.start..t.body.end];
+            let rows=syntax::lines(body);
+            let payload=validate::rich_payload(&rows.iter().map(|r|syntax::body(body,*r).to_owned()).collect::<Vec<_>>());
+            let data=yaml_nodes::load(&payload).map_err(|e|anyhow::anyhow!("MAP_TABLE_PARSE: {}",e.message))?.value;
+            out.push((t.span,data));
+        }
+        Ok(out)
+    }
     fn raw_span(&self,a:usize,b:usize)->Span{Span{start:self.lf_to_raw[a],end:self.lf_to_raw[b]}}
     pub fn resolve(&self,v:&Value,kind:&str)->Result<Span>{
         let m=v.as_object().context("MAP_TARGET_REQUIRED")?;

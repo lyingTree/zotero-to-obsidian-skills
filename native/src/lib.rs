@@ -30,6 +30,7 @@ pub mod visible_edits;
 pub mod draft_queue;
 pub mod delivery_prepare;
 pub mod delivery_provenance;
+pub mod delivery_validate;
 pub mod workflow;
 pub mod mapping_compare;
 pub mod handoff_conflicts;
@@ -119,6 +120,7 @@ pub const OPERATIONS: &[&str] = &[
     "validate_delivery.scan_markdown_links",
     "validate_delivery.write_delivery_manifest",
     "validate_delivery.check_source_provenance",
+    "validate_delivery.validate_delivery",
     "handoff_maps.make_source_unit",
     "handoff_maps.write_handoff_maps",
     "handoff_maps.validate_handoff_maps",
@@ -154,6 +156,9 @@ pub const OPERATIONS: &[&str] = &[
     "complete_workflow.write_manifest",
     "complete_workflow.initialize_workflow",
     "complete_workflow.resume_workflow",
+    "complete_workflow.inspect_workflow",
+    "complete_workflow.require_completed_records",
+    "complete_workflow.write_maps",
     "accept_note.accept_note",
     "docx_source_inventory.read_docx",
     "docx_source_inventory.prepare_docx_source",
@@ -782,6 +787,15 @@ pub fn invoke(request: Value) -> Result<Value> {
                 glossary_path:g.as_deref(),translation_required:translation,run_id:&id};
             json!(path_text(&workflow::initialize_with_ocr(opt,ocr.as_ref(),|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
         }
+        "complete_workflow.inspect_workflow" | "complete_workflow.require_completed_records" => {
+            let p=path(&c.positional("run_path")?)?;c.finish()?;
+            if op.ends_with("require_completed_records"){workflow::require_completed(&p,|i,n,label|eprintln!("[{i}/{n}] {label}"))?}
+            else{workflow::inspect(&p,|i,n,label|eprintln!("[{i}/{n}] {label}"))?}
+        }
+        "complete_workflow.write_maps" => {
+            let p=path(&c.positional("run_path")?)?;let deliveries=c.positional("deliveries")?;c.finish()?;
+            workflow::write_maps(&p,&deliveries,|i,n,label|eprintln!("[{i}/{n}] {label}"))?
+        }
         "complete_workflow.resume_workflow" => {
             let p=path(&c.positional("run_path")?)?;
             c.finish()?;workflow::resume(&p)?
@@ -815,6 +829,10 @@ pub fn invoke(request: Value) -> Result<Value> {
             let result=pdf_inventory::replay(source,&p,|i,n,label|eprintln!("[{i}/{n}] {label}"))?;
             ensure!(check_ledger::bind_file(&inventory)?==binding,"Source inventory changed during replay");
             result
+        }
+        "validate_delivery.validate_delivery" => {
+            let p=path(&c.positional("manifest_path")?)?;c.finish()?;
+            delivery_validate::validate_delivery(&p,|i,n,label|eprintln!("[{i}/{n}] {label}"))?
         }
         "validate_delivery.check_source_provenance" => {
             let inv=path(&c.positional("inventory_path")?)?;c.finish()?;

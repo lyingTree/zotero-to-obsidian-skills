@@ -36,7 +36,7 @@ impl Bindings{
         if let Some(b)=self.files.get(&p){return Ok(b.clone());}
         let b=check_ledger::bind_file(&p)?;self.files.insert(p,b.clone());Ok(b)
     }
-    fn recorded(&mut self,v:&Value,base:&Path)->Result<Value>{
+    pub(crate) fn recorded(&mut self,v:&Value,base:&Path)->Result<Value>{
         ensure!(hash_ok(&v["sha256"]),"MAP_FILE_BINDING: actual lowercase SHA-256 required");
         let b=self.capture(&base.join(path(&v["path"])?))?;
         ensure!(b["sha256"]==v["sha256"],"MAP_BINDING_HASH: {}",b["path"]);Ok(b)
@@ -438,4 +438,13 @@ pub fn validate(inventory:&Path,candidate:&Path,paths:&Value,expected:&Value,mut
     match validate_full(inventory,candidate,paths,expected,&mut progress){
         Ok(v)=>Ok(report(v.checked,Map::new(),vec![])),Err(e)=>Ok(report(Map::new(),Map::new(),vec![finding(e)])),
     }
+}
+
+
+/// Independently check an explicit delivery set without creating maps.
+/// The caller still has to inspect content-specific delivery requirements.
+pub(crate) fn derive_for_delivery(inventory:&Path,candidate:&Path,deliveries:&Value,progress:&mut impl FnMut(usize,usize,&str))->Result<(Value,Bindings)>{
+    let mut c=Ctx::load(inventory,candidate,&Value::Null,true,progress)?;
+    let docs=c.derive(deliveries,progress)?;
+    c.bindings.verify()?;Ok((docs,c.bindings))
 }
