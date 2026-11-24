@@ -118,6 +118,28 @@ fn actual_cpu_ocr_scan_with_verified_package(){
     assert!(rows.iter().any(|row|row["unrotated_pdf_bbox"].is_array()),"Missing real mapped source coordinates");
     assert_eq!(files::snapshot(&source).unwrap()["sha256"],report["source_file"]["sha256"]);
     println!("Real CPU OCR hypothesis: {text}");
+    // Exercise a genuine failed native worker initialization on every CPU
+    // platform, not a mocked success or an assumed GPU device.
+    let fake=root.join("invalid-accelerator-runtime.bin");fs::write(&fake,b"not a dynamic library").unwrap();
+    let mut gpu:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    gpu["runtime"]["file"]=json!({"path":"invalid-accelerator-runtime.bin","sha256":files::digest(b"not a dynamic library")});
+    gpu["runtime"]["execution_provider"]=json!(if cfg!(target_os="windows"){"DmlExecutionProvider"}else if cfg!(target_os="macos"){"CoreMLExecutionProvider"}else{"CUDAExecutionProvider"});
+    let gpu_manifest=root.join("gpu-test-invalid.json");let gpu_bytes=serde_json::to_vec(&gpu).unwrap();fs::write(&gpu_manifest,&gpu_bytes).unwrap();
+    let raster=root.join("fixture.png");let image_sha=files::snapshot(&raster).unwrap()["sha256"].as_str().unwrap().to_owned();
+    let request=json!({"schema_version":1,"operation":"prepare_source_inventory.recognize_ocr_png_accelerated","args":[raster],"kwargs":{
+        "expected_image_sha256":image_sha,"package_manifest":manifest,"expected_package_sha256":digest,
+        "gpu_package_manifest":gpu_manifest,"expected_gpu_package_sha256":files::digest(&gpu_bytes),"profile":"tiny","layout":"off","acceleration":"auto","timeout_seconds":180}});
+    let req=root.join("fallback-request.json");fs::write(&req,serde_json::to_vec(&request).unwrap()).unwrap();
+    let output=std::process::Command::new(env!("CARGO_BIN_EXE_z2o")).arg("invoke").arg(&req).env("PATH","").env("CUDA_VISIBLE_DEVICES","").env("HIP_VISIBLE_DEVICES","").output().unwrap();
+    assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+    let v:serde_json::Value=serde_json::from_slice(&output.stdout).unwrap();let r=&v["result"];
+    assert_eq!(r["cpu_fallback_used"],true,"{r}");
+    assert_eq!(r["acceleration_attempts"][0]["status"],"failed_or_unavailable");
+    assert_eq!(r["acceleration_attempts"][1]["provider"],"CPUExecutionProvider");
+    assert_eq!(r["acceleration_attempts"][1]["status"],"completed");
+    let reading:String=r["plain_text"].as_str().unwrap().chars().filter(|c|!c.is_whitespace()).flat_map(char::to_uppercase).collect();
+    assert!(reading.contains("NATIVEOCRTEST12345")&&reading.contains("海洋重力波2026"),"{r}");
+    fs::write(root.join("fallback-evidence.json"),serde_json::to_vec_pretty(r).unwrap()).unwrap();
 }
 
 

@@ -23,6 +23,11 @@ fn run()->Result<serde_json::Value>{
             ensure!(args.next().is_none(),"unexpected argument");
             native_install::install(&manifest,sha,&root,runtime_reports::progress_line)
         }
+        Some("ocr-provider-worker")=>{
+            let p=PathBuf::from(args.next().ok_or_else(||anyhow!("worker request file required"))?);
+            ensure!(args.next().is_none()&&fs::metadata(&p)?.len()<=2*1024*1024,"Invalid worker request");
+            z2o_native::ocr_acceleration::worker(&parse_json(&fs::read_to_string(p)?)?)
+        }
         Some("invoke")=>{
             let p=PathBuf::from(args.next().ok_or_else(||anyhow!("request file required"))?);
             ensure!(args.next().is_none(),"unexpected argument");

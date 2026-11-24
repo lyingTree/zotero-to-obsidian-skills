@@ -279,6 +279,10 @@ pub fn install_package(manifest_path:&Path,expected_sha:&str,store:&Path,
 pub struct Package{manifest:Value,resources:Map<String,Value>,policy:Value}
 impl Package{
     pub fn load(manifest_path:&Path,expected_sha:&str,requested:&str,layout:&str)->Result<Self>{
+        Self::load_for(manifest_path,expected_sha,requested,layout,"CPUExecutionProvider")
+    }
+    pub(crate) fn load_for(manifest_path:&Path,expected_sha:&str,requested:&str,layout:&str,provider:&str)->Result<Self>{
+        ensure!(supported_provider(provider),"Provider not supported on this native target");
         // The manifest hash is obtained independently from the trusted
         // installation/configuration. Self-reported asset hashes alone are
         // not an authenticity guarantee.
@@ -289,6 +293,8 @@ impl Package{
         ensure!(data.is_object()&&data["schema_version"].as_u64()==Some(1)&&data["engine"]=="ppocr-v6",
             "Use the verified schema-1 PP-OCRv6 package manifest");
         let runtime=&data["runtime"];
+        let declared=runtime["execution_provider"].as_str().unwrap_or("CPUExecutionProvider");
+        ensure!(declared==provider,"OCR_RUNTIME_PROVIDER_MISMATCH: requested {provider}, declared {declared}");
         ensure!(runtime["platform"]==std::env::consts::OS&&runtime["architecture"]==std::env::consts::ARCH,
             "OCR_RUNTIME_PLATFORM_MISMATCH");
         let version=str_nonempty(&runtime["version"],"ONNX Runtime version")?;
@@ -299,7 +305,13 @@ impl Package{
         let aux=&data["auxiliary"];
         ensure!(aux.is_null()||aux.is_object(),"auxiliary must be an object");
         let (total,free,cores)=available();
-        let policy=plan(total,free,cores,requested,Some(profiles),layout,!aux["layout"].is_null())?;
+        let mut policy=plan(total,free,cores,requested,Some(profiles),layout,!aux["layout"].is_null())?;
+        policy["execution_provider"]=json!(provider);
+        if provider!="CPUExecutionProvider"{
+            policy["policy"]=json!("explicit_accelerator_worker");
+            policy["gpu_probe"]=json!("requested");
+            policy["node_placement_verified"]=json!(false);
+        }
         let chosen=policy["profile"].as_str().unwrap();
         let profile=&profiles[chosen];
         let mut resources=Map::new();
@@ -363,6 +375,7 @@ impl Package{
         let (total,free,cores)=available();
         ensure!(total>=16*GIB&&free>=6*GIB,"Experimental formula recognition requires the conservative 16 GiB / 6 GiB available memory budget");
         let runtime=&data["runtime"];
+        ensure!(runtime["execution_provider"].as_str().unwrap_or("CPUExecutionProvider")=="CPUExecutionProvider","Formula path requires CPU package");
         let model=&data["auxiliary"]["formula"];
         ensure!(model["architecture"]=="PP-FormulaNet_plus-L","Install an explicitly bound PP-FormulaNet_plus-L formula model");
         let mut resources=Map::new();
@@ -418,18 +431,50 @@ impl Package{
 pub fn inspect_package(manifest_path:&Path,expected_sha:&str,requested:&str,layout:&str)->Result<Value>{
     Ok(Package::load(manifest_path,expected_sha,requested,layout)?.report())
 }
+pub(crate) fn supported_provider(provider:&str)->bool{
+    provider=="CPUExecutionProvider"||
+        cfg!(target_os="linux")&&provider=="CUDAExecutionProvider"||
+        cfg!(target_os="windows")&&provider=="DmlExecutionProvider"||
+        cfg!(target_os="macos")&&provider=="CoreMLExecutionProvider"
+}
+fn execution_provider(name:&str)->Result<ort::ep::ExecutionProviderDispatch>{
+    use ort::ep::ExecutionProvider;
+    match name{
+        "CPUExecutionProvider"=>Ok(ort::ep::CPU::default().with_arena_allocator(false).build().error_on_failure()),
+        #[cfg(target_os="linux")]
+        "CUDAExecutionProvider"=>{
+            let ep=ort::ep::CUDA::default().with_device_id(0);
+            ensure!(ep.is_available()?,"CUDA provider unavailable in actual runtime");Ok(ep.build().error_on_failure())
+        },
+        #[cfg(target_os="windows")]
+        "DmlExecutionProvider"=>{
+            let ep=ort::ep::DirectML::default().with_device_id(0);
+            ensure!(ep.is_available()?,"DirectML provider unavailable in actual runtime");Ok(ep.build().error_on_failure())
+        },
+        #[cfg(target_os="macos")]
+        "CoreMLExecutionProvider"=>{
+            let ep=ort::ep::CoreML::default().with_compute_units(ort::ep::coreml::ComputeUnits::CPUAndGPU);
+            ensure!(ep.is_available()?,"CoreML provider unavailable in actual runtime");Ok(ep.build().error_on_failure())
+        },
+        _=>bail!("Unsupported execution provider"),
+    }
+}
 static RUNTIME:Mutex<Option<Value>>=Mutex::new(None);
 fn init_cpu(p:&Package)->Result<()>{
+    let provider=p.policy["execution_provider"].as_str().unwrap_or("CPUExecutionProvider");
+    ensure!(supported_provider(provider),"Unsupported runtime provider");
+    let identity=json!({"runtime":p.resources["runtime"],"provider":provider});
     let mut runtime=RUNTIME.lock().map_err(|_|anyhow!("OCR runtime initialisation lock poisoned"))?;
     if let Some(b)=runtime.as_ref(){
-        ensure!(b==&p.resources["runtime"],"Cannot switch ONNX Runtime within a process");
+        ensure!(b==&identity,"Cannot switch ONNX Runtime or execution provider within a process");
         return Ok(());
     }
     let dll=p.get("runtime")?;
     let builder=ort::init_from(&dll).context("OCR_RUNTIME_LOAD_FAILED (install the verified CPU runtime)")?;
-    ensure!(builder.with_execution_providers([ort::ep::CPU::default().with_arena_allocator(false).build()])
-        .with_telemetry(false).commit(),"ONNX Runtime already configured outside the CPU-first policy");
-    *runtime=Some(p.resources["runtime"].clone());Ok(())
+    let provider=execution_provider(provider)?;
+    ensure!(builder.with_execution_providers([provider])
+        .with_telemetry(false).commit(),"ONNX Runtime already configured outside requested provider policy");
+    *runtime=Some(identity);Ok(())
 }
 
 pub struct Engine{

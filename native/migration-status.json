@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "Native PDF replay and Linux x64 bilingual CPU OCR verified at 442f0a0; exact additional four-platform CPU inference matrix added; Intel macOS compatible runtime unavailable in pinned catalog, model and full codec/painted-text qualification remain"
+      "blocker": "PP-OCR CPU real qualification; native MiniCPM-OCR/Jev llama.cpp and isolated CUDA/DirectML/CoreML attempts with CPU fallback now implemented as candidates; real enhancement weights, accelerator hardware, full PDF and all-platform qualification remain"
     },
     "docx_source_qualification": {
       "qualified": false,
@@ -66,7 +66,7 @@
     },
     "platform_installation_and_release_artifacts": {
       "qualified": false,
-      "blocker": "Six-target candidate packaging and clean installation CI added; actual tests, trusted release signing, licenses and qualified release artifacts remain"
+      "blocker": "Earlier Windows x64/ARM64 compilation and native tests passed, Git Bash installer digest handling fixed; official llama.cpp b11901 CPU and optional GPU asset catalog for all six targets and native runtime launch matrix added; actual tests pending"
     },
     "locked_dependencies_and_license_review": {
       "qualified": false,

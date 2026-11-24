@@ -46,6 +46,8 @@ pub mod pdf_boundary;
 pub mod pdfcraft_backend;
 pub mod pdf_inventory;
 pub mod ocr_backend;
+pub mod ocr_acceleration;
+pub mod minicpm;
 pub mod ocr_pdf;
 pub mod ocr_table;
 pub mod ocr_quality;
@@ -145,6 +147,11 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_source_inventory.inspect_ocr_package",
     "prepare_source_inventory.install_ocr_package",
     "prepare_source_inventory.recognize_ocr_png",
+    "prepare_source_inventory.recognize_ocr_png_accelerated",
+    "prepare_source_inventory.recognize_minicpm_region",
+    "prepare_source_inventory.recognize_minicpm_pdf_region",
+    "prepare_source_inventory.inspect_minicpm_package",
+    "prepare_source_inventory.score_jev_region",
     "prepare_source_inventory.recognize_ocr_table_png",
     "prepare_source_inventory.recognize_pdf_table_region",
     "prepare_source_inventory.audit_ocr_evidence",
@@ -1062,6 +1069,62 @@ pub fn invoke(request: Value) -> Result<Value> {
         "prepare_source_inventory.ocr_hardware_plan" => {
             let profile=string(&c.option("profile",json!("auto")),"profile")?;c.finish()?;
             ocr_backend::hardware_plan(&profile)?
+        }
+        "prepare_source_inventory.recognize_ocr_png_accelerated" => {
+            let png=path(&c.positional("image_path")?)?;
+            let image_sha=string(&c.required("expected_image_sha256")?,"expected_image_sha256")?;
+            let cpu=path(&c.required("package_manifest")?)?;
+            let cpu_sha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
+            let gpu=c.option("gpu_package_manifest",Value::Null);let gsha=c.option("expected_gpu_package_sha256",Value::Null);
+            let gpu=if gpu.is_null(){None}else{Some(path(&gpu)?)};
+            let gsha=if gsha.is_null(){None}else{Some(string(&gsha,"expected_gpu_package_sha256")?)};
+            ensure!(gpu.is_some()==gsha.is_some(),"GPU package and actual manifest hash required together");
+            let profile=string(&c.option("profile",json!("auto")),"profile")?;
+            let layout=string(&c.option("layout",json!("auto")),"layout")?;
+            let mode=string(&c.option("acceleration",json!("auto")),"acceleration")?;
+            let timeout=c.option("timeout_seconds",json!(180)).as_u64().context("timeout must be integer")?;
+            c.finish()?;
+            ocr_acceleration::recognize(ocr_acceleration::Options{image:&png,image_sha:&image_sha,cpu:&cpu,cpu_sha:&cpu_sha,
+                gpu:gpu.as_deref().zip(gsha.as_deref()),profile:&profile,layout:&layout,acceleration:&mode,timeout})?
+        }
+        "prepare_source_inventory.inspect_minicpm_package" => {
+            let p=path(&c.positional("package_manifest")?)?;
+            let sha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
+            let kind=string(&c.required("model_kind")?,"model_kind")?;
+            c.finish()?;minicpm::inspect(&p,&sha,&kind)?
+        }
+        "prepare_source_inventory.recognize_minicpm_pdf_region" => {
+            let source=path(&c.positional("source_pdf")?)?;
+            let output=path(&c.required("destination")?)?;
+            let page=c.required("page_number")?.as_u64().context("page number required")?;
+            let bbox=c.required("bbox")?;let coords=c.required("coordinate_system")?;
+            let dpi=c.option("dpi",json!(200)).as_u64().context("dpi required")?;
+            let source_sha=string(&c.required("expected_source_sha256")?,"expected_source_sha256")?;
+            let manifest=path(&c.required("package_manifest")?)?;
+            let sha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
+            let category=string(&c.required("category")?,"category")?;
+            let mode=string(&c.option("acceleration",json!("auto")),"acceleration")?;
+            let timeout=c.option("timeout_seconds",json!(300)).as_u64().context("timeout required")?;
+            c.finish()?;
+            minicpm::recognize_pdf_region(&source,&output,minicpm::RegionOptions{page,bbox:&bbox,coordinates:&coords,dpi,source_sha:&source_sha,
+                manifest:&manifest,manifest_sha:&sha,category:&category,acceleration:&mode,timeout})?
+        }
+        "prepare_source_inventory.recognize_minicpm_region" | "prepare_source_inventory.score_jev_region" => {
+            let png=path(&c.positional("image_path")?)?;
+            let image_sha=string(&c.required("expected_image_sha256")?,"expected_image_sha256")?;
+            let manifest=path(&c.required("package_manifest")?)?;
+            let msha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
+            let category=string(&c.required("category")?,"category")?;
+            let mode=string(&c.option("acceleration",json!("auto")),"acceleration")?;
+            let timeout=c.option("timeout_seconds",json!(300)).as_u64().context("timeout must be integer")?;
+            if op.ends_with("score_jev_region"){
+                let render=path(&c.required("render_image_path")?)?;
+                let render_sha=string(&c.required("expected_render_sha256")?,"expected_render_sha256")?;
+                let candidate=path(&c.required("candidate_text_path")?)?;
+                let candidate_sha=string(&c.required("expected_candidate_sha256")?,"expected_candidate_sha256")?;
+                c.finish()?;
+                minicpm::score(&png,&image_sha,&render,&render_sha,&candidate,&candidate_sha,&manifest,&msha,&category,&mode,timeout)?
+            }else{c.finish()?;minicpm::recognize(&png,&image_sha,&manifest,&msha,&category,&mode,timeout)?}
         }
         "prepare_source_inventory.inspect_ocr_package" | "prepare_source_inventory.recognize_ocr_png" => {
             let png=if op.ends_with("recognize_ocr_png"){Some(path(&c.positional("image_path")?)?)}else{None};

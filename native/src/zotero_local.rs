@@ -18,7 +18,7 @@ fn library(kind:&str,id:u64)->Result<String>{
         _=>bail!("library_type must be user or group")
     }
 }
-struct Response{headers:BTreeMap<String,String>,body:Vec<u8>}
+pub(crate) struct Response{pub(crate) headers:BTreeMap<String,String>,pub(crate) body:Vec<u8>}
 fn line<R:BufRead>(r:&mut R,limit:usize)->Result<Vec<u8>>{
     let mut out=Vec::new();
     loop{
@@ -32,7 +32,7 @@ fn line<R:BufRead>(r:&mut R,limit:usize)->Result<Vec<u8>>{
     }
     ensure!(out.ends_with(b"\r\n"),"Malformed HTTP line");out.truncate(out.len()-2);Ok(out)
 }
-fn decode_http<R:BufRead>(mut reader:R)->Result<Response>{
+pub(crate) fn decode_http<R:BufRead>(mut reader:R)->Result<Response>{
     let status=line(&mut reader,8192)?;
     let status=std::str::from_utf8(&status)?;
     let mut fields=status.splitn(3,' ');

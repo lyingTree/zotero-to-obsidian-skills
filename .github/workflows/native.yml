@@ -88,10 +88,11 @@ jobs:
           installed="$RUNNER_TEMP/z2o-native-candidate-installed"
           "$exe" package .. "$bundle"
           if command -v sha256sum >/dev/null 2>&1; then
-            digest="$(sha256sum "$bundle/package.json" | awk '{print $1}')"
+            digest="$(sha256sum < "$bundle/package.json" | awk '{print $1}' | tr -d '\r')"
           else
-            digest="$(shasum -a 256 "$bundle/package.json" | awk '{print $1}')"
+            digest="$(shasum -a 256 < "$bundle/package.json" | awk '{print $1}' | tr -d '\r')"
           fi
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
           PATH="" "$exe" install "$bundle/package.json" "$digest" "$installed" > "$RUNNER_TEMP/z2o-install-receipt.json"
           PATH="" "$installed/literature-zotero2obsidian/runtime/z2o${suffix}" describe
       - name: Retain native installation candidate receipt
@@ -180,6 +181,7 @@ jobs:
           path: |
             ${{ runner.temp }}/z2o-ocr-fixture/package.json
             ${{ runner.temp }}/z2o-ocr-fixture/package.sha256
+            ${{ runner.temp }}/z2o-ocr-fixture/fallback-evidence.json
             ${{ runner.temp }}/z2o-ocr-fixture/fixture.pdf
             ${{ runner.temp }}/z2o-ocr-fixture/fixture.png
             ${{ runner.temp }}/z2o-ocr-fixture/ocr-evidence/**
@@ -235,6 +237,7 @@ jobs:
           path: |
             ${{ runner.temp }}/z2o-ocr-fixture/package.json
             ${{ runner.temp }}/z2o-ocr-fixture/package.sha256
+            ${{ runner.temp }}/z2o-ocr-fixture/fallback-evidence.json
             ${{ runner.temp }}/z2o-ocr-fixture/ocr-evidence/**
           if-no-files-found: warn
 
@@ -247,3 +250,40 @@ jobs:
         run: |
           cat native/ocr-cpu-assets.json
           echo "Intel macOS OCR is BLOCKED: no verified compatible runtime in this catalog. Six-platform OCR qualification remains false."
+
+  minicpm-native-runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    env:
+      Z2O_LLAMA_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - name: Establish fixture path
+        shell: bash
+        run: echo "Z2O_LLAMA_FIXTURE_DIR=$RUNNER_TEMP/z2o-llama-runtime" >> "$GITHUB_ENV"
+      - name: Verify official platform archive and launch native llama-server
+        run: python scripts/prepare_minicpm_ci.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: minicpm-runtime-${{ matrix.target }}
+          path: ${{ runner.temp }}/z2o-llama-runtime/runtime-evidence.json
+          if-no-files-found: error
