@@ -125,3 +125,11 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 ### 原生来源交付核验与映射文件差分增量
 
 `validate_delivery.check_source_provenance` 重新读取实际 OOXML，比较原生块/关系/媒体顺序、图件与 XML 字节、保存的原始文字及实际问题审阅证据。PDF 只检查实际页树、页范围及已保存的文件绑定，显式产生 PDF_FULL_PROVENANCE_UNMIGRATED；本操作始终不宣称完整交付通过。`mapping_rerun.compare_bound_maps` 从不同的实际映射文件读取并绑定精确字节，对稳定身份投影进行独立比较，写入独占证据报告；不会将调用者提供的第二组文件当作程序实际 rerun。完整原生映射生成/验证、PDF 像素/文本来源验证及交付整体验收仍需完成。
+
+### PdfCraft 原生后端（迁移候选）
+
+直接引入 [pdfcraft-render](https://github.com/storytold/pdfcraft/tree/6e910675c68dd5092e889065cfe8d0274c1b2742/crates/render) 的 headless 核心库，锁定上游 commit `6e910675c68dd5092e889065cfe8d0274c1b2742` 与对应 craft-libs 定制 PDF 依赖 `0a6e42b80bfd586aee6ee1144aa98cf1ea37a844`。不引入 PdfCraft GUI、MCP 服务或外部进程。按上游要求把 Rust 开发工具链提升到 1.95；最终用户仍仅运行 z2o 二进制。上游依赖 workspace 的 patch 不会自动传递，因此显式保留必要的 PDF-only patch。
+
+新增原生 `pdf_image_objects.render_pdfcraft_page`、`render_pdfcraft_region`、`extract_pdfcraft_text` 及 `prepare_source_inventory.prepare_pdfcraft_evidence`，对同一份原始字节实施真实页面渲染、区域裁剪、字形坐标与结构 XRef 证据的绑定。坐标采用未旋转 PDF 点；核对 PdfCraft 与既有结构解析器的页数、页尺寸及旋转，再建立变换。拒绝越界、错误 DPI、静默降分辨率、哈希变化及冲突输出。现阶段不把 PdfCraft 字形/行分组伪造为原 PyMuPDF 文本块 ID，不把页面像素或文本结果当作语义和图件验收。PdfCraft renderer 的部分解码/字体诊断可能不会出现在返回 warnings 中，必须通过独立历史差分和视觉回归检查。保留现有 lopdf 0.36 结构定位，后续核对 COS 替换。
+
+此次引入新的 git 依赖，原 Cargo.lock 不再代表完整图谱。候选 CI 单次实际 Cargo 解析生成锁文件，保存日志及 artifact，六平台使用同一份生成的锁文件做 --locked 构建。发布门禁拒绝未提交或与 HEAD 不同的锁文件，版本/tag 发布不允许自动重解析。待真实 lockfile 回收提交后恢复直接 locked 构建。当前不能声明 PdfCraft 的编译、字体覆盖、像素等价和分发许可证审查已通过。

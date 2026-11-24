@@ -65,6 +65,16 @@ fn inside(outer:[f64;4],inner:[f64;4])->bool{outer[0]<=inner[0]&&outer[1]<=inner
 pub struct Pdf{doc:Document,pages:BTreeMap<u32,ObjectId>}
 impl Pdf{
     pub fn open(p:&Path)->Result<Self>{let doc=load(p)?;let pages=doc.get_pages();Ok(Self{doc,pages})}
+    /// Use the very same immutable byte snapshot as the raster/text backend.
+    pub(crate) fn from_bytes(bytes:&[u8])->Result<Self>{
+        ensure!(bytes.len() as u64<=MAX_PDF,"PDF exceeds structural evidence read budget");
+        let doc=Document::load_mem(bytes)?;
+        ensure!(!doc.is_encrypted(),"An accessible unencrypted PDF is required");
+        let pages=doc.get_pages();
+        ensure!(!pages.is_empty(),"PDF page tree is empty");
+        Ok(Self{doc,pages})
+    }
+    pub(crate) fn geometry_record(&self,n:u64)->Result<Value>{Ok(self.geometry(n)?.value())}
     pub fn len(&self)->usize{self.pages.len()}
     fn page(&self,n:u64)->Result<ObjectId>{let n=u32::try_from(n)?;self.pages.get(&n).copied().context("page_number must name an actual PDF page")}
     fn geometry(&self,n:u64)->Result<Geometry>{

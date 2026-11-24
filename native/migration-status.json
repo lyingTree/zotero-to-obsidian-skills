@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "Structural page geometry and image-call candidate implemented; decoded pixels, masks, crop boundaries, complete page rendering and parity remain"
+      "blocker": "Pinned PdfCraft page rendering, glyph extraction and region evidence candidate; native object export, complete crop-boundary checks and source parity remain"
     },
     "docx_source_qualification": {
       "qualified": false,
@@ -70,7 +70,7 @@
     },
     "locked_dependencies_and_license_review": {
       "qualified": false,
-      "blocker": "Committed Cargo.lock and dependency/distribution license review"
+      "blocker": "Resolve and commit the PdfCraft dependency lockfile, verify all six targets and review dependency/distribution licenses"
     }
   },
   "required_targets": [

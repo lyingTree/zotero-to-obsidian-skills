@@ -34,6 +34,7 @@ pub mod workflow;
 pub mod mapping_compare;
 pub mod handoff_conflicts;
 pub mod pdf_structure;
+pub mod pdfcraft_backend;
 pub mod translation_validate;
 pub mod translation_writer;
 pub mod translation_tasks;
@@ -115,6 +116,10 @@ pub const OPERATIONS: &[&str] = &[
     "mapping_rerun.compare_stable_projections",
     "mapping_rerun.compare_bound_maps",
     "pdf_image_objects.index_page_structure",
+    "pdf_image_objects.render_pdfcraft_page",
+    "pdf_image_objects.render_pdfcraft_region",
+    "pdf_image_objects.extract_pdfcraft_text",
+    "prepare_source_inventory.prepare_pdfcraft_evidence",
     "prepare_source_inventory.prepare_pdf_structure_evidence",
     "prepare_source_inventory.record_figure_edges",
     "prepare_source_inventory.prepare_figure_reviews",
@@ -260,7 +265,7 @@ pub fn describe() -> Value {
         "schema_version": SCHEMA_VERSION, "engine": "rust-native", "engine_version": ENGINE_VERSION,
         "reference_version": REFERENCE_VERSION, "platform": std::env::consts::OS,
         "architecture": std::env::consts::ARCH, "system_python_required": false,
-        "python_fallback": false, "full_workflow_ready": blockers.is_empty(), "operations": OPERATIONS,
+        "python_fallback": false, "pdf_backend": {"name":"pdfcraft-render","revision":pdfcraft_backend::PDFCRAFT_REV,"qualification":"candidate"}, "full_workflow_ready": blockers.is_empty(), "operations": OPERATIONS,
         "release_target": manifest["release_target"], "module_status": modules,
         "required_targets": manifest["required_targets"], "release_blockers": blockers,
     })
@@ -760,6 +765,33 @@ pub fn invoke(request: Value) -> Result<Value> {
         }
         "mapping_rerun.compare_stable_projections" => {
             let a=c.positional("baseline")?;let b=c.positional("current")?;c.finish()?;mapping_compare::compare(&a,&b)?
+        }
+        "pdf_image_objects.render_pdfcraft_page" | "pdf_image_objects.render_pdfcraft_region" |
+        "pdf_image_objects.extract_pdfcraft_text" | "prepare_source_inventory.prepare_pdfcraft_evidence" => {
+            let p=path(&c.positional("source_pdf")?)?;
+            let expected=c.option("expected_source_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
+            if op=="prepare_source_inventory.prepare_pdfcraft_evidence"{
+                let root=path(&c.required("destination")?)?;
+                let dpi=c.option("dpi",json!(144)).as_u64().context("dpi must be an integer")?;
+                c.finish()?;
+                json!(path_text(&pdfcraft_backend::prepare(&p,&root,dpi,expected.as_deref(),
+                    |i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
+            }else{
+                let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
+                if op=="pdf_image_objects.extract_pdfcraft_text"{
+                    c.finish()?;pdfcraft_backend::extract_text(&p,page,expected.as_deref())?
+                }else{
+                    let dpi=c.option("dpi",json!(144)).as_u64().context("dpi must be an integer")?;
+                    let dest=path(&c.required("destination")?)?;
+                    if op=="pdf_image_objects.render_pdfcraft_region"{
+                        let bbox=c.required("bbox")?;let coordinate_system=c.required("coordinate_system")?;c.finish()?;
+                        pdfcraft_backend::render_region(&p,page,&bbox,&coordinate_system,dpi,&dest,expected.as_deref())?
+                    }else{
+                        c.finish()?;pdfcraft_backend::render_page(&p,page,dpi,&dest,expected.as_deref())?
+                    }
+                }
+            }
         }
         "pdf_image_objects.index_page_structure" => {
             let p=path(&c.positional("source_pdf")?)?;let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;

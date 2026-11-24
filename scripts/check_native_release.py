@@ -117,6 +117,9 @@ def main():
     proc = subprocess.run([str(args.binary.resolve()), "describe"], capture_output=True, text=True, encoding="utf-8", check=True)
     tracked = subprocess.run(["git", "ls-files", "--error-unmatch", "native/Cargo.lock"], cwd=ROOT,
                              capture_output=True, check=False).returncode == 0
+    # A tracked but stale lockfile replaced by CI is not release evidence.
+    tracked = tracked and subprocess.run(["git", "diff", "--exit-code", "HEAD", "--", "native/Cargo.lock"], cwd=ROOT,
+                                         capture_output=True, check=False).returncode == 0
     ref = os.environ.get("GITHUB_REF", "")
     report = evaluate(manifest, json.loads(proc.stdout), reference_inventory(ROOT), version, crate,
                       ROOT.joinpath("native", "Cargo.lock").is_file() and tracked, ref)
