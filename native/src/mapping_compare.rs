@@ -27,7 +27,9 @@ fn project(doc:&Value,name:&str)->Result<Value>{
             if let Some(map)=v.as_object(){
                 for (id,row) in map{
                     let mut row=row.as_object().context("mapping row must be an object")?.clone();
-                    if !row.contains_key(key){row.insert(key.to_owned(),json!(id));}
+                    if let Some(declared)=row.get(key){
+                        ensure!(declared.as_str()==Some(id.as_str()),"Mapping object key disagrees with row identity: {name}.{collection}.{id}");
+                    }else{row.insert(key.to_owned(),json!(id));}
                     rows.push(Value::Object(row));
                 }
             }else{rows=v.as_array().context("mapping collection must be array or object")?.clone();}
@@ -176,4 +178,20 @@ pub fn record_mapping_rerun(run_path:&std::path::Path,deliveries:&Value,destinat
     report["boundary"]=json!("Actual native mapping regeneration and stable identity comparison only. No translation, source identity or human observation is certified.");
     old.bindings.verify()?;new.bindings.verify()?;run_inputs.verify()?;
     let output=dest.join("rerun-comparison.json");handoff_native::publish(&output,&report)?;Ok(output)
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    #[test]
+    fn object_key_cannot_disagree_with_embedded_identity() {
+        let doc=json!({"source_map":{"blocks":{"block-a":{"block_id":"block-b"}}},"link_map":{}});
+        assert!(compare(&doc,&doc).is_err());
+    }
+    #[test]
+    fn implicit_object_identity_matches_explicit_array_identity() {
+        let a=json!({"source_map":{"blocks":{"block-a":{"source_id":"main"}}},"link_map":{}});
+        let b=json!({"source_map":{"blocks":[{"block_id":"block-a","source_id":"main"}]},"link_map":{}});
+        assert_eq!(compare(&a,&b).unwrap()["mapping_equal"],true);
+    }
 }
