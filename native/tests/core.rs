@@ -354,3 +354,45 @@ fn validator_protects_code_comments_and_tracks_bibliography(){
     let codes:Vec<_>=validate::validate_note(text).into_iter().map(|f|f.code).collect();
     for expected in ["ANCHOR_GAP","ANCHOR_SPACING","EQUATION_ANCHOR"]{assert!(codes.contains(&expected),"{codes:?}");}
 }
+
+#[test]
+fn glossary_index_and_source_binding(){
+    use z2o_native::glossary::{Glossary,prepare};
+    let dir=tempdir().unwrap();
+    let g=dir.path().join("术语表.md");
+    fs::write(&g,"\u{feff}| ID | English | Chinese |\r\n| --- | --- | --- |\r\n| T1 | radial velocity | 径向速度 |\r\n| T2 | root mean square；别名/缩写：RMS | 均方根 |\r\n| T3 | tangential velocity | 切向速度 |\r\n").unwrap();
+    let idx=Glossary::new(&g).unwrap();
+    assert_eq!(idx.search("RMS").unwrap()[0]["id"],"T2");
+    assert_eq!(idx.search("切向").unwrap()[0]["id"],"T3");
+    assert_eq!(idx.search("rad").unwrap(),json!([]));
+    let text="🌊径向: Radial-velocity and RMS";
+    let report=idx.suggest(text,1).unwrap();
+    let rows=report["matches"].as_array().unwrap();
+    assert!(rows.iter().any(|x|x["entry"]["id"]=="T1"&&x["match_types"]==json!(["exact_token_phrase"])));
+    for row in rows{
+        let a=row["source_span"]["start"].as_u64().unwrap() as usize;
+        let b=row["source_span"]["end"].as_u64().unwrap() as usize;
+        assert_eq!(row["source_span"]["quote"],text.chars().skip(a).take(b-a).collect::<String>());
+        assert_eq!(row["decision"],"pending");
+    }
+    let p=dir.path().join("source.pdf");fs::write(&p,b"synthetic PDF identity").unwrap();
+    let inventory=dir.path().join("inventory.json");
+    let data=json!({"sources":[{"id":"main","path":"source.pdf","sha256":files::digest(b"synthetic PDF identity"),
+        "pages":[{"page":1,"blocks":[{"id":"b1","bbox":[0,0,2,3],"text":text}]}]}]});
+    fs::write(&inventory,serde_json::to_vec(&data).unwrap()).unwrap();
+    let output=dir.path().join("leads.json");
+    assert!(prepare(&inventory,&g,&output,|_,_|{}).is_ok());
+    let prior=fs::read(&output).unwrap();
+    assert!(prepare(&inventory,&g,&output,|_,_|{}).is_err());
+    assert_eq!(fs::read(&output).unwrap(),prior);
+    let changed=dir.path().join("changed.json");
+    assert!(prepare(&inventory,&g,&changed,|_,_|fs::write(&p,b"changed").unwrap()).is_err());
+    assert!(!changed.exists());
+    assert!(prepare(&inventory,&g,&changed,|_,_|{}).is_err());
+    fs::write(&p,b"synthetic PDF identity").unwrap();
+    let raced=dir.path().join("raced.json");
+    assert!(prepare(&inventory,&g,&raced,|_,_|fs::write(&raced,b"other").unwrap()).is_err());
+    assert_eq!(fs::read(&raced).unwrap(),b"other");
+    fs::write(&g,"| T1 | a term | 术语 |\n| T1 | duplicate | 重复 |").unwrap();
+    assert!(Glossary::new(&g).is_err());
+}

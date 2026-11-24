@@ -13,6 +13,7 @@ pub mod normalize;
 pub mod yaml_nodes;
 pub mod validate;
 pub mod source_urls;
+pub mod glossary;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -56,6 +57,9 @@ pub const OPERATIONS: &[&str] = &[
     "validate_note.validate_note",
     "validate_note.validate_file",
     "validate_note.inspect_note",
+    "glossary_candidates.search",
+    "glossary_candidates.suggest",
+    "glossary_candidates.prepare_glossary_candidates",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -336,6 +340,24 @@ pub fn invoke(request: Value) -> Result<Value> {
         "validate_note.validate_file" => {
             let p = path(&c.positional("path")?)?;
             c.finish()?; serde_json::to_value(validate::validate_file(&p))?
+        }
+        "glossary_candidates.search" | "glossary_candidates.suggest" => {
+            let p=path(&c.positional("glossary_path")?)?;
+            let input=c.positional(if op.ends_with(".search"){"query"}else{"text"})?;
+            let input=input.as_str().context("source or query must be a string")?;
+            let index=glossary::Glossary::new(&p)?;
+            if op.ends_with(".search"){c.finish()?;index.search(input)?}
+            else{
+                let count=c.option("max_family_entries",json!(8)).as_u64().context("max_family_entries must be a positive integer")?;
+                let count=usize::try_from(count)?;c.finish()?;index.suggest(input,count)?
+            }
+        }
+        "glossary_candidates.prepare_glossary_candidates" => {
+            let inv=path(&c.positional("inventory_path")?)?;
+            let terms=path(&c.positional("glossary_path")?)?;
+            let output=path(&c.positional("output_path")?)?;c.finish()?;
+            let dest=glossary::prepare(&inv,&terms,&output,|i,n|if i%128==0||i==n{eprintln!("[{i}/{n}] source glossary search leads");})?;
+            json!(path_text(&dest)?)
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

@@ -262,5 +262,44 @@ class NativeRichTableComparison(NativeValidatorMixin, table_suite.RichTableTests
     validator_module = table_suite.validator
 
 
+class NativeGlossaryComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_glossary_retrieval_and_saved_evidence(self):
+        import test_glossary_candidates as suite
+        glossary = self.root.joinpath("术语表.md")
+        glossary.write_bytes(("\ufeff| ID | English | Chinese | Context |\r\n"
+            "| --- | --- | --- | --- |\r\n"
+            "| T1 | radial velocity | 径向速度 | centre |\r\n"
+            "| T2 | root mean square；别名/缩写：RMS | 均方根 | statistic |\r\n"
+            "| T3 | tangential velocity | 切向速度 | tangent |\r\n").encode())
+        index = suite.glossary_tools.GlossaryIndex(glossary)
+        for query in ("RADIAL", "RMS", "切向", "rad", "unlisted estimator"):
+            self.assertEqual(self.invoke("glossary_candidates.search", str(glossary), query),
+                             index.search(query))
+        for text in ("🌊 Radial-velocity and RMS were recorded.", "The radial spacing changed.",
+                     "radially spaced", "Tangential velocity", ""):
+            for limit in (1, 8):
+                self.assertEqual(self.invoke("glossary_candidates.suggest", str(glossary), text,
+                                             max_family_entries=limit),
+                                 index.suggest(text, max_family_entries=limit))
+        source = self.root.joinpath("source.pdf")
+        source.write_bytes(b"source identity")
+        import hashlib
+        inventory = self.root.joinpath("inventory.json")
+        inventory.write_text(json.dumps({"sources": [{"id": "main", "path": source.name,
+             "sha256": hashlib.sha256(source.read_bytes()).hexdigest(), "pages": [{"page": 1,
+             "blocks": [{"id": "b1", "bbox": [0, 0, 20, 30], "text": "Radial spacing."}]}]}]}),
+             encoding="utf-8")
+        expected = self.root.joinpath("expected.json")
+        actual = self.root.joinpath("actual.json")
+        suite.glossary_tools.prepare_glossary_candidates(inventory, glossary, expected)
+        self.assertEqual(self.invoke("glossary_candidates.prepare_glossary_candidates",
+                                     str(inventory), str(glossary), str(actual)), str(actual.resolve()))
+        self.assertEqual(json.loads(actual.read_text(encoding="utf-8")),
+                         json.loads(expected.read_text(encoding="utf-8")))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

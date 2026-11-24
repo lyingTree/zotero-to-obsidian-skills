@@ -93,7 +93,7 @@ pub fn load(payload:&str)->Result<Document,Failure>{
                 if tag.as_ref().is_some_and(|t|t.is_custom()){return Err(failure(line,"unsupported custom YAML tag"));}
                 let implicit=style==ScalarStyle::Plain&&tag.is_none();
                 let timestamp=tag.as_ref().is_some_and(|t|t.is_yaml_core_schema_tag("timestamp"));
-                if (implicit||timestamp)&&!date_valid(&value){return Err(failure(line,"invalid calendar date"));}
+                if (implicit||timestamp)&&!date_valid(&value){return Err(failure(1,format!("invalid calendar date at YAML payload line {line}")));}
                 let merge=value=="<<"&&(implicit||tag.as_ref().is_some_and(|t|t.is_yaml_core_schema_tag("merge")));
                 append(&mut doc,&stack,Node{line,kind:Kind::Scalar(value.into_owned(),merge)},anchor)?;
             }
