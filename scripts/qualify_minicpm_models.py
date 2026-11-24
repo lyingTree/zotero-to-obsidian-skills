@@ -70,9 +70,12 @@ def weights(repo, names):
     return rows
 
 def make_package(kind, rows, runtime):
+    expected_release = {"minicpm-ocr": "b11901", "jev": "b11928"}[kind]
+    require(runtime["target"] == TARGET and runtime["release"] == expected_release and runtime["model_kind"] == kind,
+            f"{kind}: runtime evidence does not match model kind, release, or target")
     platform = "macos" if "apple" in TARGET else ("windows" if "windows" in TARGET else "linux")
-    package = {"schema_version": 1, "engine": "llama.cpp", "release": "b11901", "model_kind": kind,
-               "platform": platform, "architecture": TARGET.split("-")[0], "cpu": runtime,
+    package = {"schema_version": 1, "engine": "llama.cpp", "release": expected_release, "model_kind": kind,
+               "platform": platform, "architecture": TARGET.split("-")[0], "cpu": runtime["engine"],
                "gpu": None, "model": rows[0], "projector": rows[1], "draft": None}
     path = ROOT.joinpath(kind + "-package.json")
     path.write_text(json.dumps(package, indent=2) + "\n", encoding="utf-8")
@@ -114,19 +117,19 @@ def example(name):
 
 def main():
     runtime = json.loads(ROOT.joinpath("runtime-evidence.json").read_text(encoding="utf-8"))
-    require(runtime["target"] == TARGET, "Runtime target mismatch")
+    jev_runtime = json.loads(ROOT.joinpath("jev-runtime-evidence.json").read_text(encoding="utf-8"))
     manifest = SHARED.joinpath("package.json")
     require(file_sha(manifest) == SHARED.joinpath("package.sha256").read_text(encoding="ascii").strip(), "Shared scan manifest mismatch")
     scan = SHARED.joinpath("fixture.png")
     require(file_sha(scan) == json.loads(manifest.read_text(encoding="utf-8"))["provenance"]["fixtures"]["fixture.png"]["sha256"], "Shared scan hash mismatch")
     ocr = make_package("minicpm-ocr", weights("openbmb/MiniCPM-OCR-1.0-gguf",
-        ["MiniCPM-OCR-1_0-Q8_0.gguf", "mmproj-model-f16-4x.gguf"]), runtime["engine"])
+        ["MiniCPM-OCR-1_0-Q8_0.gguf", "mmproj-model-f16-4x.gguf"]), runtime)
     result = invoke("minicpm-bilingual", scan, ocr, "text")
     require(result["status"] == "minicpm_candidate_review_required", f"MiniCPM inference blocked: {result}")
     normalized = re.sub(r"\s+", "", result["result"]["candidate_text"]).upper()
     require("NATIVEOCRTEST12345" in normalized and "海洋重力波2026" in normalized, f"Bilingual transcription mismatch: {normalized}")
     jev = make_package("jev", weights("openbmb/MiniCPM-OCR-Jev-gguf",
-        ["MiniCPM-OCR-Jev-Q4_K_M.gguf", "mmproj-model-f16.gguf"]), runtime["engine"])
+        ["MiniCPM-OCR-Jev-Q4_K_M.gguf", "mmproj-model-f16.gguf"]), jev_runtime)
     scores = {}
     for name in EXAMPLES:
         case, candidate, candidate_path, dest = example(name)
@@ -143,7 +146,8 @@ def main():
             f"Jev reference discrimination regression: {scores}")
     ROOT.joinpath("model-smoke-result.json").write_text(json.dumps({"target": TARGET,
         "bilingual_cpu_inference": True, "jev_reference_discrimination": True,
-        "scores": scores, "gpu_hardware_verified": False, "source_acceptance": False}, indent=2) + "\n", encoding="utf-8")
+        "scores": scores, "ocr_runtime_release": runtime["release"], "jev_runtime_release": jev_runtime["release"],
+        "gpu_hardware_verified": False, "source_acceptance": False}, indent=2) + "\n", encoding="utf-8")
 
 if __name__ == "__main__":
     main()

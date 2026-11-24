@@ -4,11 +4,21 @@
 use anyhow::{ensure,Context,Result,bail};
 use base64::{engine::general_purpose::STANDARD,Engine as _};
 use serde_json::{json,Value};
-use std::{collections::{BTreeMap,BTreeSet},fs,io::{BufReader,Read,Write},net::{Ipv4Addr,SocketAddr,TcpListener,TcpStream},
-    path::{Path,PathBuf},process::{Child,Command,Stdio},time::{Duration,Instant},thread};
+use std::{collections::{BTreeMap,BTreeSet},fs,io::{BufReader,Read,Seek,SeekFrom,Write},net::{Ipv4Addr,SocketAddr,TcpListener,TcpStream},
+    path::{Path,PathBuf},process::{Child,Command,ExitStatus,Stdio},time::{Duration,Instant},thread};
 use crate::{check_ledger,check_write,files,path,path_text,parse_json};
 pub const UPSTREAM:&str="c21a3ca524263ef8166cb6d350864b10c3056b61";
 pub const LLAMA_RELEASE:&str="b11901";
+pub const JEV_LLAMA_RELEASE:&str="b11928";
+fn release_for(kind:&str)->Result<&'static str>{
+    match kind{
+        "minicpm-ocr"=>Ok(LLAMA_RELEASE),
+        "jev" if matches!((std::env::consts::OS,std::env::consts::ARCH),
+            ("linux"|"windows","x86_64"|"aarch64")|("macos","aarch64"))=>Ok(JEV_LLAMA_RELEASE),
+        "jev"=>bail!("JEV_RUNTIME_PLATFORM_UNSUPPORTED"),
+        _=>bail!("Unknown model kind"),
+    }
+}
 const BOUNDARY:&str="Actual local MiniCPM inference candidate, not verified transcription. Jev class-1 probability is a model score, not a correctness decision. Candidate render association, source content, formulas and tables require independent review. GPU offload evidence is runtime-reported, not a benchmark.";
 const GIB:u64=1024*1024*1024;
 const MAX_IMAGE:u64=32*1024*1024;
@@ -71,16 +81,18 @@ impl EngineFiles{
         Ok(Self{root:dir,exe,files:expected.into_values().collect(),variant})
     }
     fn verify(&self)->Result<()>{for b in &self.files{verify(b)?;}Ok(())}
-    fn report(&self)->Value{json!({"variant":self.variant,"executable":self.exe,"files":self.files,"release":LLAMA_RELEASE})}
+    fn report(&self,release:&str)->Value{json!({"variant":self.variant,"executable":self.exe,"files":self.files,"release":release})}
 }
-struct Package{binding:Value,kind:String,cpu:EngineFiles,gpu:Option<EngineFiles>,gpu_error:Option<String>,model:Value,projector:Value,draft:Option<Value>}
+struct Package{binding:Value,kind:String,release:&'static str,cpu:EngineFiles,gpu:Option<EngineFiles>,gpu_error:Option<String>,model:Value,projector:Value,draft:Option<Value>}
 impl Package{
     fn load(p:&Path,h:&str,kind:&str)->Result<Self>{
+        let release=release_for(kind)?;
         check_write::no_link(p)?;ensure!(fs::metadata(p)?.len()<=2*1024*1024,"Package manifest too large");
         let(raw,b)=files::read_bound(p)?;
         ensure!(raw.len()<=2*1024*1024&&b["sha256"]==h,"MINICPM_PACKAGE_HASH_MISMATCH");
         let v=parse_json(std::str::from_utf8(&raw)?)?;
-        ensure!(v["schema_version"].as_u64()==Some(1)&&v["engine"]=="llama.cpp"&&v["release"]==LLAMA_RELEASE&&v["model_kind"]==kind,"Unexpected MiniCPM package identity");
+        ensure!(v["schema_version"].as_u64()==Some(1)&&v["engine"]=="llama.cpp"&&v["model_kind"]==kind,"Unexpected MiniCPM package identity");
+        ensure!(v["release"]==release,"MINICPM_RUNTIME_RELEASE_MISMATCH: {kind} requires {release}");
         ensure!(v["platform"]==std::env::consts::OS&&v["architecture"]==std::env::consts::ARCH,"Package platform mismatch");
         let root=path(&b["path"])?.parent().context("Package root")?.to_owned();
         let cpu=EngineFiles::load(&root,&v["cpu"])?;
@@ -107,11 +119,11 @@ impl Package{
             _=>bail!("Unknown model kind"),
         };
         ensure!(model["path"]!=projector["path"]&&draft.as_ref().is_none_or(|b|b["path"]!=model["path"]&&b["path"]!=projector["path"]),"Model resources must differ");
-        let p=Self{binding:b,kind:kind.into(),cpu,gpu,gpu_error,model,projector,draft};p.verify_models()?;Ok(p)
+        let p=Self{binding:b,kind:kind.into(),release,cpu,gpu,gpu_error,model,projector,draft};p.verify_models()?;Ok(p)
     }
     fn verify_models(&self)->Result<()>{verify(&self.binding)?;verify(&self.model)?;verify(&self.projector)?;if let Some(b)=&self.draft{verify(b)?;}Ok(())}
     fn report(&self,e:&EngineFiles)->Value{json!({"manifest":self.binding,"kind":self.kind,"model":self.model,"projector":self.projector,
-        "draft":self.draft,"runtime":e.report(),"upstream_revision":UPSTREAM,"qualified":false})}
+        "draft":self.draft,"runtime":e.report(self.release),"upstream_revision":UPSTREAM,"qualified":false})}
 }
 fn request(addr:SocketAddr,token:&str,route:&str,body:Option<&Value>,timeout:Duration)->Result<Value>{
     ensure!(addr.ip().is_loopback()&&matches!(route,"/health"|"/v1/models"|"/v1/chat/completions"|"/v1/systemone"),"Only local native model endpoints");
@@ -145,6 +157,77 @@ fn log_offload(p:&Path)->Result<Option<(u64,u64)>>{
     let r=re.captures_iter(&s).last().and_then(|c|Some((c[1].parse().ok()?,c[2].parse().ok()?)));
     Ok(r)
 }
+// Only closed-vocabulary classifications leave the isolated temp directory.
+// Never return the actual bytes, an arbitrary log line, request/response data,
+// environment values, model paths or the child command line.
+const STARTUP_LOG_SAMPLE:u64=32*1024;
+#[derive(Debug)]
+struct StartupDiagnostic{
+    phase:&'static str,exit:Option<ExitStatus>,signatures:Vec<&'static str>,sampled_bytes:usize,truncated:bool,log_readable:bool,
+}
+impl StartupDiagnostic{
+    fn collect(file:&mut fs::File,phase:&'static str,exit:Option<ExitStatus>)->Self{
+        let mut diag=Self{phase,exit,signatures:vec![],sampled_bytes:0,truncated:false,log_readable:false};
+        let read=(||->std::io::Result<Vec<u8>>{
+            // Hold the original file handle opened before starting the child.
+            // It cannot be replaced with a new path or a blocking named pipe.
+            let meta=file.metadata()?;
+            if !meta.is_file(){return Err(std::io::ErrorKind::InvalidData.into());}
+            let size=meta.len();diag.truncated=size>STARTUP_LOG_SAMPLE;
+            file.seek(SeekFrom::Start(0))?;
+            let mut sample=Vec::with_capacity(size.min(STARTUP_LOG_SAMPLE) as usize);
+            if diag.truncated{
+                let half=STARTUP_LOG_SAMPLE/2;
+                (&mut *file).take(half).read_to_end(&mut sample)?;
+                let boundary=sample.len();
+                file.seek(SeekFrom::Start(size-half))?;
+                file.take(half).read_to_end(&mut sample)?;
+                // A pattern must not be created by joining separated bytes.
+                sample.insert(boundary,b'\n');
+            }else{file.take(size).read_to_end(&mut sample)?;}
+            Ok(sample)
+        })();
+        if let Ok(sample)=read{
+            diag.log_readable=true;
+            diag.sampled_bytes=sample.len()-usize::from(diag.truncated);
+            diag.signatures=startup_signatures(&String::from_utf8_lossy(&sample).to_ascii_lowercase());
+        }
+        diag
+    }
+    fn json(&self)->Value{
+        json!({"phase":self.phase,"exit_code":self.exit.and_then(|v|v.code()),
+            "signatures":self.signatures,"log_bytes_sampled":self.sampled_bytes,
+            "log_sample_truncated":self.truncated,"log_readable":self.log_readable})
+    }
+}
+impl std::fmt::Display for StartupDiagnostic{
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{
+        if let Some(status)=self.exit{write!(f,"llama-server exited during startup: {status}")?;}
+        else{f.write_str("llama-server startup deadline exceeded")?;}
+        if !self.signatures.is_empty(){write!(f," ({})",self.signatures.join(", "))?;}
+        Ok(())
+    }
+}
+impl std::error::Error for StartupDiagnostic{}
+fn startup_signatures(log:&str)->Vec<&'static str>{
+    let patterns:&[(&str,&[&str])]=&[
+        ("shared_library_load_failed",&["error while loading shared libraries","library not loaded:","cannot open shared object file"]),
+        ("unsupported_server_option",&["unknown argument","unrecognized argument","unrecognized option","invalid argument: --"]),
+        ("unsupported_decision_model",&["unsupported decision model type"]),
+        ("unsupported_model_architecture",&["unknown model architecture","unsupported model architecture","unsupported architecture"]),
+        ("invalid_model_metadata",&["missing tensor","tensor not found","unknown tensor type","unknown pre-tokenizer","unknown pretokenizer","failed to load model vocabulary","invalid gguf","gguf_init_from_file: failed"]),
+        ("projector_load_failed",&["failed to load mmproj","failed to load the mmproj","failed to load projector","failed to load clip","failed to load multimodal","clip_model_load: error","mtmd_init_from_file: error"]),
+        ("memory_allocation_failed",&["std::bad_alloc","cannot allocate memory","out of memory","failed to allocate","unable to allocate"]),
+        ("endpoint_bind_failed",&["address already in use","failed to bind","couldn't bind","could not bind","failed to listen"]),
+        ("model_load_failed",&["failed to load model","error loading model","failed loading model"]),
+        ("runtime_assertion_failed",&["ggml_assert","assertion failed","illegal instruction"]),
+    ];
+    let abi_version_missing=log.lines().any(|line|line.contains("version")&&line.contains("not found")&&
+        ["glibc_","glibcxx_","cxxabi_"].iter().any(|marker|line.contains(marker)));
+    abi_version_missing.then_some("loader_abi_version_missing").into_iter()
+        .chain(patterns.iter().filter(|(_,markers)|markers.iter().any(|marker|log.contains(marker))).map(|(code,_)|*code))
+        .collect()
+}
 impl Server{
     fn start(p:&Package,e:&EngineFiles,gpu:bool,timeout:Duration)->Result<Self>{
         p.verify_models()?;e.verify()?;
@@ -159,6 +242,7 @@ impl Server{
         let auth=temp.path().join("key.txt");fs::write(&auth,format!("{token}\n"))?;
         let listener=TcpListener::bind((Ipv4Addr::LOCALHOST,0))?;let addr=listener.local_addr()?;drop(listener);
         let log=temp.path().join("server.log");let output=fs::File::create(&log)?;
+        let mut diagnostic_input=fs::File::open(&log)?;
         let mut cmd=command(e);
         cmd.arg("--model").arg(path(&p.model["path"])?).arg("--mmproj").arg(path(&p.projector["path"])?)
             .args(["--host","127.0.0.1","--port",&addr.port().to_string(),"--parallel","1","--no-webui","--api-key-file"]).arg(&auth)
@@ -174,7 +258,9 @@ impl Server{
         let mut s=Self{child,temp,addr,token,offload:None};
         let start=Instant::now();
         while start.elapsed()<timeout{
-            if let Some(status)=s.child.try_wait()?{bail!("llama-server exited during startup: {status}");}
+            if let Some(status)=s.child.try_wait()?{
+                return Err(StartupDiagnostic::collect(&mut diagnostic_input,"early_exit",Some(status)).into());
+            }
             if let Ok(v)=request(addr,&s.token,"/health",None,Duration::from_secs(2)){
                 if v["status"]=="ok"{
                     let v=request(addr,&s.token,"/v1/models",None,Duration::from_secs(5))?;
@@ -187,7 +273,9 @@ impl Server{
                 }
             }
             thread::sleep(Duration::from_millis(500));
-        }bail!("llama-server startup deadline exceeded")
+        }
+        let exit=s.child.try_wait()?;
+        Err(StartupDiagnostic::collect(&mut diagnostic_input,if exit.is_some(){"early_exit"}else{"startup_timeout"},exit).into())
     }
 }
 fn image(p:&Path,h:&str)->Result<(Value,String)>{
@@ -248,7 +336,11 @@ fn attempts(p:&Package,acceleration:&str,timeout:Duration,route:&str,body:&Value
                 r["attempts"]=json!(log);r["execution_mode"]=json!(mode);
                 r["fallback_used"]=json!(!gpu&&acceleration=="auto");return Ok(r)
             }
-            Err(e)=>log.push(json!({"mode":mode,"status":"failed","reason":format!("{e:#}"),"elapsed_seconds":started.elapsed().as_secs_f64()})),
+            Err(e)=>{
+                let mut attempt=json!({"mode":mode,"status":"failed","reason":format!("{e:#}"),"elapsed_seconds":started.elapsed().as_secs_f64()});
+                if let Some(d)=e.downcast_ref::<StartupDiagnostic>(){attempt["startup_diagnostic"]=d.json();}
+                log.push(attempt);
+            },
         }
     }
     Ok(json!({"status":"blocked","attempts":log,"result":null,"execution_mode":null}))
@@ -298,6 +390,105 @@ mod tests{
     fn preserve_truncated_ocr_without_approval(){
         let r=json!({"choices":[{"finish_reason":"length","message":{"content":"actual candidate"}}]});
         assert_eq!(recognition(&r).unwrap()["truncated"],true);
+    }
+    #[test]
+    fn bounded_diagnostics_preserve_fixed_signatures_not_log_text(){
+        let dir=tempfile::tempdir().unwrap();let p=dir.path().join("server.log");
+        let mut bytes=b"/private/path/model: GLIBC_2.38 version not found (--api-key DO_NOT_RETURN)\n".to_vec();
+        bytes.extend_from_slice(&[b'x';40*1024]);
+        bytes.extend_from_slice(b"\xff\nmtmd_init_from_file: error; failed to load projector\nBearer NEVER_RETURN\n");
+        fs::write(&p,&bytes).unwrap();
+        let diag=StartupDiagnostic::collect(&mut fs::File::open(&p).unwrap(),"startup_timeout",None);
+        let out=diag.json();
+        assert_eq!(out["log_bytes_sampled"],32*1024);
+        assert_eq!(out["log_sample_truncated"],true);
+        assert_eq!(out["signatures"],json!(["loader_abi_version_missing","projector_load_failed"]));
+        let evidence=format!("{diag} {out}");
+        for secret in ["/private/path","DO_NOT_RETURN","NEVER_RETURN","--api-key","GLIBC_2.38"]{
+            assert!(!evidence.contains(secret));
+        }
+        let mut write_only=fs::File::create(dir.path().join("unreadable")).unwrap();
+        write_only.write_all(b"data").unwrap();
+        let unreadable=StartupDiagnostic::collect(&mut write_only,"startup_timeout",None);
+        assert_eq!(unreadable.json()["log_readable"],false);
+        assert!(unreadable.signatures.is_empty());
+        assert_eq!(startup_signatures("failed to init decision model: unsupported decision model type: private-label"),
+            ["unsupported_decision_model"]);
+    }
+    #[cfg(any(target_os="linux",all(target_os="macos",target_arch="aarch64")))]
+    #[test]
+    fn public_jev_startup_failure_reports_closed_codes_without_child_args(){
+        use std::os::unix::fs::PermissionsExt;
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        let engine=root.join("engine");fs::create_dir(&engine).unwrap();
+        let exe=engine.join("llama-server");
+        let program=r#"#!/bin/sh
+printf '%s\n' "$*" >&2
+after_key_flag=""
+for arg in "$@"; do
+    if [ "$after_key_flag" = "yes" ]; then
+        IFS= read -r actual_key < "$arg"
+        printf 'Actual key: %s\n' "$actual_key" >&2
+        break
+    fi
+    if [ "$arg" = "--api-key-file" ]; then after_key_flag=yes; fi
+done
+printf '%s\n' 'Authorization: Bearer LEAK_MARKER' 'error loading model: unknown model architecture PRIVATE_ARCH' >&2
+exit 19
+"#;
+        fs::write(&exe,program).unwrap();fs::set_permissions(&exe,fs::Permissions::from_mode(0o700)).unwrap();
+        let model="MiniCPM-OCR-Jev-Q4_K_M.gguf";let projector="mmproj-model-f16.gguf";
+        fs::write(root.join(model),b"GGUFunit-test-model").unwrap();
+        fs::write(root.join(projector),b"GGUFunit-test-projector").unwrap();
+        let sum=|p:&Path|files::digest(&fs::read(p).unwrap());
+        let manifest=root.join("package.json");
+        fs::write(&manifest,serde_json::to_vec(&json!({"schema_version":1,"engine":"llama.cpp","release":JEV_LLAMA_RELEASE,
+            "model_kind":"jev","platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,
+            "cpu":{"directory":"engine","variant":"cpu","executable":"llama-server","files":[{"path":"llama-server","sha256":sum(&exe)}]},
+            "model":{"path":model,"sha256":sum(&root.join(model))},
+            "projector":{"path":projector,"sha256":sum(&root.join(projector))}})).unwrap()).unwrap();
+        let source=root.join("source.png");let render=root.join("render.png");let text=root.join("candidate.txt");
+        image::GrayImage::from_raw(1,1,vec![150]).unwrap().save(&source).unwrap();
+        image::GrayImage::from_raw(1,1,vec![80]).unwrap().save(&render).unwrap();
+        fs::write(&text,b"Candidate content not a startup diagnostic").unwrap();
+        let report=crate::invoke(json!({"schema_version":1,"operation":"prepare_source_inventory.score_jev_region",
+            "args":[source],"kwargs":{"expected_image_sha256":sum(&source),
+                "render_image_path":render,"expected_render_sha256":sum(&render),
+                "candidate_text_path":text,"expected_candidate_sha256":sum(&text),
+                "package_manifest":manifest,"expected_package_sha256":sum(&manifest),
+                "category":"text","acceleration":"auto","timeout_seconds":5}})).unwrap();
+        let report=&report["result"];
+        assert_eq!(report["status"],"blocked");
+        assert_eq!(report["acceptance_ready"],false);
+        assert_eq!(report["source_fidelity"],"not_assessed");
+        assert!(report["result"].is_null());
+        assert_eq!(report["attempts"][0]["status"],"unavailable");
+        let attempt=&report["attempts"][1];
+        assert_eq!(attempt["status"],"failed");
+        assert_eq!(attempt["startup_diagnostic"]["phase"],"early_exit","{attempt}");
+        assert_eq!(attempt["startup_diagnostic"]["exit_code"],19);
+        assert_eq!(attempt["startup_diagnostic"]["signatures"],json!(["unsupported_model_architecture","model_load_failed"]));
+        let diagnostic=attempt.to_string();
+        for secret in ["LEAK_MARKER","PRIVATE_ARCH","--api-key-file",model,projector,"key.txt","Candidate content","Actual key:"]{
+            assert!(!diagnostic.contains(secret));
+        }
+        assert!(!regex::Regex::new("[0-9a-f]{64}").unwrap().is_match(&diagnostic));
+    }
+    #[test]
+    fn known_runtime_release_is_bound_to_model_kind_before_launch(){
+        assert_eq!(release_for("minicpm-ocr").unwrap(),"b11901");
+        let jev=release_for("jev");
+        if jev.is_err(){assert!(format!("{jev:?}").contains("JEV_RUNTIME_PLATFORM_UNSUPPORTED"));return;}
+        assert_eq!(jev.unwrap(),"b11928");
+        let dir=tempfile::tempdir().unwrap();
+        let manifest=dir.path().join("package.json");
+        for (kind,release) in [("jev",LLAMA_RELEASE),("minicpm-ocr",JEV_LLAMA_RELEASE)]{
+            let payload=serde_json::to_vec(&json!({"schema_version":1,"engine":"llama.cpp","release":release,
+                "model_kind":kind,"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH})).unwrap();
+            fs::write(&manifest,&payload).unwrap();
+            assert!(format!("{:#}",inspect(&manifest,&files::digest(&payload),kind).unwrap_err())
+                .contains("MINICPM_RUNTIME_RELEASE_MISMATCH"));
+        }
     }
     #[test]
     fn gpu_offload_requires_positive_actual_layer_count(){

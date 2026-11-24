@@ -22,6 +22,13 @@ pub(crate) fn anchor(line:&str)->Option<&str>{
 pub(crate) fn whole_anchor(line:&str)->Option<&str>{
     rx!(r"^\^([A-Za-z0-9-]+)[ \t]*$").captures(line)?.get(1).map(|m|m.as_str())
 }
+// Citation Preview 1.3.0 accepts ASCII case-insensitive compact names
+// and namespaced names whose segments begin with a letter. A mere ref-
+// prefix does not make an Obsidian block a bibliography anchor.
+pub(crate) fn citation_preview_anchor(id:&str)->Option<regex::Captures<'_>>{
+    rx!(r"\A(?i-u)(s?ref)-?([1-9][0-9]{0,8})\z").captures(id)
+        .or_else(||rx!(r"\A(?i-u)((?:s?ref)(?:-[A-Za-z][A-Za-z0-9]*)+)-([1-9][0-9]{0,8})\z").captures(id))
+}
 pub(crate) fn heading(line:&str)->Option<(usize,&str)>{
     let c=rx!(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$").captures(line)?;
     Some((c.get(1)?.as_str().len(),c.get(2)?.as_str()))
@@ -249,8 +256,7 @@ fn finish_entry(number:&str,first:usize,si:bool,rows:&[&str],out:&mut Vec<Findin
         finding(out,"error","BIBLIOGRAPHY_ANCHOR",first,"参考文献块 ID 须放在该书目条目的末尾。");return;
     }
     let id=anchors[0];
-    let parsed=rx!(r"(?i)^(s?ref)-?([1-9][0-9]{0,8})$").captures(id).or_else(||rx!(r"(?i)^((?:s?ref)(?:-[A-Za-z][A-Za-z0-9]*)+)-([1-9][0-9]{0,8})$").captures(id));
-    let Some(c)=parsed else{
+    let Some(c)=citation_preview_anchor(id) else{
         let recommended=if si{"sref-N 或 sref-src<source_token>-N"}else{"ref-N"};
         finding(out,"warning","BIBLIOGRAPHY_PLUGIN_COMPAT",first,format!("块 ID ^{id} 保留，但 Citation Preview 1.3.0 不识别此形式。新建书目采用 {recommended}；不要据此重命名已有锚点或改写链接。"));return;
     };

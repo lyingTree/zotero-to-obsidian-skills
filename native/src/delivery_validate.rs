@@ -291,7 +291,7 @@ fn targets(a:&mut Audit,inv:&Value,manifest:&Value,candidate:&Candidate,root:&Pa
         if link.image{continue;}
         let href=percent_encoding::percent_decode_str(&link.href).decode_utf8_lossy();
         let Some(anchor)=href.strip_prefix("#^")else{continue;};
-        if !bibliography.contains_key(anchor){continue;}
+        if !bibliography.contains_key(anchor)&&validate::citation_preview_anchor(anchor).is_none(){continue;}
         let owners:Vec<_>=calls.iter().filter(|(_,s)|s.contains(link.span)).collect();
         if owners.len()!=1{a.fail("OUTPUT_CITATION_UNMAPPED",anchor,"Every actual bibliography call, including in decoded table fields, must have one explicit source citation occurrence.");}
     }
@@ -299,7 +299,8 @@ fn targets(a:&mut Audit,inv:&Value,manifest:&Value,candidate:&Candidate,root:&Pa
         let n=if data["version"]==3{data["sheets"].as_array().context("Workbook sheets")?.len()}else{1};
         for s in 0..n{if !covered.contains(&(i,s)){a.fail("TABLE_WORKSHEET_UNMAPPED",&format!("{i}:{s}"),"Every actual worksheet needs an explicit source table unit.");}}
     }
-    for id in candidate.anchors.keys(){if (id.starts_with("fig-")||id.starts_with("tbl-")||id.starts_with("eq-")||id.starts_with("ref-")||id.starts_with("sref-"))&&!refs.contains(id){
+    for id in candidate.anchors.keys(){if (id.starts_with("fig-")||id.starts_with("tbl-")||id.starts_with("eq-")||
+        validate::citation_preview_anchor(id).is_some())&&!refs.contains(id){
         a.fail("OUTPUT_OBJECT_UNMAPPED",id,"Register the corresponding source object or bibliography entry.");
     }}
     Ok(())

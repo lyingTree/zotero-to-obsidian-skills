@@ -23,9 +23,11 @@ CATALOG = json.loads(ROOT.joinpath("native", "minicpm-runtime-assets.json").read
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
-def download(spec: dict) -> bytes:
+def download(spec: dict, release: str) -> bytes:
     url = spec["url"]
-    if not url.startswith("https://github.com/ggml-org/llama.cpp/releases/download/b11901/"):
+    if release not in {"b11901", "b11928"} or url != (
+        f"https://github.com/ggml-org/llama.cpp/releases/download/{release}/{spec['name']}"
+    ):
         raise ValueError("Unexpected release location.")
     if not 0 < spec["size"] <= 512 * 1024 * 1024:
         raise ValueError("Invalid archive size.")
@@ -41,8 +43,8 @@ def safe(name: str) -> PurePosixPath:
         raise ValueError(f"Unsafe archive path: {name}")
     return p
 
-def extract(spec: dict, dest: Path) -> dict:
-    raw = download(spec)
+def extract(spec: dict, dest: Path, release: str) -> dict:
+    raw = download(spec, release)
     dest.mkdir(parents=True, exist_ok=False)
     files: dict[str, tuple[bytes, int]] = {}
     links: dict[str, str] = {}
@@ -105,14 +107,11 @@ def extract(spec: dict, dest: Path) -> dict:
         raise ValueError("No unique native llama-server in official archive.")
     return {"directory": dest.name, "executable": matches[0], "variant": "cpu", "files": rows}
 
-def main() -> None:
-    target = CATALOG["targets"].get(TARGET)
-    if target is None:
-        raise ValueError(f"Unsupported native MiniCPM target: {TARGET}")
-    spec = target["cpu"]
-    DEST.mkdir(parents=True, exist_ok=False)
-    record = extract(spec, DEST.joinpath("cpu"))
-    exe = DEST.joinpath("cpu", *PurePosixPath(record["executable"]).parts)
+def prepare(catalog: dict, kind: str, folder: str, report: str) -> None:
+    spec = catalog["targets"][TARGET]["cpu"]
+    release = catalog["release"]
+    record = extract(spec, DEST.joinpath(folder), release)
+    exe = DEST.joinpath(folder, *PurePosixPath(record["executable"]).parts)
     env = dict(os.environ)
     env.update(PATH=str(exe.parent), CUDA_VISIBLE_DEVICES="", HIP_VISIBLE_DEVICES="")
     if os.name != "nt":
@@ -120,12 +119,30 @@ def main() -> None:
     result = subprocess.run([str(exe), "--version"], cwd=exe.parent, env=env, capture_output=True, timeout=60)
     if result.returncode:
         raise RuntimeError(result.stderr.decode(errors="replace"))
-    evidence = {"schema_version": 1, "target": TARGET, "archive": spec, "engine": record,
-                "version_stdout": result.stdout.decode(errors="replace"),
-                "version_stderr": result.stderr.decode(errors="replace"),
-                "inference_qualified": False}
-    DEST.joinpath("runtime-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
-    print("Verified native engine launch:", TARGET, flush=True)
+    stdout = result.stdout.decode(errors="replace")
+    stderr = result.stderr.decode(errors="replace")
+    if kind == "jev":
+        identity = re.search(r"build\s+11928,\s+commit\s+([0-9a-f]{7,40})\b", stdout + stderr)
+        if identity is None or not catalog["upstream_commit"].startswith(identity[1]):
+            raise RuntimeError("Jev engine version does not identify the pinned upstream commit.")
+    evidence = {"schema_version": 1, "target": TARGET, "model_kind": kind, "release": release,
+                "archive": spec, "engine": record, "version_stdout": stdout,
+                "version_stderr": stderr, "inference_qualified": False}
+    DEST.joinpath(report).write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+    print("Verified native engine launch:", TARGET, kind, release, flush=True)
+
+def main() -> None:
+    if TARGET not in CATALOG["targets"]:
+        raise ValueError(f"Unsupported native MiniCPM target: {TARGET}")
+    jev = None
+    if os.environ.get("Z2O_LLAMA_PREPARE_JEV") == "1":
+        jev = json.loads(ROOT.joinpath("native", "jev-runtime-assets.json").read_text(encoding="utf-8"))
+        if TARGET not in jev["targets"]:
+            raise ValueError(f"Unsupported native Jev target: {TARGET}")
+    DEST.mkdir(parents=True, exist_ok=False)
+    prepare(CATALOG, "minicpm-ocr", "cpu", "runtime-evidence.json")
+    if jev is not None:
+        prepare(jev, "jev", "jev-cpu", "jev-runtime-evidence.json")
 
 if __name__ == "__main__":
     main()

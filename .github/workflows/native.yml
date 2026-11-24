@@ -261,7 +261,7 @@ jobs:
           - runner: macos-15
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 35
     env:
       Z2O_LLAMA_TARGET: ${{ matrix.target }}
     steps:
@@ -272,7 +272,20 @@ jobs:
       - name: Establish fixture path
         shell: bash
         run: echo "Z2O_LLAMA_FIXTURE_DIR=$RUNNER_TEMP/z2o-llama-runtime" >> "$GITHUB_ENV"
+      - name: Check out exact llama.cpp b11901 source for Ubuntu 22.04 ARM64
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ggml-org/llama.cpp
+          ref: 5320c87ff0d994845b44ce7976f10055ec697447
+          path: llama-b11901-source
+          persist-credentials: false
+      - name: Build and verify pinned CPU engine on Ubuntu 22.04 ARM64
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: python scripts/qualify_llama_jammy_arm64.py --source llama-b11901-source --destination "$Z2O_LLAMA_FIXTURE_DIR"
       - name: Verify official platform archive and launch native llama-server
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: python scripts/prepare_minicpm_ci.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -280,8 +293,8 @@ jobs:
           path: ${{ runner.temp }}/z2o-llama-runtime/runtime-evidence.json
           if-no-files-found: error
 
-  # Model-bearing tests independently check Linux and Apple-silicon macOS
-  # CPU backend. They must never qualify source acceptance or GPU throughput.
+  # Model-bearing tests independently check Linux x64 and Apple Silicon
+  # CPU inference. They must never qualify source acceptance or GPU throughput.
   minicpm-model-smoke:
     needs: [resolve-lock, ocr-cpu-smoke]
     strategy:
@@ -314,7 +327,9 @@ jobs:
           rustup toolchain install 1.95.0 --profile minimal --target ${{ matrix.target }}
       - name: Build actual native model client
         run: cargo +1.95.0 build --locked --release --manifest-path native/Cargo.toml
-      - name: Verify official engine distribution
+      - name: Verify both model-specific engine distributions
+        env:
+          Z2O_LLAMA_PREPARE_JEV: "1"
         run: python scripts/prepare_minicpm_ci.py
       - name: Real bilingual OCR and official Jev examples using native CPU fallback
         run: python scripts/qualify_minicpm_models.py

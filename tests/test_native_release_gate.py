@@ -27,7 +27,7 @@ class ReleaseGateTests(unittest.TestCase):
         manifest = json.loads(gate.MANIFEST.read_text(encoding="utf-8"))
         self.assertEqual(sorted(manifest["required_targets"]), sorted(expected))
         self.assertEqual(gate.TARGETS, expected)
-        for file in ("ocr-cpu-assets.json", "minicpm-runtime-assets.json"):
+        for file in ("ocr-cpu-assets.json", "minicpm-runtime-assets.json", "jev-runtime-assets.json"):
             data = json.loads(ROOT.joinpath("native", file).read_text(encoding="utf-8"))
             self.assertEqual(set(data["targets"]), expected, msg=file)
         workflow = yaml.load(ROOT.joinpath(".github", "workflows", "native.yml").read_text(encoding="utf-8"),
@@ -50,6 +50,7 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn("actual_cpu_ocr_scan_with_verified_package", str(jobs["ocr-cpu-platforms"]["steps"]))
         self.assertEqual(matrix("minicpm-model-smoke"), {"x86_64-unknown-linux-gnu", "aarch64-apple-darwin"})
         self.assertIn("qualify_minicpm_models.py", str(jobs["minicpm-model-smoke"]["steps"]))
+        self.assertIn("Z2O_LLAMA_PREPARE_JEV", str(jobs["minicpm-model-smoke"]["steps"]))
         self.assertNotIn("ocr-intel-macos-resource-gate", jobs)
 
     def test_unsupported_intel_target_refused_before_fixture_side_effects(self):
