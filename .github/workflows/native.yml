@@ -85,7 +85,7 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then suffix=".exe"; fi
           exe="$(pwd)/target/${{ matrix.target }}/release/z2o${suffix}"
           bundle="$RUNNER_TEMP/z2o-native-candidate-bundle"
-          installed="$RUNNER_TEMP/z2o-native-candidate-installed"
+          installed="$RUNNER_TEMP/z2o native candidate 中文"
           "$exe" package .. "$bundle"
           if command -v sha256sum >/dev/null 2>&1; then
             digest="$(sha256sum < "$bundle/package.json" | awk '{print $1}' | tr -d '\r')"
@@ -94,12 +94,19 @@ jobs:
           fi
           [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
           PATH="" "$exe" install "$bundle/package.json" "$digest" "$installed" > "$RUNNER_TEMP/z2o-install-receipt.json"
-          PATH="" "$installed/literature-zotero2obsidian/runtime/z2o${suffix}" describe
-      - name: Retain native installation candidate receipt
+          export Z2O_INSTALLED_SKILLS="$installed"
+          export Z2O_INSTALL_MANIFEST="$bundle/package.json"
+          export Z2O_INSTALL_RECEIPT="$RUNNER_TEMP/z2o-install-receipt.json"
+          export Z2O_WORKFLOW_RECEIPT="$RUNNER_TEMP/z2o-installed-workflow-receipt.json"
+          cargo +"$RUST_TOOLCHAIN" test --locked --target ${{ matrix.target }} \
+            --test installed_workflow installed_mixed_source_workflow_without_path -- --ignored --exact
+      - name: Retain native candidate installation and workflow receipts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-install-receipt-${{ matrix.target }}
-          path: ${{ runner.temp }}/z2o-install-receipt.json
+          path: |
+            ${{ runner.temp }}/z2o-install-receipt.json
+            ${{ runner.temp }}/z2o-installed-workflow-receipt.json
           if-no-files-found: error
       # Migration remains unqualified. Do not publish the executable or bundle.
 
