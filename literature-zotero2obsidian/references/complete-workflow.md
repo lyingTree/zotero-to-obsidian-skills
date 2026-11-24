@@ -1,6 +1,6 @@
 # 完整候选的开始与收尾
 
-从 PDF、原生 DOCX 或两者的组合新建整篇笔记时，使用 `complete_workflow.py` 的完整入口。局部修复仍使用对应子技能。单独的 `validate_note` 或 `validate_delivery` 没有检查整套工作记录是否齐全，不能替代这里的收尾检查。
+本文保留 `complete_pdf_candidate_v1` 旧版工作目录的恢复协议。新建任务优先使用 [Python 组装、规范化与验收](deterministic-pipeline.md)，不再要求模型重填程序可完成的机械检查。局部修复仍使用对应子技能。恢复本旧版协议时，单独的 `validate_note` 或 `validate_delivery` 没有检查整套既有工作记录是否齐全，不能替代这里的收尾检查。
 
 执行顺序是：实际来源材料 → 来源块与阅读顺序 → 完整内容片段 → 候选组装 → 对源核对与记录 → 最终交付。初始化及每次恢复都使用 `resume_workflow(run_path)`。尚有内容未写时，它先返回[逐块产出队列](draft-queue.md)的当前动作；`next_review_task()` 是已有译文的复核入口。
 

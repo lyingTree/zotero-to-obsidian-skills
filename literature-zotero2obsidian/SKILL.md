@@ -9,19 +9,24 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，不审查应用界面，不要求点击交互、阅读视图、插件显示或原生缓存检查。
 
-完整生成任务先读[完整候选的开始与收尾](references/complete-workflow.md)，用 `initialize_workflow()` 建立实际来源材料、全量待核清单和已注册的产出队列。该入口支持 PDF 与原生 DOCX 混合输入。初始化后及每次保存实际进度后调用 `resume_workflow(run_path)`，按返回的唯一 `next_action` 继续[逐块产出](references/draft-queue.md)，再沿[分阶段执行路线](references/execution-plan.md)核对、排版及收尾。具体内容规则仍以对应子技能为准。
+新建全文任务先读 [Python 组装、规范化与验收](references/deterministic-pipeline.md)。用现有来源准备脚本提取 PDF / 原生 DOCX，建立经来源核对的单元计划，再由 `prepare_content_job()` 固定计划、合同与译文模板。模型按单元 ID 填译文，`process_content()` 负责格式组装、规范化、机械验收和版本保存。已有 Markdown 使用 `process_markdown()`。程序已执行的检查直接采用程序证据，不让模型重复手拼格式或自填机械通过结论。具体内容规则仍以对应子技能为准。
+
+只有恢复既有 `complete_pdf_candidate_v1` 工作目录时才沿用[完整候选的开始与收尾](references/complete-workflow.md)和 `resume_workflow()`。保留该旧入口的实际清单、队列和回执，不把新程序的机械状态套用到旧记录。
 
 ## 完整任务的完成入口
 
-1. 用 `resume_workflow(run_path)` 取得已注册[逐块产出队列](references/draft-queue.md)的当前动作。
-2. 按源页确认 PDF 的阅读顺序。
-3. 将同一语义段的来源块归入一个内容单元。
-4. 将当前单元的完整中文内容保存为片段。
-5. 保存当前动作后重新调用 `resume_workflow()`，直至范围内内容片段齐全。
-6. 按已确认的来源顺序组装候选。
-7. 使用[逐段复核入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)核对实际译文。
-8. 用 `record_decision_rows()` 保存已经核对的逐 ID 结果。
-9. 写最终完成报告前运行 `require_completed_records()`。
+1. 提取实际来源并确认 PDF 阅读顺序，将同一语义段归入一个单元。
+2. 在来源计划中固定对象类型、顺序、范围和需要保留的源数据。
+3. 运行 `prepare_content_job()`，冻结来源合同；不从候选反推预期对象。
+4. 按译文模板逐单元填完整中文内容和有必要的译注。
+5. 运行 `process_content()`；程序自动发现缺项、组装格式、规范化及验收。
+6. 按 `report.md` 与 `phases.json` 的位置处理具体失败，再运行新版本；不反复手填全量机械清单。
+7. 对程序未判断的译义、图像裁剪内容和引文身份做来源核对；可使用[逐段复核入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)。
+8. 单独报告机械结果与来源语义结果。未完成内容不因格式通过而写成全文完成。
+
+测试时按 PDF / DOCX 提取、标题、作者单位、翻译、段落拼接、引文身份、链接组装、图表公式、空行格式等环节持续报告具体问题。未观察到的起因保持未知；只有输出缺失不能直接归因到 PDF 提取。
+
+下面的队列与台账说明适用于已存在的旧版完整工作目录：
 
 内容产出与译文复核是两个入口：`DraftQueue.next_task()` 能在尚无候选时指出下一块实际来源；`next_review_task()` 需要已有候选和来源单元，用于后续核对。不能把后者当作从零写全文的任务队列。不要先只写摘要、结论后便进入最终报告；剩余正文是当前任务的一部分。
 

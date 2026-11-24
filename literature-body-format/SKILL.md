@@ -12,6 +12,8 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 
 ## 执行步骤
 
+优先按 [Python 组装、规范化与验收](../literature-zotero2obsidian/references/deterministic-pipeline.md)执行：结构化内容由 `render_note()` 序列化，既有候选由 `normalize_note()` 规范化，再由 `accept_note()` 读取实际文件。统一调用 `process_content()` / `process_markdown()` 可同时取得新候选、可重放变换、来源映射和逐环节报告。模型处理译义与异常判断，不手拼已由程序管理的空行、量值包装和对象块。
+
 1. 依原文章序整理候选结构。
 2. 按图清单逐幅放置原图。
 3. 按表清单逐表构建 Rich Table，包含图内数据表。
@@ -26,7 +28,7 @@ Rich Table 使用 `literature-zotero2obsidian/scripts/format_helpers.py` 的 `bu
 
 每幅逻辑图使用[图块组装入口](references/figure-blocks.md)生成图片、图下题注和图锚，包含无编号图及图形摘要。源图只有类别标签时，题注保留该标签，不编造图号或说明。图上方的标题不能替代图下题注；没有正文调用也不省略图锚。
 
-候选组装后运行 `validate_note()` 与 `lint_presentation()`。列、行样式和题注自链的诊断分别处理。前置材料位置提示须回到来源核对：原文摘要前的亮点、图形摘要仍置于摘要前；摘要后直接进入正文。普通正文讨论“研究亮点”不据此移动。
+统一入口已调用 `validate_note()` 与 `lint_presentation()` 并区分机械失败与待核提示，不必重复手工记录相同检查。单独处理旧候选时仍可直接调用这两个只读函数。列、行样式和题注自链的诊断分别处理。前置材料位置提示须回到来源核对：原文摘要前的亮点、图形摘要仍置于摘要前；摘要后直接进入正文。普通正文讨论“研究亮点”不据此移动。
 
 处理 `FIGURE_CAPTION_MISSING`、`FIGURE_ANCHOR_MISSING` 和图块间距提示时，先确认实际资源确属文献图。处理 `TRANSLATOR_NOTE_INLINE` 时保留原文及译注内容，将真正的译注单独写为 `> 译注：…`；普通正文讨论“译注”这个词不自动改写。
 

@@ -61,19 +61,23 @@ Python 依赖在发布技能目录前安装。pip 失败会返回失败，不显
 
 完整流程先检查身份和环境，完成命名与目录预规划，再提取、翻译和处理补充材料，随后构建属性、题头、正文及链接，验收后提交并回读。不同条目可以有界并行；同一条目的候选链按依赖顺序执行，写入同一目标时保持独占。
 
-从全文新建笔记时，先按[完整候选的开始与收尾](literature-zotero2obsidian/references/complete-workflow.md)初始化实际来源材料和逐项清单，再沿[分阶段执行路线](literature-zotero2obsidian/references/execution-plan.md)盘点来源、组装候选、逐页对源。主文与每份 SI 分别核对题名、署名和单位。图中真正的数据表另建可编辑 Rich Table，原图保留完整；日期、公式与表格符号按可见页面核验。
+从全文新建笔记时，优先使用 [Python 组装、规范化与验收](literature-zotero2obsidian/references/deterministic-pipeline.md)。来源清单固定内容单元，模型填写译文，Python 统一组装标题、段落、图表公式、书目和链接，并自动规范化、机械验收、保存变换及阶段报告。模型只处理来源理解和程序无法可靠判断的事项，不再手工拼每个空行或重复填写格式自检表。主文与每份 SI 分别核对题名、署名和单位，来源语义结果仍单独报告。
+
+在编辑器打开 [process_note_example.py](literature-zotero2obsidian/references/process_note_example.py)，设置路径即可运行。既有 Markdown 也可经同一套程序规范化；保留原稿，每次变换可重放，重复执行会验证已有文件。恢复旧版工作目录仍使用[原完整入口](literature-zotero2obsidian/references/complete-workflow.md)，不覆盖旧回执。
 
 ## 检查与维护
 
+- **程序主入口**：[note_pipeline.py](literature-zotero2obsidian/scripts/note_pipeline.py) 提供任务准备、结构化组装和既有稿规范化。输出 `normalization.json`、`acceptance.json`、`phases.json` 和中文报告；原稿不覆盖，重跑不修改一致的已有产物，冲突明确报出位置。
+- **结构化渲染**：[render_note.py](literature-zotero2obsidian/scripts/render_note.py) 校验必需单元与可译字段，固定对象顺序、编号、锚点和源数据。**规范化**：[normalize_note.py](literature-zotero2obsidian/scripts/normalize_note.py) 只改明确可处理的格式，保护代码、链接目标、公式和复杂结构；未知情形保留并定位。**机械验收**：[accept_note.py](literature-zotero2obsidian/scripts/accept_note.py) 直接读文件，核对实际对象、来源合同、单元映射及资源，区分确定失败与启发式提示。
 - **完整任务检查**：[complete_workflow.py](literature-zotero2obsidian/scripts/complete_workflow.py) 初始化来源与全量待核清单，收尾时检查必需记录、原始输入范围、实际版本绑定和未完成目标。整份台账未生成也会报出缺项。`records_ready` 不等于来源语义已被程序认证。
 - **候选笔记检查**：在 [validate_note.py](literature-zotero2obsidian/scripts/validate_note.py) 中设置 `NOTE_PATH` 后运行。只读检查 YAML、块 ID、本篇断链、Citation Preview 1.3.0 锚点兼容性、Rich Table 和公式锚间距。支持模板的 `---` 外包裹、v2 单表、v3 全部工作表；逐表检查锁定、主题及表内链接，结果附行号和工作表信息。完整范围见[自动检查说明](literature-zotero2obsidian/references/automated-validation.md)。
 - **来源交付检查**：按[来源交付索引](literature-zotero2obsidian/references/delivery-checks.md)运行来源准备脚本与 `validate_delivery.py`，检查实际源页、文件哈希、已盘点对象的交付位置及资源文件。来源映射通过不代表译文语义通过。
-- **逐项记录**：[逐篇验收](literature-zotero2obsidian/references/acceptance.md)提供从实际技能文件生成的单 ID 台账。每幅图另有待填的视觉检查记录，术语表采用记录绑定实际文件版本。生成空台账不会自动授予通过结果。
+- **逐项记录**：[逐篇验收](literature-zotero2obsidian/references/acceptance.md)说明自动机械证据和旧版单 ID 台账的边界。程序已执行的检查不要求模型重复自填；译义和图像内容仍保留实际来源核对记录。
 - **排版提示**：[lint_presentation.py](literature-zotero2obsidian/scripts/lint_presentation.py) 提示裸邮箱、裸 DOI、常见量值、间距、同图多面板调用、公式尾标点和末尾分隔线问题；逐条核对后修正或保留有依据的例外，不自动全局替换。
 - **仓库检查**：在编辑器运行 [scripts/run_checks.py](scripts/run_checks.py)，检查 12 个技能的元数据、相对引用、依赖锁定，并运行隔离回归测试。Python 验证依赖见 [requirements-dev.txt](requirements-dev.txt)；完整回归另需 Node.js 24 执行四份真实 Templater 模板，无 npm 依赖。模板回归使用内存中的应用/API 替身，不连接真实文献库；仅运行候选笔记校验器不需要 Node.js。
 - **持续集成**：[GitHub Actions](.github/workflows/validate.yml) 在 Windows/Linux、Python 3.10/3.13、Node.js 24 上运行上述检查，并检查安装包装脚本的语法。
 
-静态检查不能证明全文提取、翻译或图片裁剪正确。这些结果仍需按文件内容逐项对源核对。初始化和文件记录检查由公开脚本支持；来源判断、翻译及逐项核验由执行 Agent 完成。`run.json`、来源映射、候选链和回执仍按[交接约定](literature-zotero2obsidian/references/pipeline-contract.md)记录实际处理。
+静态检查不能证明全文提取、翻译或图片裁剪正确。机械任务交程序，来源判断和实际译文核对保留明确范围。模型测试按 PDF 提取、翻译、拼接、引文身份、链接、题头、作者单位、图表公式、空行等环节报告具体症状和位置；输出问题不自动归因为某个未观察到的上游过程。版本和回执按[交接约定](literature-zotero2obsidian/references/pipeline-contract.md)保留。
 
 ## 规则粒度与模型执行测试
 
