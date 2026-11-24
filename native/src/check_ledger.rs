@@ -212,12 +212,8 @@ pub struct PrepareOptions{
     pub sources:Value,pub candidates:Value,pub candidate_path:Option<PathBuf>,pub scopes:Value,
     pub types:Value,pub environments:Value,pub mode:String,pub additional:Value,
 }
-pub fn prepare(root:&Path,out:&Path,opt:PrepareOptions,progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
-    let root=files::canonical(root)?;let out=output_path(out)?;
-    // The native candidate deliberately only supports fresh ledger creation;
-    // replacing a prior review and modifying a separate inventory require the
-    // eventual transaction/lock implementation, not an unsafe fallback.
-    ensure!(!out.exists()&&!out.is_symlink(),"Refusing to replace an existing ledger: {}",out.display());
+fn build_payload(root:&Path,out:&Path,opt:PrepareOptions,progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    let root=files::canonical(root)?;
     let source=opt.sources.as_object().filter(|m|!m.is_empty()).context("At least one actual source file must be bound.")?;
     ensure!(opt.candidates.is_null()||opt.candidate_path.is_none(),"Use candidates or candidate_path, not both.");
     let candidates=if let Some(p)=opt.candidate_path{Map::from_iter([("candidate".into(),json!(path_text(&p)?))])}
@@ -262,9 +258,106 @@ pub fn prepare(root:&Path,out:&Path,opt:PrepareOptions,progress:impl FnMut(usize
         let actual=bind_file(Path::new(item["path"].as_str().unwrap()))?;
         ensure!(actual["sha256"]==item["sha256"],"Ledger input changed before publication");
     }
-    let mut bytes=serde_json::to_vec_pretty(&payload)?;bytes.push(b'\n');
-    publish_new(&out,&bytes)?;
-    ensure!(pipeline::read_json(&out)?==payload,"Ledger did not round-trip");Ok(out)
+    Ok(payload)
+}
+
+pub fn prepare(root:&Path,out:&Path,opt:PrepareOptions,progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
+    prepare_with_inventory(root,out,opt,None,false,progress)
+}
+
+fn bindings(payload:&Value)->impl Iterator<Item=&Value>{
+    payload["rule_files"].as_array().into_iter().flatten()
+        .chain(payload["bindings"]["sources"].as_array().into_iter().flatten())
+        .chain(payload["bindings"]["candidates"].as_array().into_iter().flatten())
+}
+fn json_bytes(payload:&Value)->Result<Vec<u8>>{
+    let mut bytes=serde_json::to_vec_pretty(payload)?;bytes.push(b'\n');Ok(bytes)
+}
+pub fn prepare_with_inventory(root:&Path,out:&Path,opt:PrepareOptions,inventory:Option<&Path>,
+    overwrite:bool,progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
+    let out=output_path(out)?;
+    let inventory=inventory.map(|p|{
+        crate::check_write::no_link(p)?;
+        files::canonical(p)
+    }).transpose()?;
+    ensure!(inventory.as_ref()!=Some(&out),"The ledger output would overwrite the mutable inventory.");
+    let mut lock_paths=vec![out.clone()];
+    if let Some(p)=&inventory{lock_paths.push(p.clone());}
+    lock_paths.sort();
+    let mut locks=Vec::new();
+    for p in &lock_paths{locks.push(crate::check_write::lock_target(p)?);}
+    let old=match fs::symlink_metadata(&out){
+        Ok(_)=>{
+            crate::check_write::no_link(&out)?;
+            ensure!(overwrite,"Refusing to replace an existing ledger: {}",out.display());
+            Some(fs::read(&out)?)
+        }
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>None,
+        Err(e)=>return Err(e.into())
+    };
+    let payload=build_payload(root,&out,opt,progress)?;
+    let inventory_update=if let Some(p)=inventory.as_ref(){
+        let text=path_text(p)?;
+        ensure!(!bindings(&payload).any(|item|item["path"]==text),
+            "Do not hash-bind the mutable inventory as a source, candidate or rule file.");
+        let bytes=fs::read(p)?;
+        let mut doc=crate::parse_json(std::str::from_utf8(&bytes)?)?;
+        ensure!(doc.is_object(),"inventory_path must contain a JSON object.");
+        doc["checks_path"]=json!(path_text(&out)?);
+        Some((p.clone(),bytes,json_bytes(&doc)?))
+    }else{None};
+    let bytes=json_bytes(&payload)?;
+    for item in bindings(&payload){
+        let actual=bind_file(Path::new(item["path"].as_str().unwrap()))?;
+        ensure!(actual["sha256"]==item["sha256"],"Ledger input changed before publication");
+    }
+    // A fresh single-file ledger needs no multi-file recovery receipt.
+    if old.is_none()&&inventory_update.is_none(){
+        publish_new(&out,&bytes)?;
+        ensure!(pipeline::read_json(&out)?==payload,"Ledger did not round-trip");
+        return Ok(out);
+    }
+    // Filesystems do not provide a cross-file atomic rename. Preserve the
+    // actual preimages and intended new bytes in an independent recovery
+    // directory before changing either file. A crash leaves the plan intact.
+    // Successful explicit overwrite also retains the prior ledger.
+    let recovery=tempfile::Builder::new().prefix(".z2o-check-transaction-").tempdir_in(out.parent().unwrap())?.keep();
+    if let Some(old)=old.as_ref(){publish_new(&recovery.join("ledger.before"),old)?;}
+    publish_new(&recovery.join("ledger.after"),&bytes)?;
+    if let Some((_,old,new))=inventory_update.as_ref(){
+        publish_new(&recovery.join("inventory.before"),old)?;
+        publish_new(&recovery.join("inventory.after"),new)?;
+    }
+    let plan=json!({"schema_version":1,"ledger":path_text(&out)?,
+        "ledger_before_sha256":old.as_ref().map(|v|files::digest(v)),
+        "ledger_after_sha256":files::digest(&bytes),
+        "inventory":inventory_update.as_ref().map(|(p,old,new)|json!({"path":path_text(p).unwrap_or_default(),
+            "before_sha256":files::digest(old),"after_sha256":files::digest(new)})),
+        "boundary":"Individual files are atomically published. If interrupted, inspect current hashes against the retained preimages before recovery."});
+    publish_new(&recovery.join("plan.json"),&json_bytes(&plan)?)?;
+    let changed=match old.as_ref(){
+        Some(old)=>crate::check_write::replace_bytes(&out,&files::digest(old),&bytes),
+        None=>publish_new(&out,&bytes),
+    };
+    if let Err(e)=changed{
+        return Err(e.context(format!("Ledger publication failed; recovery data: {}",recovery.display())));
+    }
+    if let Some((p,old_inventory,new_inventory))=inventory_update.as_ref(){
+        if let Err(error)=crate::check_write::replace_bytes(p,&files::digest(old_inventory),new_inventory){
+            // Never overwrite an unrelated external edit. Keep both versions
+            // and roll back only the ledger we just successfully published.
+            let rollback=if fs::read(&out).ok().as_deref()==Some(bytes.as_slice()){
+                if let Some(old)=old.as_ref(){crate::check_write::replace_bytes(&out,&files::digest(&bytes),old)}
+                else{fs::remove_file(&out).map_err(anyhow::Error::from)}
+            }else{Err(anyhow!("Ledger changed after publication; manual recovery required"))};
+            let status=json!({"status":"inventory_write_failed","ledger_rollback_succeeded":rollback.is_ok()});
+            let _=publish_new(&recovery.join("failure.json"),&json_bytes(&status)?);
+            return Err(error.context(format!("Inventory update failed; rollback={}; recovery data: {}",rollback.is_ok(),recovery.display())));
+        }
+    }
+    publish_new(&recovery.join("completed.json"),&json_bytes(&json!({"status":"completed"}))?)?;
+    ensure!(pipeline::read_json(&out)?==payload,"Ledger did not round-trip");
+    Ok(out)
 }
 pub fn pending_batch(p:&Path,limit:usize,prefix:Option<&str>)->Result<Value>{
     ensure!(limit>0,"limit must be a positive integer.");

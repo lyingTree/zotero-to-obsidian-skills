@@ -12,10 +12,10 @@
     "render_note": "implementation_candidate",
     "source_url_inventory": "implementation_candidate",
     "validate_note": "implementation_candidate",
-    "deterministic_stage_checks": "partial",
+    "deterministic_stage_checks": "implementation_candidate",
     "format_helpers": "partial",
     "validate_delivery": "partial",
-    "check_records": "partial",
+    "check_records": "implementation_candidate",
     "complete_workflow": "partial",
     "draft_queue": "not_started",
     "handoff_maps": "not_started",
@@ -42,7 +42,7 @@
     },
     "source_delivery_mapping_and_review_ledger": {
       "qualified": false,
-      "blocker": "Atomic ledger validation and locked decision writer implemented; scope derivation, source/delivery handoff, transaction and full qualification remain"
+      "blocker": "Atomic ledger and source scope operations have native candidates; source/delivery handoff maps, end-to-end transaction recovery and qualification remain"
     },
     "translation_review_lifecycle": {
       "qualified": false,

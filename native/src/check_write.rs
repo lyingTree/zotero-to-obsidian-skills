@@ -8,7 +8,7 @@ use std::{collections::{HashMap,HashSet},fs::{self,File,OpenOptions},io::Write,p
 
 const STATUSES:&[&str]=&["passed","failed","blocked","not_verified","not_applicable"];
 fn nonempty(v:&Value)->bool{v.as_str().is_some_and(|s|!s.trim().is_empty())}
-fn no_link(p:&Path)->Result<()>{
+pub(crate) fn no_link(p:&Path)->Result<()>{
     let m=fs::symlink_metadata(p)?;
     ensure!(m.is_file()&&!m.file_type().is_symlink(),"Refusing linked or non-file ledger: {}",p.display());
     #[cfg(windows)]{
@@ -17,9 +17,7 @@ fn no_link(p:&Path)->Result<()>{
     }
     Ok(())
 }
-fn lock(path:&Path)->Result<(PathBuf,File)>{
-    no_link(path)?;
-    let path=files::canonical(path)?;
+pub(crate) fn lock_target(path:&Path)->Result<File>{
     let file_name=path.file_name().context("ledger file name")?.to_string_lossy();
     let lock_path=path.with_file_name(format!(".{file_name}.z2o-lock"));
     match fs::symlink_metadata(&lock_path){
@@ -32,6 +30,12 @@ fn lock(path:&Path)->Result<(PathBuf,File)>{
     let file=OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&lock_path)?;
     no_link(&lock_path)?;
     FileExt::try_lock_exclusive(&file).context("Another native process is updating this ledger")?;
+    Ok(file)
+}
+fn lock(path:&Path)->Result<(PathBuf,File)>{
+    no_link(path)?;
+    let path=files::canonical(path)?;
+    let file=lock_target(&path)?;
     Ok((path,file))
 }
 fn load(p:&Path)->Result<(Value,String)>{
@@ -40,14 +44,19 @@ fn load(p:&Path)->Result<(Value,String)>{
     ensure!(value.is_object(),"ledger must be an object");
     Ok((value,binding["sha256"].as_str().unwrap().into()))
 }
-fn replace(p:&Path,before:&str,v:&Value)->Result<()>{
-    let mut bytes=serde_json::to_vec_pretty(v)?;bytes.push(b'\n');
+pub(crate) fn replace_bytes(p:&Path,before:&str,bytes:&[u8])->Result<()>{
     let mut tmp=tempfile::Builder::new().prefix(".pending-ledger-").tempfile_in(p.parent().context("ledger directory")?)?;
     tmp.write_all(&bytes)?;tmp.as_file().sync_all()?;
     no_link(p)?;
     ensure!(files::snapshot(p)?["sha256"]==before,"Ledger changed since it was read; preserve the newer file.");
     tmp.persist(p).map_err(|e|anyhow!("Cannot publish ledger: {}",e.error))?;
-    ensure!(fs::read(p)?==bytes&&pipeline::read_json(p)?==*v,"Check results did not round-trip.");
+    ensure!(fs::read(p)?==bytes,"Check results did not round-trip.");
+    Ok(())
+}
+fn replace(p:&Path,before:&str,v:&Value)->Result<()>{
+    let mut bytes=serde_json::to_vec_pretty(v)?;bytes.push(b'\n');
+    replace_bytes(p,before,&bytes)?;
+    ensure!(pipeline::read_json(p)?==*v,"Check results did not round-trip.");
     Ok(())
 }
 fn check_index(ledger:&Value)->Result<HashMap<String,usize>>{

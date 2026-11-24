@@ -745,5 +745,38 @@ class NativeAtomicWriterComparison(unittest.TestCase):
             fixture.doCleanups()
 
 
+
+    def test_prepare_with_inventory_and_explicit_overwrite(self):
+        fixture = check_records_suite.CheckRecordsTests(methodName="test_skeleton_discovers_all_atomic_ids_without_resolving_any")
+        fixture.setUp()
+        try:
+            b = fixture.base.joinpath("native-checks.json")
+            inventory = fixture.base.joinpath("native-inventory.json")
+            inventory.write_bytes(fixture.inventory.read_bytes())
+            kwargs = dict(sources={"source-a":str(fixture.pdf)},candidate_path=str(fixture.candidate),
+                          scopes=fixture.scopes,requirement_types=fixture.types,rule_selection="all")
+            self.invoke("check_records.prepare_check_records",str(fixture.skills),str(b),
+                        inventory_path=str(inventory),**kwargs)
+            actual=json.loads(b.read_text(encoding="utf-8"))
+            expected=dict(fixture.ledger)
+            actual.pop("created_at")
+            expected.pop("created_at")
+            self.assertEqual(actual,expected)
+            self.assertEqual(Path(json.loads(inventory.read_text(encoding="utf-8"))["checks_path"]),b.resolve())
+            original=b.read_bytes()
+            self.invoke("check_records.prepare_check_records",str(fixture.skills),str(b),
+                        inventory_path=str(inventory),overwrite=True,**kwargs)
+            backups=list(b.parent.glob(".z2o-check-transaction-*/ledger.before"))
+            self.assertIn(original,[p.read_bytes() for p in backups])
+            self.assertTrue(all(p.parent.joinpath("completed.json").is_file() for p in backups))
+            before=fixture.candidate.read_bytes()
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("check_records.prepare_check_records",str(fixture.skills),str(fixture.candidate),
+                            overwrite=True,**kwargs)
+            self.assertEqual(fixture.candidate.read_bytes(),before)
+        finally:
+            fixture.doCleanups()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

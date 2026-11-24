@@ -725,3 +725,42 @@ fn scope_derivation_checks_candidate_visible_anchor_and_exact_line_bytes(){
     let target=json!([{"unit":"p1","target":{"lines":[1,3],"sha256":"0"}}]);
     assert!(check_scope::from_deliveries(&inventory,&candidate,&target,&json!(["p1"])).is_err());
 }
+
+
+#[test]
+fn ledger_preparation_inventory_writeback_and_recovery_preimages(){
+    use z2o_native::{check_ledger,check_validate,pipeline};
+    let root=tempdir().unwrap();let skill=root.path().join("example");fs::create_dir(&skill).unwrap();
+    fs::write(skill.join("SKILL.md"),"- [ ] [X-A01] Outcome. <!-- check-type: offline_outcome -->\n").unwrap();
+    let source=root.path().join("source.txt");let candidate=root.path().join("candidate.md");
+    fs::write(&source,"source\n").unwrap();fs::write(&candidate,"candidate\n").unwrap();
+    let inventory=root.path().join("inventory.json");let original_inventory=b"{\"sources\":[]}\n";
+    fs::write(&inventory,original_inventory).unwrap();
+    let p=root.path().join("checks.json");
+    let options=||check_ledger::PrepareOptions{
+        sources:json!({"main":source.to_str().unwrap()}),candidates:Value::Null,candidate_path:Some(candidate.clone()),
+        scopes:json!({"X-A01":[{"object_id":"p1","locator":{"kind":"whole_file"}}]}),types:Value::Null,environments:Value::Null,
+        mode:"acceptance".into(),additional:json!([])
+    };
+    check_ledger::prepare_with_inventory(&skill,&p,options(),Some(&inventory),false,|_,_,_|{}).unwrap();
+    let ledger=pipeline::read_json(&p).unwrap();
+    let inv=pipeline::read_json(&inventory).unwrap();
+    assert_eq!(inv["checks_path"],z2o_native::path_text(&z2o_native::files::canonical(&p).unwrap()).unwrap());
+    assert!(!ledger.to_string().contains("inventory.json"));
+    assert_eq!(check_validate::validate(&p,|_,_,_|{}).unwrap()["structurally_consistent"],true);
+    let before=fs::read(&p).unwrap();
+    let mut changed=options();changed.scopes=json!({"X-A01":[{"object_id":"p2","locator":"new review"}]});
+    check_ledger::prepare_with_inventory(&skill,&p,changed,Some(&inventory),true,|_,_,_|{}).unwrap();
+    let recovery:Vec<_>=fs::read_dir(root.path()).unwrap().map(|r|r.unwrap().path())
+        .filter(|p|p.file_name().unwrap().to_string_lossy().starts_with(".z2o-check-transaction-")).collect();
+    assert_eq!(recovery.len(),2);
+    assert!(recovery.iter().any(|p|fs::read(p.join("ledger.before")).ok().as_ref()==Some(&before)));
+    assert!(recovery.iter().any(|p|fs::read(p.join("inventory.before")).ok().as_deref()==Some(original_inventory.as_slice())));
+    assert!(recovery.iter().all(|p|p.join("completed.json").is_file()));
+    let mut forbidden=options();forbidden.sources=json!({"mutable":inventory.to_str().unwrap()});
+    let rejected=root.path().join("rejected.json");
+    assert!(check_ledger::prepare_with_inventory(&skill,&rejected,forbidden,Some(&inventory),false,|_,_,_|{}).is_err());
+    assert!(!rejected.exists());
+    assert!(check_ledger::prepare_with_inventory(&skill,&candidate,options(),None,true,|_,_,_|{}).is_err());
+    assert_eq!(fs::read(&candidate).unwrap(),b"candidate\n");
+}

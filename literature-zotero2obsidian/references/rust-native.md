@@ -81,10 +81,12 @@ native/migration-status.json 登记实际存在的 23 个参考模块和 11 项�
 
 DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结果。新增 prepare_source_inventory.prepare_docx_sources 可为一组 DOCX 生成统一来源清单及待核术语记录；在创建工作目录前阻断 PDF（无 Python 回退）。JSON 对象按键顺序处理，跨文档阅读顺序必须由独立来源计划确认。新增 prepare_translation_review 的原生脚手架在发布前复核源、清单、候选和术语表文件哈希，保留显式选中和未选中单元、各类待核检查与出现项；不推断任何语义结论。新增实际文件比较及负例测试，仍待 CI 验证。尚未移植 PDF 渲染/图片对象链、翻译审计 writer/validator、完整验收台账/映射及原生安装器和 API。
 
-原子规则目录迁移保留实际 SKILL.md 和 references 的字节哈希、行号、声明类型与完整独立 ID；注释、代码和嵌套归档不计入。新建台账只生成 not_verified，不产生内容或执行通过结论。旧台账覆盖和 inventory_path 写回在原生事务未实现前明确阻断；完整校验器和记录写回未迁移。因此不能将此增量标为 check_records 或 complete_workflow 已具备发布资格。
+原子规则目录迁移保留实际 SKILL.md 和 references 的字节哈希、行号、声明类型与完整独立 ID；注释、代码和嵌套归档不计入。新建台账只生成 not_verified，不产生内容或执行通过结论。台账校验、记录写回、范围派生及 inventory 写回已在后续增量中实现；完整工作流及发布资格仍需验收。
 
 ### 原生验收台账验证与写回
 
-新增 check_records.validate_check_records，按当前真实规则文件、原子声明、每条状态/范围、证据文件字节和定位逐项检查。PDF 页数由 lopdf 实际读取页树，图像像素区域由 image 读取实际尺寸，文本与 JSON 指针使用原文件内容并缓存；这不等价于 PDF 完整来源几何或视觉核验。原有历史台账反例复用作差分测试。新增 complete_workflow.record_check_batch、record_decision_rows、bind_candidate 及 deterministic_stage_checks.record_file_checks，使用同目录独占协作锁、旧哈希比较、临时文件同步与原子替换；保留每条之前的记录，拒绝篡改规则/类型、复用变更的证据 ID、同名不同字节报告和候选静默重绑定。程序不自动授予语义、执行或现场观察通过。协作锁保护本工具的写入者，不能替代外部编辑器的协作锁或保证跨多个文件的原子事务。完整 scope 派生、inventory 写回/覆盖以及完整工作流仍需迁移，状态保留 partial。
+新增 check_records.validate_check_records，按当前真实规则文件、原子声明、每条状态/范围、证据文件字节和定位逐项检查。PDF 页数由 lopdf 实际读取页树，图像像素区域由 image 读取实际尺寸，文本与 JSON 指针使用原文件内容并缓存；这不等价于 PDF 完整来源几何或视觉核验。原有历史台账反例复用作差分测试。新增 complete_workflow.record_check_batch、record_decision_rows、bind_candidate 及 deterministic_stage_checks.record_file_checks，使用同目录独占协作锁、旧哈希比较、临时文件同步与原子替换；保留每条之前的记录，拒绝篡改规则/类型、复用变更的证据 ID、同名不同字节报告和候选静默重绑定。程序不自动授予语义、执行或现场观察通过。协作锁保护本工具的写入者，不能替代外部编辑器的协作锁或保证跨多个文件的原子事务。完整工作流及跨文档事务恢复仍需验收。
 
 新增 check_records.scopes_from_deliveries 直接复用 Rust 静态验收词法函数，检查候选稿真实可见锚点的唯一性、行范围哈希及唯一引文，保留用户明确选择的来源对象和顺序。对 DOCX 额外支持真实原生 XML 位置，不虚构页码；PDF 页号仍仅按清单声明的页范围校验，需后续真实来源交付验证。原有范围正反例纳入差分测试。
+
+新建台账支持原有 inventory_path 和显式 overwrite 参数；实际规则、来源和候选文件始终受保护。两文件更新按稳定路径顺序获取原生协作锁，在发布前保存完整旧/新字节和独立恢复计划；库存写回失败时仅回滚仍与本次输出字节一致的台账，保留全部恢复数据。成功覆盖也保留旧台账。两个独立文件的更新不能宣称单次文件系统原子操作，崩溃后需依据恢复计划确认实际哈希。check_records 与 deterministic_stage_checks 现在为实现候选，不代表已取得发布资格。

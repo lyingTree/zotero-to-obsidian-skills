@@ -557,9 +557,10 @@ pub fn invoke(request: Value) -> Result<Value> {
             let inventory=c.option("inventory_path",Value::Null);
             let overwrite=c.option("overwrite",json!(false));
             c.finish()?;
-            ensure!(inventory.is_null()&&overwrite==false,"UNMIGRATED_LEDGER_TRANSACTION: inventory writeback or overwrite requires full native transaction support");
+            let inventory=if inventory.is_null(){None}else{Some(path(&inventory)?)};
+            let overwrite=overwrite.as_bool().context("overwrite must be bool")?;
             let options=check_ledger::PrepareOptions{sources,candidates,candidate_path,scopes,types,environments,mode,additional};
-            json!(path_text(&check_ledger::prepare(&root,&output,options,|i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?)?)
+            json!(path_text(&check_ledger::prepare_with_inventory(&root,&output,options,inventory.as_deref(),overwrite,|i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?)?)
         }
         "complete_workflow.pending_check_batch" | "complete_workflow.pending_check_rows" => {
             let p=path(&c.positional("checks_path")?)?;
