@@ -5,6 +5,8 @@ description: 为文献生成“年份-作者-原文标题.md”命名计划，�
 
 # 规范文件名
 
+本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+
 每条规则的 ID 用于定位对应证据。
 
 ## 必要输入
@@ -21,28 +23,11 @@ description: 为文献生成“年份-作者-原文标题.md”命名计划，�
 2. 用下方完整入口生成 `年份-作者-原文标题.md` 的离线命名计划，并保存整个返回值。
 3. 按实际可用证据核对长度与冲突，提交命名计划给第 4 步。
 
-在能导入 [format_helpers.py](../literature-zotero2obsidian/scripts/format_helpers.py) 的 Python 脚本中调用；无需命令行参数。下列字段、来源文件和定位均来自本次来源核对记录：
+下列字段、来源文件和定位均来自本次来源核对记录；按原生 JSON 协议填入实际值：
 
-```python
-from format_helpers import build_naming_plan, validate_naming_plan
-
-delivery_path = output_directory.joinpath("candidate.md")
-field_evidence = {
-    "year": {"file": source_file_record, "locator": year_locator},
-    "author_token": {"file": source_file_record, "locator": authors_locator},
-    "original_title": {"file": source_file_record, "locator": title_locator},
-}
-run["naming"] = build_naming_plan(
-    year=confirmed_year,
-    author_token=confirmed_author_token,
-    original_title=confirmed_original_title,
-    source_evidence=field_evidence,
-    delivery_path=delivery_path,
-)
-naming_validation = validate_naming_plan(run["naming"], delivery_path=delivery_path)
-if not naming_validation["structurally_consistent"]:
-    raise ValueError(naming_validation["findings"])
-```
+1. 调用 `format_helpers.build_naming_plan`，`args` 为空数组，`kwargs` 包含 `year`、`author_token`、`original_title`、`source_evidence`、`delivery_path`。`source_evidence` 分别以 `year`、`author_token`、`original_title` 为键，每项包含实际 `file` 绑定及实际 `locator`。
+2. 将整个返回的 `result` 保存至 `run.naming`。
+3. 调用 `format_helpers.validate_naming_plan`，`args` 为含完整命名计划的单元素数组，`kwargs.delivery_path` 为同一个实际候选路径。若返回 `structurally_consistent=false`，按 `findings` 阻断并修正。
 
 固定交付名 `candidate.md` 只确定 `delivery_path`；仍保存完整的拟用文献名、原题和变换映射。不要用只有 `filename` 的对象代替该返回值。`validate_naming_plan` 只读复算同一构建算法，逐字段检查来源文件哈希，按 `code`、JSON-pointer `field` 和 `message` 返回缺项或不一致；它不补写记录。`structurally_consistent` 只表示记录自洽，`plan_status="blocked"` 仍需处理阻断原因。未知真实路径限额保持未核，校验不认证元数据语义、真实库冲突或写入权限。
 
@@ -88,7 +73,7 @@ if not naming_validation["structurally_consistent"]:
 
 ## 离线命名帮助
 
-[format_helpers.py](../literature-zotero2obsidian/scripts/format_helpers.py) 的 `build_naming_plan(...)` 帮助执行上述规则。它接受已经核定的字段，不从姓名空格、标题、PDF 文件名或添加日期猜作者及发表年。作者标记须由调用方先按 NAME-C04–C12 形成，例如单作者标记、两个已核实标记之间的 ` and `，或首作者标记后的 ` et al`。
+原生操作 `format_helpers.build_naming_plan` 帮助执行上述规则。它接受已经核定的字段，不从姓名空格、标题、PDF 文件名或添加日期猜作者及发表年。作者标记须由调用方先按 NAME-C04–C12 形成，例如单作者标记、两个已核实标记之间的 ` and `，或首作者标记后的 ` et al`。
 
 `source_file_record` 使用 `{"path": 实际路径, "sha256": 实际文件哈希}`；每个字段可以引用不同来源文件。函数核对文件是否存在及哈希是否匹配，不认证定位处的语义或字段身份。无可靠年份时显式传 `year=None` 和 `no_year_reason`；无法确认作者时显式传 `author_token="未知作者"` 和 `unknown_author_reason`。缺失原因也要有来源定位。
 

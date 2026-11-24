@@ -58,7 +58,7 @@
     },
     "twelve_skill_production_entrypoints": {
       "qualified": false,
-      "blocker": "Native registry and install guard available; all production entrypoints, legacy documentation instructions and external integrations still require end-to-end qualification"
+      "blocker": "All twelve top-level SKILL.md files route to the native JSON protocol; direct Python examples and entry links replaced, native-only payload enforcement added; inherited reference documentation and complete end-to-end qualification remain"
     },
     "all_reference_regressions_and_frozen_examples": {
       "qualified": false,

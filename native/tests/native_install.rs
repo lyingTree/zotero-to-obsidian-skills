@@ -91,3 +91,17 @@ fn actual_offline_native_install_reuse_backup_and_tamper_protection(){
     assert!(!run(exe,&["install",path(&manifest),&"0".repeat(64),path(&bad_root)]).status.success());
     assert!(!bad_root.exists());
 }
+
+#[test]
+fn repository_skill_entrypoints_are_native_only(){
+    let root=Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let guide=root.join("literature-zotero2obsidian").join("references").join("native-entrypoints.md");
+    assert!(guide.is_file());
+    for &name in SKILLS{
+        let skill=fs::read_to_string(root.join(name).join("SKILL.md")).unwrap();
+        let lower=skill.to_ascii_lowercase();
+        assert!(skill.contains("native-entrypoints.md"),"missing native entry guide: {name}");
+        assert!(!lower.contains("```python"),"legacy Python execution example: {name}");
+        assert!(!lower.contains(".py)"),"legacy Python entry link: {name}");
+    }
+}

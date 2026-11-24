@@ -5,6 +5,8 @@ description: 将文献参考条目与 Obsidian 文献库中已有笔记核对，
 
 # 建立参考文献到库内文件的出链
 
+本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+
 每条规则的 ID 用于定位对应证据。
 
 ## 必要输入
@@ -16,7 +18,7 @@ description: 将文献参考条目与 Obsidian 文献库中已有笔记核对，
 
 LIB-A08 直接使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 audit_unchanged_properties(stage="library") 比较原始 YAML 字节；对明确列出的出链目标运行 inspect_relative_files，文件存在不等于身份或版本唯一。
 
-1. 原生运行时存在时，通过 `vault_library.index` 索引实际 vault 和已确认文献根的原条目 URI，结合 `zotero_local.catalog` 实际原始条目清单，按 `vault_library.match_reference` 核对绑定快照、完整原文题名、作者、年份、出版类型和 DOI。唯一候选仍须核对实际版本；不得将库目录缺失或旧快照视为当前无候选。旧版参考环境沿用原有真实库查询。
+1. 通过 `vault_library.index` 索引实际 vault 和已确认文献根的原条目 URI，结合 `zotero_local.catalog` 实际原始条目清单，按 `vault_library.match_reference` 核对绑定快照、完整原文题名、作者、年份、出版类型和 DOI。唯一候选仍须核对实际版本；不得将库目录缺失或旧快照视为当前无候选。原生查询不可用时阻断，不回退旧脚本。
 2. 核对每个候选自身的题头、属性及关联 Zotero 条目。
 3. 保存 bibliography_id、参考 ID、目标路径、条目身份、版本证据和指纹；主文与各份 SI 的同号条目分别核对。
 
