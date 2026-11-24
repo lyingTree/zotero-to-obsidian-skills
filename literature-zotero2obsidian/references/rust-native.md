@@ -145,3 +145,7 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 ### PDF 逐页 OCR 证据与恢复
 
 新增 `prepare_source_inventory.prepare_pdf_ocr_evidence`。默认 auto 策略按实际页文字层与图像调用分类：正常文字候选不加载 OCR；无文字/异常文字层或占页大图伴随文字层时整页 OCR；含局部图像的混合页保留原文字与页面图像，提示显式区域复核。可按 `regions={"3":[[x0,y0,x1,y1]]}` 配合未旋转 PDF 点坐标执行区域 OCR，也可 mode=all。完整扫描页、原文字层、OCR 文字/方向/置信分数、源图和反算 PDF 坐标分别保存，不自动覆盖或合并。job.json 冻结原 PDF、模型包、DPI、策略和版本；成功页单独发布、恢复时重验文件，失败尝试保留并允许同输入重试。报告始终 source_inventory_ready=false、acceptance_ready=false；不冒充完整的 prepare_sources。尚需真实模型/平台测试、模型安装分发、表格/公式、GPU 扩展、最终内容映射与语义验收。布局会使用内存预算控制的 CPU 会话，方向分类器的线程/峰值预算仍需独立测试。
+
+### 锁定依赖与真实 CPU 验收
+
+回收成功的 `resolve-lock` job（run 45406085584, job 138487297262）生成的完整 Cargo.lock，含固定 PdfCraft 和 ppocr-rs Git revisions、ort 2.0.0-rc.13；CI 恢复 `--locked`，不得静默重解析。新增 Ubuntu x86_64 独立 CPU OCR smoke：从 Microsoft 官方 release v1.28.2 读取发布校验值，从 PaddlePaddle Hugging Face 模型 metadata 确定实际 revision 并校验 LFS SHA-256/Git blob，使用模型配置中的字典，不信任无元数据下载。只提取指定常规运行库文件、不跟随 archive 链接。CI 生成虚构中英文扫描版 PDF（无文字层），通过真实 z2o 二进制，在空 PATH、禁用 GPU 条件下执行并验证英文字串、中文、数值、实际坐标与源文件哈希。CI Python 仅用于生成测试夹具及资源验证，不是用户运行依赖。首次真实测试尚未执行完；成功后仍需其余五个 target 的实际模型、内存/低端 CPU 及字体、可信发布模型包的资格审查。此测试资源清单不是已签名或已批准的生产安装目录，不能将其直接标记为合格安装包。

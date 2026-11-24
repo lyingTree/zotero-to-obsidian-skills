@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "PdfCraft plus CPU-first PP-OCRv6 page routing, resumable evidence and region candidate implemented; actual model/CPU qualification, complete source inventory/figure export/boundary parity remain"
+      "blocker": "CPU-first page/region OCR and restart candidate; real CPU OCR smoke is required, all six platforms and complete PDF source inventory/figure export/boundary parity remain"
     },
     "docx_source_qualification": {
       "qualified": false,
@@ -70,7 +70,7 @@
     },
     "locked_dependencies_and_license_review": {
       "qualified": false,
-      "blocker": "PdfCraft lock recovered from CI; resolve and commit PP-OCR/ONNX dependency graph, qualify runtime/model packages and third-party distribution licenses"
+      "blocker": "Committed actual PdfCraft+PP-OCR Cargo.lock from successful CI resolution; verify locked builds, model/runtime distribution licenses and a trusted production asset catalog"
     }
   },
   "required_targets": [

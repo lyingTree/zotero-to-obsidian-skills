@@ -23,17 +23,11 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-      - name: Resolve candidate dependency graph without inventing lock entries
+      - name: Verify the committed dependency graph
         shell: bash
         run: |
-          if ! cargo +"$RUST_TOOLCHAIN" metadata --locked --format-version 1 --manifest-path native/Cargo.toml > /dev/null; then
-            if [[ "$GITHUB_REF" == refs/tags/* ]] || [[ "$(cat VERSION)" == 2.* ]]; then
-              echo 'Release builds require the committed lockfile.' >&2
-              exit 1
-            fi
-            cargo +"$RUST_TOOLCHAIN" update --workspace --manifest-path native/Cargo.toml
-          fi
           cargo +"$RUST_TOOLCHAIN" metadata --locked --format-version 1 --manifest-path native/Cargo.toml > /dev/null
+          git diff --exit-code HEAD -- native/Cargo.lock
           echo Z2O_CARGO_LOCK_BEGIN
           cat native/Cargo.lock
           echo Z2O_CARGO_LOCK_END
@@ -111,3 +105,43 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_native_release_gate.py
           python scripts/check_native_release.py
+
+  # Real weights and the official CPU runtime are test-only resources. The
+  # regular six-platform jobs require neither an OCR model nor a GPU SDK.
+  ocr-cpu-smoke:
+    needs: resolve-lock
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      Z2O_OCR_FIXTURE_DIR: ${{ runner.temp }}/z2o-ocr-fixture
+      CUDA_VISIBLE_DEVICES: ""
+      HIP_VISIBLE_DEVICES: ""
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install pinned Rust development toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Install fixture-only tools (not runtime requirements)
+        run: |
+          python -m pip install -r requirements-dev.txt
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+      - name: Prepare provenance-checked official CPU runtime and Tiny models
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/prepare_ocr_ci_fixture.py
+      - name: Real offline CPU inference from a bilingual image-only PDF
+        run: cargo +1.95.0 test --locked --manifest-path native/Cargo.toml --test ocr actual_cpu_ocr_scan_with_verified_package -- --ignored --exact --nocapture
+      - name: Retain actual resource provenance and inference evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ocr-cpu-smoke-evidence
+          path: |
+            ${{ runner.temp }}/z2o-ocr-fixture/package.json
+            ${{ runner.temp }}/z2o-ocr-fixture/fixture.pdf
+            ${{ runner.temp }}/z2o-ocr-fixture/fixture.png
+            ${{ runner.temp }}/z2o-ocr-fixture/ocr-evidence/**
+          if-no-files-found: warn

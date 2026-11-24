@@ -77,3 +77,45 @@ fn native_and_scanned_pdf_pages_resume_without_runtime(){
     fs::write(evidence,b"tampered").unwrap();
     assert!(run().is_err());
 }
+
+
+#[test]
+#[ignore = "requires independently checked official CPU runtime and real PP-OCRv6 models; mandatory in dedicated CI job"]
+fn actual_cpu_ocr_scan_with_verified_package(){
+    use z2o_native::pipeline;
+    let root=std::path::PathBuf::from(std::env::var_os("Z2O_OCR_FIXTURE_DIR").expect("actual CI fixture required"));
+    let manifest=root.join("package.json");
+    let digest=fs::read_to_string(root.join("package.sha256")).unwrap();
+    let digest=digest.trim();
+    assert_eq!(files::digest(&fs::read(&manifest).unwrap()),digest);
+    let source=root.join("fixture.pdf");
+    let work=root.join("ocr-evidence");
+    let request=json!({"schema_version":1,"operation":"prepare_source_inventory.prepare_pdf_ocr_evidence",
+        "args":[source],"kwargs":{"destination":work,"package_manifest":manifest,
+            "expected_package_sha256":digest,"profile":"tiny","layout":"off","dpi":144,"mode":"auto"}});
+    let req=root.join("request.json");fs::write(&req,serde_json::to_vec_pretty(&request).unwrap()).unwrap();
+    // Invoke the actual binary with no Python, CUDA or other executable on
+    // PATH; the tested inference backend is loaded by its absolute path.
+    let output=std::process::Command::new(env!("CARGO_BIN_EXE_z2o"))
+        .arg("invoke").arg(&req).env("PATH","").env("CUDA_VISIBLE_DEVICES","").env("HIP_VISIBLE_DEVICES","")
+        .output().unwrap();
+    assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+    let answer:serde_json::Value=serde_json::from_slice(&output.stdout).unwrap();
+    let report=pipeline::read_json(Path::new(answer["result"].as_str().unwrap())).unwrap();
+    assert_eq!(report["blocked_page_count"],0,"{report}");
+    assert_eq!(report["source_inventory_ready"],false);
+    assert_eq!(report["pages"][0]["status"],"ocr_candidate_review_required");
+    let record=pipeline::read_json(Path::new(report["pages"][0]["record"]["path"].as_str().unwrap())).unwrap();
+    let result=pipeline::read_json(Path::new(record["ocr_regions"][0]["recognition"]["path"].as_str().unwrap())).unwrap();
+    let text=result["plain_text"].as_str().unwrap();
+    let normalized:String=text.chars().filter(|c|!c.is_whitespace()).flat_map(char::to_uppercase).collect();
+    assert!(normalized.contains("NATIVEOCRTEST12345"),"actual OCR text: {text}");
+    assert!(normalized.contains("海洋重力波2026"),"actual OCR text: {text}");
+    assert_eq!(result["model_package"]["hardware"]["execution_provider"],"CPUExecutionProvider");
+    assert_eq!(result["acceptance_ready"],false);
+    let rows=result["blocks"].as_array().unwrap();
+    assert!(!rows.is_empty());
+    assert!(rows.iter().any(|row|row["unrotated_pdf_bbox"].is_array()),"Missing real mapped source coordinates");
+    assert_eq!(files::snapshot(&source).unwrap()["sha256"],report["source_file"]["sha256"]);
+    println!("Real CPU OCR hypothesis: {text}");
+}
