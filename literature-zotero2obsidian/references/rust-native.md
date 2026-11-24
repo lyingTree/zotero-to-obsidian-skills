@@ -217,3 +217,7 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 ### 原生写库预检与逐模块验收报告
 
 新增 `vault_publish.plan(run_path, expected_run_sha256=..., vault_root=..., literature_relative=..., assets_relative=..., note_relative=..., expected_existing_sha256=..., inspect_workflow=true)`。使用明确真实 vault 根及原生 run.json，逐级检查实际路径、Unicode/case 冲突、链接和设备名，绑定工作区、候选 MD、源附件、实际嵌入资源和既有目标字节；工作区及候选资源须位于库外。仅生成只读计划，不创建任何 vault 目录或覆盖文件。相同字节资源仍需归属核验，冲突必须规划新路径。写前调用实际完整工作流检查，不以预检替代用户授权或最终验收；尚未实现正式 vault 提交事务、回滚与 Zotero note 写入。`scripts/check_native_release.py --report-path` 直接保存真实编译二进制和参考 AST 对照的 23 模块完整 JSON，CI 上传 native-module-progress 回执，所有原有资格/版本门禁不变。
+
+### Markdown 原生提交和回滚
+
+新增 `vault_publish.commit_markdown` 与 `vault_publish.rollback`。明确授权、候选及目标实际 SHA-256（null 表示新建）、嵌入资源和库外备份目录。资源先独占创建，已有资源不覆盖；Markdown 同文件系统暂存、原子替换，原字节备份、事务日志与实际回读均保留。回滚只恢复确认仍与本次写入一致的 MD，保留后续修改及可能共享的资源。native 锁只协调共享备份根的协作进程；中断且无完成记录时保留待核。standalone_markdown 不替代完整科研交付，complete_workflow 仍严格执行既有门禁。无需 CLI 或 Python。新增真实文件回归测试，尚待 CI。

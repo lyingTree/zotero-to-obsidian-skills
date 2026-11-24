@@ -107,3 +107,7 @@ WRITE-A04 与 WRITE-A05 直接运行 [确定性阶段辅助](../literature-zoter
 - [ ] [WRITE-A21] 适用时回执记录 Zotero 同步结果。 <!-- check-type: offline_outcome -->
 - [ ] [WRITE-A22] 发生部分失败时，回执状态为 partial 或 failed。 <!-- check-type: offline_outcome -->
 - [ ] [WRITE-A23] 发生部分失败时，回执可定位到恢复记录。 <!-- check-type: offline_outcome -->
+
+### 原生文件提交
+
+可使用 `vault_publish.commit_markdown`（明确 scope、authorized、候选与目标哈希及资源清单）和 `vault_publish.rollback`（原事务计划及其哈希、明确授权）。仅操作实际 Markdown 与资源文件，保存库外备份；完整流程仍须通过原有验收。不得自动删除未知共享资源，不把单文件写入视为完整交付通过。

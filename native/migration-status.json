@@ -54,7 +54,7 @@
     },
     "native_installation_and_external_integration": {
       "qualified": false,
-      "blocker": "Native offline installer, local Zotero GET metadata/attachments/catalog, vault identity index and exact read-only publication preflight implemented; actual desktop/API qualification, transaction/rollback and explicit note sync remain"
+      "blocker": "Native installer, Zotero and vault index, explicit Markdown/resources transaction, backup and rollback candidates implemented; actual desktop and complete-workflow qualification remain"
     },
     "twelve_skill_production_entrypoints": {
       "qualified": false,

@@ -237,6 +237,8 @@ pub const OPERATIONS: &[&str] = &[
     "vault_library.index",
     "vault_library.match_reference",
     "vault_publish.plan",
+    "vault_publish.commit_markdown",
+    "vault_publish.rollback",
     "check_records.CheckFinding.to_dict",
     "check_records.CheckRecordsReport.offline_records_ready",
     "check_records.CheckRecordsReport.recorded_checks_complete",
@@ -1295,6 +1297,33 @@ pub fn invoke(request: Value) -> Result<Value> {
             let catalog=path(&c.positional("catalog_path")?)?;let ch=string(&c.required("expected_catalog_sha256")?,"expected_catalog_sha256")?;
             let reference=c.positional("reference")?;c.finish()?;
             vault_library::match_reference(&index,&ih,&catalog,&ch,&reference)?
+        }
+        "vault_publish.commit_markdown" => {
+            let vault=path(&c.positional("vault_root")?)?;
+            let backup=path(&c.required("backup_root")?)?;
+            let literature=string(&c.required("literature_relative")?,"literature_relative")?;
+            let assets=string(&c.required("assets_relative")?,"assets_relative")?;
+            let note=string(&c.required("note_relative")?,"note_relative")?;
+            let candidate=path(&c.required("candidate_path")?)?;
+            let sha=string(&c.required("expected_candidate_sha256")?,"expected_candidate_sha256")?;
+            let prior=c.required("expected_existing_sha256")?;
+            let prior=if prior.is_null(){None}else{Some(string(&prior,"expected_existing_sha256")?)};
+            let resources=c.required("resources")?;
+            let scope=string(&c.required("scope")?,"scope")?;
+            let authorized=c.required("authorized")?.as_bool().context("authorized must be boolean")?;
+            let run=c.option("workflow_run",Value::Null);let run_sha=c.option("expected_run_sha256",Value::Null);
+            let run=if run.is_null(){None}else{Some(path(&run)?)};
+            let run_sha=if run_sha.is_null(){None}else{Some(string(&run_sha,"expected_run_sha256")?)};
+            ensure!(run.is_some()==run_sha.is_some(),"Run and hash required together");c.finish()?;
+            vault_publish::commit(vault_publish::CommitOptions{vault:&vault,backup_root:&backup,literature_relative:&literature,
+                assets_relative:&assets,note_relative:&note,candidate:&candidate,candidate_sha:&sha,expected_existing_sha:prior.as_deref(),
+                resources:&resources,authorized,scope:&scope,workflow_run:run.as_deref().zip(run_sha.as_deref())},runtime_reports::progress_line)?
+        }
+        "vault_publish.rollback" => {
+            let p=path(&c.positional("transaction_path")?)?;
+            let sha=string(&c.required("expected_transaction_sha256")?,"expected_transaction_sha256")?;
+            let authorized=c.required("authorized")?.as_bool().context("authorized must be boolean")?;
+            c.finish()?;vault_publish::rollback(&p,&sha,authorized)?
         }
         "vault_publish.plan" => {
             let run=path(&c.positional("run_path")?)?;
