@@ -106,6 +106,8 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 
 原生 validate_translation_review 按真实源文件/候选/术语表哈希、原始 PDF 页范围、DOCX XML 定位、候选行及唯一引文、逐处出现项、逐类别术语检索、术语指针、范围排除和事件证据生成逐项记录诊断。原生 writer 采用无状态 JSON 短命令重放：replay_decisions、save_decision_draft、restore_decision_draft、save_review，执行实际 glossary 查询而非接受伪造 hit；源/候选原始范围和声明的可见/转义读法分开，保存新文件和原始绑定。task 模块据同一验证器按 scope→unit→global 的顺序提供任务，最终预览只写临时文件。未验证的旧类接口映射保留未资格化，不以新增接口数量替代行为等价；原有完整正例及多类反例用于差分测试。发布门禁仍保持关闭。
 
+旧账册的术语表绑定若使用相对路径，查询和草稿重放按账册所在目录解析，并复核原 SHA-256 和实际文件身份；不改写原账册或把变更后的术语表视为旧证据。
+
 ### 图件审阅初始化增量
 
 `prepare_source_inventory.prepare_figure_reviews` 使用实际 PDF 页树、未旋转边界及可达 XObject 资源检查，或使用 DOCX 原生媒体定位，绑定已存在的页面渲染和最终图片，生成 28 个 pending 原子检查及每件资源四个 pending 边缘槽位。原始清单快照和恢复计划先发布，随后更新清单指针；不自动填充视觉结论。PDF 资源存在不等价于实际绘制，更不代表页面渲染与完整图件提取已经迁移。新增真实多页 PDF/XRef 参考差分测试，待 CI 验证。
@@ -249,3 +251,9 @@ These changes cover all seven previously partial module areas, but are implement
 ### Linux ARM64 MiniCPM 兼容性边界
 
 Ubuntu 22.04 ARM64 的运行验收不可用 Ubuntu 24.04 替代。上游 b11901 的 Ubuntu ARM64 CPU 发布档由 24.04 ARM64/GCC 14 构建，在 22.04 上实测缺少 `GLIBC_2.38`、`GLIBCXX_3.4.32` 与 `CXXABI_1.3.15`。CI 为 22.04 ARM64 单独从该版本固定源码 `5320c87ff0d994845b44ce7976f10055ec697447` 构建通用 ARMv8-A CPU 后端，并在原生 22.04 上检查 ELF 版本需求、无额外动态库路径的 `--version` 启动及产物哈希，不回退到官方档、其他版本或其他运行器。若 CI 通过，仅说明本次尝试的源码构建产物可启动；真实 MiniCPM/Jev 推理、GPU 后端、安装与再分发仍需独立核验。
+
+### Bounded local SVG delivery validation
+
+Figure delivery recognizes local `.svg` files case-insensitively and binds the exact bytes it validates. The native vector validator uses pinned resvg 0.50.0 without default font, raster-image, or SVGZ features. It draws a bounded in-memory raster to require a real drawable image; it does not replace the SVG or certify visual/source fidelity. Standard static shapes, groups, transforms, local gradients and clips, and direct local shape reuse are supported. Fonts/text, stylesheet elements, images, filters, masks, animation, foreign elements, DTD and custom entities, processing instructions, and external or data references fail explicitly rather than disappearing during rendering. Compact inline presentation styles are permitted within the supported shape subset.
+
+The file stays inside the manifest resource root and the rasterizer has no image resource resolver. Budgets limit bytes per SVG and delivery, number of distinct SVG assets, XML nodes and depth, geometry and `use` expansion, effect nesting, intrinsic canvas size, and actual render dimensions. Existing native delivery release and independent-review gates are unchanged.

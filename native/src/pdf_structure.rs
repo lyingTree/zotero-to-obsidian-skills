@@ -336,12 +336,69 @@ fn img_chain(doc:&Document,d:&Dictionary)->Result<Vec<(Filter,Params)>>{
             p.bits_per_component=img_int(doc,d,b"BitsPerComponent",Some(8))?;
             p.columns=img_int(doc,d,b"Columns",Some(1))?;
             p.early_change=img_int(doc,d,b"EarlyChange",Some(1))?;
-            ensure!(matches!(p.predictor,1|2|10..=15)&&matches!(p.colors,1|3)&&p.bits_per_component==8&&
+            ensure!(matches!(p.predictor,1|2|10..=15)&&matches!(p.colors,1|3)&&matches!(p.bits_per_component,1|2|4|8)&&
                 (1..=20_000_000).contains(&p.columns)&&matches!(p.early_change,0|1),"PAGE_RENDER_REQUIRED: unsupported predictor");
         }
         out.push((f,p));
     }
     Ok(out)
+}
+// An active predictor describes the actual image sample rows, so only a
+// final Flate or LZW stage may carry it. Decoding the codec separately lets
+// us check the bytes *before* the predictor: its stream-level API permits a
+// partial final row or a dangling PNG row tag, neither valid for this image.
+fn decode_image_rows(
+    chain: &[(Filter, Params)],
+    encoded: &[u8],
+    width: u32,
+    height: u32,
+    channels: usize,
+    bits: usize,
+    packed_size: usize,
+) -> Result<Vec<u8>> {
+    let mut work = 512u64 * 1024 * 1024;
+    let h = height as usize;
+    let png_max = packed_size.checked_add(h).context("Sample budget overflow")?;
+    if chain.iter().all(|(_, p)| p.predictor == 1) {
+        return filters::decode_within(chain, encoded, png_max, &mut work)
+            .context("PAGE_RENDER_REQUIRED: cannot decode image samples");
+    }
+
+    let ((filter, p), prefix) = chain.split_last().context("Missing predictor filter")?;
+    ensure!(
+        matches!(filter, Filter::Flate | Filter::Lzw)
+            && p.predictor != 1
+            && prefix.iter().all(|(_, p)| p.predictor == 1),
+        "PAGE_RENDER_REQUIRED: predictor requires a final Flate or LZW stage"
+    );
+    ensure!(
+        (p.columns, p.colors, p.bits_per_component) == (i64::from(width), channels as i64, bits as i64),
+        "PAGE_RENDER_REQUIRED: predictor layout differs from image"
+    );
+    let expected = if p.predictor == 2 { packed_size } else { png_max };
+    let data = if prefix.is_empty() {
+        std::borrow::Cow::Borrowed(encoded)
+    } else {
+        // A wrapper may produce a complete compressed stream, larger than
+        // the predicted samples, but no larger than our encoded byte budget.
+        std::borrow::Cow::Owned(
+            filters::decode_within(prefix, encoded, 128 * 1024 * 1024, &mut work)
+                .context("PAGE_RENDER_REQUIRED: cannot decode predictor filter prefix")?,
+        )
+    };
+    let unpredicted = [(filter.clone(), Params { predictor: 1, ..p.clone() })];
+    let predicted = filters::decode_within(&unpredicted, &data, expected, &mut work)
+        .context("PAGE_RENDER_REQUIRED: cannot decode predictor rows within image byte budget")?;
+    ensure!(
+        predicted.len() == expected,
+        "PAGE_RENDER_REQUIRED: predictor row byte count differs from image"
+    );
+    craft_stream_codecs::pay(&mut work, expected as u64)
+        .context("PAGE_RENDER_REQUIRED: predictor work exceeds budget")?;
+    let codec = if *filter == Filter::Flate { "FlateDecode" } else { "LZWDecode" };
+    craft_stream_codecs::predictor::decode(p, predicted, codec, Some(h))
+        .map_err(|failure| failure.error)
+        .context("PAGE_RENDER_REQUIRED: invalid image predictor row")
 }
 struct Samples{
     w:u32,h:u32,channels:usize,bits:usize,bytes:Vec<u8>,jpeg:bool,preserve_jpeg:bool,filters:Vec<String>,
@@ -456,10 +513,9 @@ fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>
         let mut data=vec![0u8;size];dec.read_image(&mut data)?;data
     }else{
         ensure!(chain.iter().all(|(f,_)|f.is_decodable()),"PAGE_RENDER_REQUIRED: unsupported image codec");
-        ensure!((bits==8&&palette.is_none())||chain.iter().all(|(_,p)|p.predictor==1),
-            "PAGE_RENDER_REQUIRED: packed or Indexed samples with predictor");
-        let mut work=512u64*1024*1024;
-        let raw=filters::decode_within(&chain,&stream.content,packed_size.checked_add(h as usize).context("Sample budget overflow")?,&mut work)?;
+        ensure!((bits==8&&palette.is_none())||chain.iter().all(|(_,p)|p.predictor!=2),
+            "PAGE_RENDER_REQUIRED: packed or Indexed TIFF predictor");
+        let raw=decode_image_rows(&chain,&stream.content,w,h,sample_channels,bits,packed_size)?;
         if bits==8{raw}else{unpack_samples(&raw,w,h,sample_channels,bits,palette.is_none())?}
     };
     ensure!(bytes.len()==size,"Decoded sample size differs from actual PDF image dimensions");

@@ -18,12 +18,21 @@ fn index<'a>(v:&'a Value,key:&str)->Result<BTreeMap<String,&'a Value>>{
     }Ok(m)
 }
 fn norm(s:&str)->String{s.split_whitespace().collect::<Vec<_>>().join(" ")}
+fn source_mailto(href:&str,address:&str)->bool{
+    let Some((scheme,rest))=href.split_once(':')else{return false;};
+    if !scheme.eq_ignore_ascii_case("mailto"){return false;}
+    // Strip URI headers before decoding. A recipient supplied only in ?to=
+    // (or another header) cannot replace the recorded source recipient.
+    let recipient=rest.split('?').next().unwrap_or("");
+    percent_encoding::percent_decode_str(recipient).decode_utf8()
+        .is_ok_and(|decoded|decoded.eq_ignore_ascii_case(address))
+}
 fn ids(v:&Value)->Result<BTreeSet<&str>>{
     let a=v.as_array().context("Explicit ID list required")?;let mut result=BTreeSet::new();
     for i in a{ensure!(result.insert(i.as_str().filter(|s|!s.is_empty()).context("Invalid ID")?),"Duplicate ID");}Ok(result)
 }
 fn coord()->Value{json!({"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"})}
-struct Audit{findings:Vec<Value>,bindings:Bindings}
+struct Audit{findings:Vec<Value>,bindings:Bindings,svg_assets:BTreeMap<PathBuf,std::result::Result<Value,String>>,svg_bytes:usize}
 impl Audit{
     fn fail(&mut self,code:&str,id:&str,msg:impl AsRef<str>){self.findings.push(json!({"code":code,"object_id":id,"message":msg.as_ref(),"level":"error","line":null}));}
     fn result(&mut self,code:&str,id:&str,r:Result<()>){if let Err(e)=r{self.fail(code,id,format!("{e:#}"));}}
@@ -185,16 +194,41 @@ fn inventory_checks(a:&mut Audit,inventory:&Value,base:&Path)->Result<()>{
     for row in url["invalid_bindings"].as_array().unwrap(){a.fail("SOURCE_URL_BINDING",row["unit"].as_str().unwrap_or("url"),row["reason"].as_str().unwrap_or("Invalid occurrence binding"));}
     Ok(())
 }
-fn asset(a:&mut Audit,b:&Value,base:&Path)->Result<Value>{
+fn asset_from(a:&mut Audit,b:&Value,base:&Path,root:&Path)->Result<Value>{
     let p=files::canonical(&base.join(path(&b["path"])?))?;
-    ensure!(p.starts_with(base),"FIGURE_RESOURCE_OUTSIDE_ROOT: {}",p.display());
-    a.file(b,base)
+    ensure!(p.starts_with(root),"FIGURE_RESOURCE_OUTSIDE_ROOT: {}",p.display());
+    a.file(&json!({"path":crate::path_text(&p)?,"sha256":b["sha256"]}),root)
+}
+fn asset(a:&mut Audit,b:&Value,root:&Path)->Result<Value>{
+    asset_from(a,b,root,root)
 }
 fn local_image(a:&mut Audit,href:&str,root:&Path)->Result<Value>{
     let raw=percent_encoding::percent_decode_str(href).decode_utf8()?;
     ensure!(!regex::Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:")?.is_match(&raw)&&!raw.starts_with("//"),"Local image required");
     let p=files::canonical(&root.join(raw.as_ref()))?;
     ensure!(p.starts_with(root),"FIGURE_RESOURCE_OUTSIDE_ROOT: {}",p.display());
+    if p.extension().and_then(|ext|ext.to_str()).is_some_and(|ext|ext.eq_ignore_ascii_case("svg")){
+        use std::io::Read;
+        if let Some(b)=a.svg_assets.get(&p){return b.clone().map_err(anyhow::Error::msg);}
+        ensure!(a.svg_assets.len()<32,"FIGURE_SVG_BUDGET: too many unique SVG assets in one delivery");
+        let checked=(||->Result<Value>{
+            let meta=fs::metadata(&p)?;
+            ensure!(meta.is_file()&&meta.len()<=crate::svg_asset::MAX_BYTES as u64,"FIGURE_SVG_BUDGET: byte limit exceeded");
+            let mut file=fs::File::open(&p)?;
+            let meta=file.metadata()?;
+            ensure!(meta.is_file()&&meta.len()<=crate::svg_asset::MAX_BYTES as u64,"FIGURE_SVG_BUDGET: byte limit exceeded");
+            let mut bytes=Vec::new();
+            file.by_ref().take(crate::svg_asset::MAX_BYTES as u64+1).read_to_end(&mut bytes)?;
+            a.svg_bytes+=bytes.len();
+            ensure!(a.svg_bytes<=8*crate::svg_asset::MAX_BYTES,"FIGURE_SVG_BUDGET: aggregate byte limit exceeded");
+            crate::svg_asset::validate(&bytes)?;
+            let b=a.bindings.capture(&p)?;
+            ensure!(b["sha256"]==files::digest(&bytes),"SVG asset bytes changed during validation");
+            Ok(b)
+        })().map_err(|e|format!("{e:#}"));
+        a.svg_assets.insert(p,checked.clone());
+        return checked.map_err(anyhow::Error::msg);
+    }
     let b=a.bindings.capture(&p)?;
     ensure!(fs::metadata(&p)?.len()<=128*1024*1024,"Image exceeds decode budget");
     let mut reader=image::ImageReader::open(&p)?.with_guessed_format()?;
@@ -275,7 +309,7 @@ fn targets(a:&mut Audit,inv:&Value,manifest:&Value,candidate:&Candidate,root:&Pa
                         ensure!(links.iter().any(|l|!l.image&&l.href==value&&norm(&l.label)==norm(u["display_text"].as_str().unwrap())),"Source URL target/label not delivered");
                     },
                     "doi"=>ensure!(regex::Regex::new(r"^10\.\d{4,9}/\S+$")?.is_match(value)&&links.iter().any(|l|!l.image&&percent_encoding::percent_decode_str(&l.href).decode_utf8_lossy().eq_ignore_ascii_case(&format!("https://doi.org/{value}"))),"Source DOI not delivered canonically"),
-                    "email"=>ensure!(regex::Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")?.is_match(value)&&links.iter().any(|l|!l.image&&l.href.split('?').next().unwrap_or("").eq_ignore_ascii_case(&format!("mailto:{value}"))),"Literal source email not delivered"),
+                    "email"=>ensure!(regex::Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")?.is_match(value)&&links.iter().any(|l|!l.image&&source_mailto(&l.href,value)),"Literal source email not delivered"),
                     "header_note"=>{
                         if !header_note_layout(candidate,span)?{
                             a.fail("HEADER_NOTE_LAYOUT",id,"Deliver this source header note inside its source-specific visible metadata blockquote.");
@@ -365,7 +399,7 @@ fn figures(a:&mut Audit,inv:&Value,manifest:&Value,ledger:&Value,ledger_path:&Pa
             ensure!(!assets.is_empty()&&assets.len()==delivered.len(),"Figure final asset coverage differs");
             let mut seen=HashSet::new();let mut bound=Vec::new();
             for(x,y)in assets.iter().zip(delivered){
-                let b=a.file(x,base)?;ensure!(b==a.file(y,root)?&&seen.insert(b["path"].as_str().unwrap().to_owned()),"Figure reviewed asset differs or duplicates");bound.push(b);
+                let b=asset_from(a,x,base,root)?;ensure!(b==asset(a,y,root)?&&seen.insert(b["path"].as_str().unwrap().to_owned()),"Figure reviewed asset differs or duplicates");bound.push(b);
             }
             let checks=index(&row["checks"],"id")?;
             ensure!(checks.len()==crate::source_prepare::FIGURE_GOALS.len(),"Retain all atomic figure goals");
@@ -397,7 +431,7 @@ fn figures(a:&mut Audit,inv:&Value,manifest:&Value,ledger:&Value,ledger_path:&Pa
                     ensure!(i<bound.len()&&matches!(side,"left"|"right"|"top"|"bottom")&&seen.insert((i,side)),"Duplicate or invalid edge identity");
                     let result=(||->Result<()>{
                         ensure!(e["status"]=="pass"&&text(&e["observation"]),"Edge comparison unresolved");
-                        ensure!(a.file(&e["source_file"],base)?==source&&a.file(&e["final_asset"],base)?==bound[i],"Edge file binding differs");
+                        ensure!(a.file(&e["source_file"],base)?==source&&asset_from(a,&e["final_asset"],base,root)?==bound[i],"Edge file binding differs");
                         let locations=list(&e["source_locations"],"edge source locations")?;ensure!(!locations.is_empty(),"Edge needs actual source location");
                         let mut local=BTreeSet::new();
                         for v in locations{
@@ -432,7 +466,7 @@ fn checks(a:&mut Audit,inv:&Value,ledger:&Value,p:&Path,ib:&Path,candidate:&Valu
     Ok(())
 }
 pub fn validate_delivery(manifest_path:&Path,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
-    let mut a=Audit{findings:vec![],bindings:Bindings::new()};
+    let mut a=Audit{findings:vec![],bindings:Bindings::new(),svg_assets:BTreeMap::new(),svg_bytes:0};
     let mut stages=Map::new();
     let result=(||->Result<()>{
         let (manifest,m)=a.bindings.json(manifest_path)?;
@@ -455,9 +489,16 @@ pub fn validate_delivery(manifest_path:&Path,mut progress:impl FnMut(usize,usize
         let r=targets(&mut a,&inv,&manifest,&candidate,&root);a.result("DELIVERY_TARGETS","manifest",r);
         // Re-derive link/source relationships from actual input and selectors,
         // with the same resource root as the delivery manifest.
-        let mut ds=manifest["deliveries"].clone();
-        if let Some(rows)=ds.as_array_mut(){for row in rows{if row.is_object()&&row.get("resource_root").is_none(){row["resource_root"]=json!(crate::path_text(&root)?);}}}
-        let derived=handoff_native::derive_for_delivery(&ip,&cp,&ds,&mut progress);
+        let derived=(||->Result<_>{
+            let mut ds=manifest["deliveries"].clone();
+            if let Some(rows)=ds.as_array_mut(){for row in rows{if row.is_object(){
+                if let Some(bound)=row.get("resource_root"){
+                    ensure!(files::canonical(&mb.join(path(bound)?))?==root,"DELIVERY_RESOURCE_ROOT: per-unit root differs from manifest");
+                }
+                row["resource_root"]=json!(crate::path_text(&root)?);
+            }}}
+            handoff_native::derive_for_delivery(&ip,&cp,&ds,&mut progress)
+        })();
         match derived{Ok((docs,b))=>{a.bindings.merge(&b)?;stages.insert("handoff_derivation".into(),json!({"map_names":docs.as_object().unwrap().keys().collect::<Vec<_>>(),"records_consistent":true}));},Err(e)=>a.fail("DELIVERY_HANDOFF","manifest",format!("{e:#}"))}
         let r=(||->Result<()>{
             if let Some((p,l))=a.ledger(&inv,&manifest,base,mb,"terminology","terminology_path")?{terminology(&mut a,&inv,&l,p.parent().unwrap())?;}Ok(())

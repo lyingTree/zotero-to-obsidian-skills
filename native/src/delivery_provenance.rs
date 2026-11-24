@@ -1,10 +1,29 @@
 //! Actual source-provenance validation, an independently callable part of
-//! delivery validation. PDF text, rendered pixels, and other delivery rules
-//! are explicitly not certified by this operation.
+//! delivery validation. Legacy PDF raster files are checked for artifact
+//! integrity; exact source-to-pixel provenance is not certified.
 use anyhow::{ensure,Context,Result};
+use image::{ColorType,ImageDecoder,codecs::png::PngDecoder};
 use serde_json::{json,Value};
-use std::{collections::{BTreeMap,HashMap,HashSet},fs,path::{Path,PathBuf}};
-use crate::{check_ledger,docx,files,path,pdf_structure::Pdf};
+use std::{collections::{BTreeMap,HashMap,HashSet},fs,io::{Cursor,Read},path::{Path,PathBuf}};
+use crate::{check_ledger,docx,files,path,path_text,pdf_structure::Pdf};
+
+const MAX_LEGACY_PNG_BYTES:u64=128*1024*1024;
+const MAX_LEGACY_SIDE:u32=20_000;
+const MAX_LEGACY_PIXELS:u64=40_000_000;
+fn valid_sha(v:&Value)->Option<&str>{
+    v.as_str().filter(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)))
+}
+fn read_legacy_png(p:&Path)->Result<(Value,Vec<u8>)>{
+    let p=files::canonical(p)?;
+    let mut file=fs::File::open(&p)?;
+    let meta=file.metadata()?;
+    ensure!(meta.is_file()&&meta.len()<=MAX_LEGACY_PNG_BYTES,"Legacy page PNG exceeds the encoded byte budget");
+    let mut data=vec![0;meta.len() as usize];
+    file.read_exact(&mut data)?;
+    let mut probe=[0];
+    ensure!(file.read(&mut probe)?==0,"Legacy page PNG changed size during its bounded read");
+    Ok((json!({"path":path_text(&p)?,"sha256":files::digest(&data)}),data))
+}
 
 struct Audit{
     base:PathBuf,
@@ -13,22 +32,27 @@ struct Audit{
     native_count:usize,
     pdf_count:usize,
     pdf_replays:Vec<Value>,
+    legacy_pngs:HashSet<PathBuf>,
+    legacy_render_count:usize,
 }
 impl Audit{
     fn fail(&mut self,code:&str,id:&str,message:impl AsRef<str>){
         self.findings.push(json!({"code":code,"object_id":id,"message":message.as_ref(),"level":"error","line":null}));
     }
     fn record(&mut self,v:&Value,id:&str)->Option<Value>{
+        self.record_with(v,id,|p|Ok((check_ledger::bind_file(p)?,()))).map(|(b,())|b)
+    }
+    fn record_with<T>(&mut self,v:&Value,id:&str,read:impl FnOnce(&Path)->Result<(Value,T)>)->Option<(Value,T)>{
         let Some(raw)=v["path"].as_str() else{
             self.fail("FILE_RECORD",id,"Provide path and SHA-256 for this evidence file.");return None;
         };
         let p=self.base.join(raw);
         if !p.is_file(){self.fail("FILE_MISSING",id,format!("Missing evidence file: {}",p.display()));return None;}
-        let Some(sha)=v["sha256"].as_str().filter(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))) else{
+        let Some(sha)=valid_sha(&v["sha256"]) else{
             self.fail("FILE_HASH_REQUIRED",id,"A real lowercase SHA-256 is required.");return None;
         };
-        let b=match check_ledger::bind_file(&p){
-            Ok(b)=>b,Err(e)=>{self.fail("FILE_READ",id,e.to_string());return None;}
+        let (b,data)=match read(&p){
+            Ok(value)=>value,Err(e)=>{self.fail("FILE_READ",id,e.to_string());return None;}
         };
         if b["sha256"]!=sha{self.fail("FILE_HASH_MISMATCH",id,format!("Evidence changed after binding: {}",p.display()));return None;}
         let key=match path(&b["path"]){
@@ -37,7 +61,48 @@ impl Audit{
         if let Some(previous)=self.checked.get(&key){
             if previous!=&b{self.fail("FILE_HASH_MISMATCH",id,"Evidence changed during this check.");return None;}
         }
-        self.checked.insert(key,b.clone());Some(b)
+        self.checked.insert(key,b.clone());Some((b,data))
+    }
+    fn legacy_render(&mut self,v:&Value,id:&str){
+        // The old producer records a PyMuPDF page PNG and its RGB sample
+        // digest. Check those two independent hashes against one bounded byte
+        // snapshot; do not compare the old encoding with PdfCraft output.
+        let Some((b,raw))=self.record_with(v,id,read_legacy_png)else{return;};
+        self.legacy_pngs.insert(path(&b["path"]).expect("canonical evidence binding"));
+        if !v["dpi"].as_u64().is_some_and(|n|(72..=600).contains(&n)){
+            self.fail("RENDER_DPI",id,"Record the actual integer render DPI, between 72 and 600.");return;
+        }
+        let dimension=|key:&str|v[key].as_u64().and_then(|n|u32::try_from(n).ok()).filter(|&n|n>0&&n<=MAX_LEGACY_SIDE);
+        let (Some(w),Some(h))=(dimension("width"),dimension("height"))else{
+            self.fail("RENDER_GEOMETRY",id,"Record positive bounded integer pixel dimensions for the full-page PNG.");return;
+        };
+        if u64::from(w)*u64::from(h)>MAX_LEGACY_PIXELS{
+            self.fail("RENDER_GEOMETRY",id,"Declared legacy PNG dimensions exceed the pixel budget.");return;
+        }
+        let Some(sha)=valid_sha(&v["pixel_sha256"])else{
+            self.fail("RENDER_PIXEL_HASH_REQUIRED",id,"Record the actual lowercase SHA-256 of the decoded RGB samples.");return;
+        };
+        let mut limits=image::Limits::default();
+        limits.max_image_width=Some(MAX_LEGACY_SIDE);
+        limits.max_image_height=Some(MAX_LEGACY_SIDE);
+        limits.max_alloc=Some(256*1024*1024);
+        let decoder=match PngDecoder::with_limits(Cursor::new(raw),limits){
+            Ok(decoder)=>decoder,Err(e)=>{self.fail("RENDER_READ",id,format!("Cannot decode the legacy PNG: {e}"));return;}
+        };
+        if decoder.dimensions()!=(w,h){
+            self.fail("RENDER_GEOMETRY",id,"Decoded PNG dimensions do not match the recorded pixel dimensions.");return;
+        }
+        if decoder.color_type()!=ColorType::Rgb8||!matches!(decoder.is_apng(),Ok(false)){
+            self.fail("RENDER_FORMAT",id,"Use a single-frame opaque 8-bit RGB PNG with no alpha channel.");return;
+        }
+        let mut samples=vec![0; (u64::from(w)*u64::from(h)*3) as usize];
+        if let Err(e)=decoder.read_image(&mut samples){
+            self.fail("RENDER_READ",id,format!("Cannot decode the legacy PNG samples: {e}"));return;
+        }
+        if files::digest(&samples)!=sha{
+            self.fail("RENDER_PIXEL_HASH_MISMATCH",id,"Decoded PNG samples differ from the recorded RGB pixel digest.");return;
+        }
+        self.legacy_render_count+=1;
     }
     fn rows<'a>(&mut self,v:&'a Value,id:&str,name:&str)->&'a [Value]{
         if let Some(rows)=v.as_array().filter(|rows|rows.iter().all(Value::is_object)){rows}
@@ -139,13 +204,16 @@ impl Audit{
         for row in pages{
             let Some(n)=row["page"].as_u64().filter(|n|*n>=1&&*n<=pdf.len() as u64) else{continue;};
             self.record(&row["text"],&format!("{id}:page-{n}:text"));
-            self.record(&row["render"],&format!("{id}:page-{n}:render"));
+            let render_label=format!("{id}:page-{n}:render");
             if source["inventory_backend"]==crate::pdf_inventory::BACKEND{
+                self.record(&row["render"],&render_label);
                 let ev=&row["pdf_evidence"];
                 for key in ["glyphs","image_structure"]{self.record(&ev[key],&format!("{id}:page-{n}:{key}"));}
                 if let Some(b)=ev.get("ocr").and_then(|v|v.get("record")).filter(|v|!v.is_null()){
                     self.record(b,&format!("{id}:page-{n}:ocr"));
                 }
+            }else{
+                self.legacy_render(&row["render"],&render_label);
             }
             if let Err(e)=pdf.bounds(n){self.fail("SOURCE_PDF_GEOMETRY",id,e.to_string());}
         }
@@ -177,7 +245,7 @@ pub fn validate(inventory_path:&Path,mut progress:impl FnMut(usize,usize,&str))-
     let inventory=crate::parse_json(std::str::from_utf8(&raw)?)?;
     ensure!(inventory.is_object(),"Expected source inventory object");
     let mut audit=Audit{base:p.parent().context("inventory parent")?.to_owned(),findings:vec![],
-        checked:BTreeMap::new(),native_count:0,pdf_count:0,pdf_replays:vec![]};
+        checked:BTreeMap::new(),native_count:0,pdf_count:0,pdf_replays:vec![],legacy_pngs:HashSet::new(),legacy_render_count:0};
     if inventory["schema_version"].as_u64()!=Some(1){audit.fail("INVENTORY_VERSION","inventory","Expected schema_version 1.");}
     let rows=audit.rows(&inventory["sources"],"inventory","sources");
     let (order,sources)=audit.index(rows,"sources");
@@ -195,7 +263,8 @@ pub fn validate(inventory_path:&Path,mut progress:impl FnMut(usize,usize,&str))-
         progress(i+1,order.len(),"source provenance");
     }
     for (p,b) in audit.checked.clone(){
-        if check_ledger::bind_file(&p).ok().as_ref()!=Some(&b){
+        let actual=if audit.legacy_pngs.contains(&p){read_legacy_png(&p).map(|(b,_)|b)}else{check_ledger::bind_file(&p)};
+        if actual.ok().as_ref()!=Some(&b){
             audit.fail("FILE_HASH_MISMATCH","source evidence",format!("Evidence changed during validation: {}",p.display()));
         }
     }
@@ -205,9 +274,9 @@ pub fn validate(inventory_path:&Path,mut progress:impl FnMut(usize,usize,&str))-
     let complete=audit.findings.is_empty()&&audit.native_count>0&&audit.pdf_count==0;
     let checked_files:Vec<_>=audit.checked.values().cloned().collect();
     let mut result=json!({"inventory":inventory_binding,"checked_files":checked_files,"findings":audit.findings,"native_sources_checked":audit.native_count,
-        "pdf_structure_sources_checked":audit.pdf_count,"source_checks_complete":complete,"delivery_ready":false,
-        "source_fidelity":"not_assessed","independent_review_required":true,
-        "boundary":"Source-provenance subset only. Full delivery, inventory accounting, candidate targets, PDF pixels/text and independent review are not certified."});
+        "pdf_structure_sources_checked":audit.pdf_count,"legacy_pdf_render_artifacts_checked":audit.legacy_render_count,
+        "source_checks_complete":complete,"delivery_ready":false,"source_fidelity":"not_assessed","independent_review_required":true,
+        "boundary":"Source-provenance subset only. Legacy PNG artifact integrity does not establish PDF-to-pixel or text equivalence. Full delivery and independent review are not certified."});
     if !audit.pdf_replays.is_empty(){result["pdf_native_replays"]=json!(audit.pdf_replays);}
     Ok(result)
 }

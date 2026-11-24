@@ -28,6 +28,10 @@ tempfile = "3"
 html-escape = "0.2"
 percent-encoding = "2"
 roxmltree = "0.20"
+# Strictly preflighted, self-contained static SVG only; no fonts, SVGZ or raster loaders.
+resvg = { version = "=0.50.0", default-features = false }
+svg-xml = { package = "roxmltree", version = "=0.21.2" }
+svgtypes = "=0.16.2"
 fs2 = "0.4"
 lopdf = { version = "0.36", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff", "webp", "ico", "pnm"] }
@@ -38,6 +42,8 @@ zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 pdfcraft-render = { git = "https://github.com/storytold/pdfcraft", rev = "6e910675c68dd5092e889065cfe8d0274c1b2742", default-features = false }
 
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844", default-features = false, features = ["filters"] }
+# Use the same pinned predictor after verifying exact image-row framing.
+craft-stream-codecs = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844" }
 
 # In-process PP-OCRv6, explicitly lazy-loaded CPU ONNX Runtime. No runtime
 # download or linkage to a vendor GPU SDK. Upstream enables optional EP APIs

@@ -31,6 +31,7 @@ pub mod draft_queue;
 pub mod delivery_prepare;
 pub mod delivery_provenance;
 pub mod delivery_validate;
+mod svg_asset;
 pub mod runtime_reports;
 pub mod native_install;
 pub mod zotero_local;

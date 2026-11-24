@@ -51,6 +51,7 @@ class JammyArm64SmokeTests(unittest.TestCase):
                 return args[0] + " mock version\n", ""
 
             def builder(args, **kwargs):
+                self.assertEqual(args[0], "cmake")
                 self.assertTrue(kwargs["check"])
                 if "--build" in args:
                     self.assertIn("llama-server", args)
@@ -60,12 +61,17 @@ class JammyArm64SmokeTests(unittest.TestCase):
                     self.assertIn("-DBUILD_SHARED_LIBS=OFF", args)
                     self.assertIn("-DGGML_CPU_ARM_ARCH=armv8-a", args)
 
-            with patch.object(smoke, "require_baseline") as baseline, patch.object(
-                    smoke.os, "confstr", return_value="glibc 2.35", create=True), patch.object(
-                    smoke.platform, "freedesktop_os_release", return_value={"ID": "ubuntu"}, create=True), patch.object(
-                    smoke, "output", side_effect=commands), patch.object(smoke.subprocess, "run", side_effect=builder):
+            # platform.machine() can invoke a platform-version subprocess on
+            # Windows; the fake CMake runner must never see that host probe.
+            with patch.object(smoke.os, "confstr", return_value="glibc 2.35", create=True), patch.object(
+                    smoke.platform, "freedesktop_os_release",
+                    return_value={"ID": "ubuntu", "VERSION_ID": "22.04"}, create=True), patch.object(
+                    smoke.platform, "machine", return_value="aarch64") as machine, patch.object(
+                    smoke, "output", side_effect=commands), patch.object(
+                    smoke.subprocess, "run", side_effect=builder) as cmake:
                 smoke.qualify(root / "source", target)
-            baseline.assert_called_once()
+            machine.assert_called_once_with()
+            self.assertEqual(cmake.call_count, 2)
             evidence = json.loads((target / "runtime-evidence.json").read_text())
             self.assertEqual(evidence["source"]["commit"], smoke.SOURCE_COMMIT)
             self.assertEqual(evidence["engine"]["sha256"], hashlib.sha256(payload).hexdigest())

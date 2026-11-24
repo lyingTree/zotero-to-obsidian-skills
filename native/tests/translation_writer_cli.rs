@@ -72,6 +72,38 @@ fn occurrence(source: Value, candidate: Value) -> Value {
 }
 
 #[test]
+fn relative_glossary_binding_is_replayed_but_changed_bytes_are_rejected() {
+    let f = Fixture::new("波浪出现。\n", json!([{"lines":[1,1]}]));
+    let mut prepared: Value = serde_json::from_slice(&fs::read(&f.prepared).unwrap()).unwrap();
+    prepared["bindings"]["glossary"]["path"] = json!("glossary.md");
+    let prepared_bytes = serde_json::to_vec(&prepared).unwrap();
+    fs::write(&f.prepared, &prepared_bytes).unwrap();
+    let commands = json!([
+        {"op":"term","unit_id":"U","term_id":"wave","original":"wave","category":"concept","source":{"quote":"wave"}},
+        {"op":"search","unit_id":"U","term_id":"wave","mode":"full_phrase","query":"wave","interpretation":"Look up the exact source term."}
+    ]);
+    let draft = f.dir.path().join("portable-decisions.json");
+    f.ok("translation_review_writer.save_decision_draft", json!([f.prepared,commands]), json!({"output_path":draft}));
+    let draft_before = fs::read(&draft).unwrap();
+    let restored = f.ok("translation_review_writer.restore_decision_draft", json!([draft]), json!({}));
+    let term = &restored["data"]["units"]["U"]["term_candidates"][0];
+    let search = &term["searches"]["full_phrase"];
+    assert_eq!(search["queries"][0]["hits"][0]["entry_id"], "WAVE");
+    let glossary = f.dir.path().join("glossary.md");
+    assert_eq!(search["evidence"][0]["path"], json!(z2o_native::files::canonical(&glossary).unwrap()));
+    assert_eq!(search["evidence"][0]["sha256"], prepared["bindings"]["glossary"]["sha256"]);
+    assert_eq!(restored["data"]["bindings"]["glossary"], prepared["bindings"]["glossary"]);
+
+    let mut glossary_bytes = fs::read(&glossary).unwrap();
+    glossary_bytes.extend(b"\nUpdated context.\n");
+    fs::write(&glossary, glossary_bytes).unwrap();
+    let failed = f.call("translation_review_writer.restore_decision_draft", json!([draft]), json!({})).unwrap_err();
+    assert!(failed.contains("TRW_STALE_BINDING"), "{failed}");
+    assert_eq!(fs::read(&draft).unwrap(), draft_before);
+    assert_eq!(fs::read(&f.prepared).unwrap(), prepared_bytes);
+}
+
+#[test]
 fn repeated_inline_selection_preserves_unicode_offset_through_replay_and_save() {
     // Prefix has multibyte BMP and astral characters; this source also uses
     // CR-only line boundaries. The same quote appears four times, with two

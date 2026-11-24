@@ -114,3 +114,152 @@ fn malformed_indexed_palettes_and_unsupported_display_never_publish_an_asset(){
         assert!(format!("{error:#}").contains(reason),"{name}: {error:#}");assert!(!out.exists());
     }
 }
+
+fn predicted_params(predictor: i32, width: i32, colors: i32, bits: i32) -> Dictionary {
+    dictionary! {
+        "Predictor" => predictor, "Columns" => width,
+        "Colors" => colors, "BitsPerComponent" => bits
+    }
+}
+
+#[test]
+fn flate_png_predictor_expands_packed_indexed_rows_and_packed_soft_mask() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let pdf = root.join("png-predictor-indexed-with-mask.pdf");
+    let mut doc = Document::with_version("1.5");
+    let mut mask = image(5, 5, 4, Object::Name(b"DeviceGray".to_vec()));
+    mask.set("Filter", "FlateDecode");
+    mask.set("DecodeParms", predicted_params(12, 5, 1, 4));
+    // Five Up-filtered rows. Decoded nibbles, excluding padding:
+    // 01234, 56789, ABCDE, F4321, 079BF.
+    let mask_rows = [
+        2, 0x01, 0x23, 0x40,
+        2, 0x55, 0x55, 0x50,
+        2, 0x55, 0x55, 0x50,
+        2, 0x49, 0x65, 0x30,
+        2, 0x13, 0x69, 0xE0,
+    ];
+    let mask = stream(&mut doc, mask, craft_pdf::filters::encode_flate(&mask_rows));
+
+    let rgb = [8, 16, 24, 40, 64, 88, 128, 152, 176, 208, 232, 255];
+    let mut d = image(5, 5, 2, indexed("DeviceRGB", 3,
+        Object::String(rgb.to_vec(), StringFormat::Hexadecimal)));
+    d.set("Filter", vec![Object::Name(b"ASCIIHexDecode".to_vec()), Object::Name(b"FlateDecode".to_vec())]);
+    d.set("DecodeParms", vec![Object::Null, Object::Dictionary(predicted_params(15, 5, 1, 2))]);
+    d.set("SMask", Object::Reference(mask));
+    // Sub, Up, Paeth, Average, None. After undoing byte-level prediction,
+    // packed rows are [1b 40], [e4 80], [6c 00], [ff 40], [01 c0].
+    let rows = [
+        1, 0x1b, 0x25,
+        2, 0xc9, 0x40,
+        4, 0x88, 0x94,
+        3, 0xc9, 0xc1,
+        0, 0x01, 0xc0,
+    ];
+    let wrapped = craft_pdf::filters::encode_flate(&rows).iter()
+        .map(|b| format!("{b:02X}")).collect::<String>() + ">";
+    let id = stream(&mut doc, d, wrapped.into_bytes());
+    write_pdf(doc, &pdf, &[("Packed", id)], "q 50 0 0 50 10 10 cm /Packed Do Q");
+
+    let out = root.join("combined.png");
+    let report = export(&pdf, id.0, &out).unwrap();
+    let actual = image::open(out).unwrap().into_rgba8();
+    assert_eq!(actual.dimensions(), (5, 5));
+    let indices = [0,1,2,3,1, 3,2,1,0,2, 1,2,3,0,0, 3,3,3,3,1, 0,0,0,1,3];
+    let alpha = [0,17,34,51,68, 85,102,119,136,153, 170,187,204,221,238,
+                 255,68,51,34,17, 0,119,153,187,255];
+    let expected = indices.iter().zip(alpha).flat_map(|(&i, a)| {
+        [rgb[i*3], rgb[i*3+1], rgb[i*3+2], a]
+    }).collect::<Vec<_>>();
+    assert_eq!(actual.as_raw(), &expected);
+    assert_eq!(report["source_object"]["smask"]["decoded_alpha_sha256"], files::digest(&alpha));
+    assert_eq!(report["source_object"]["smask"]["status"], "nonopaque");
+    assert_eq!(report["source_object"]["filters"], json!(["ASCIIHexDecode", "FlateDecode"]));
+    assert_eq!(report["method"], "smask_composited_png");
+    assert_eq!(report["visual_review"]["status"], "pending");
+    assert_eq!(report["source_fidelity"], "not_assessed");
+}
+
+#[test]
+fn lzw_png_predictor_decodes_packed_rgb_with_a_two_byte_left_neighbour() {
+    let temp = tempfile::tempdir().unwrap();
+    let pdf = temp.path().join("packed-rgb-lzw.pdf");
+    let mut doc = Document::with_version("1.5");
+    let mut d = image(3, 2, 4, Object::Name(b"DeviceRGB".to_vec()));
+    d.set("Filter", "LZWDecode");
+    let mut p = predicted_params(15, 3, 3, 4);
+    p.set("EarlyChange", 0);
+    d.set("DecodeParms", p);
+    // Independent sequence of 9-bit PDF LZW codes: clear, literal bytes,
+    // end. The PNG Sub row uses a two-byte lookback (3 x 4 bits), then Up.
+    let codes = [256u16, 1, 0x12, 0x34, 0x44, 0x44, 0x3a,
+                 2, 0x86, 0x42, 0xfe, 0xba, 0x80, 257];
+    let mut packed = vec![0u8; (codes.len() * 9).div_ceil(8)];
+    for (i, code) in codes.into_iter().enumerate() {
+        for shift in 0..9 {
+            let k = i * 9 + shift;
+            packed[k / 8] |= ((code >> (8 - shift)) as u8 & 1) << (7 - k % 8);
+        }
+    }
+    let id = stream(&mut doc, d, packed);
+    write_pdf(doc, &pdf, &[("RGB", id)], "q 30 0 0 20 10 10 cm /RGB Do Q");
+    let out = temp.path().join("rgb.png");
+    let report = export(&pdf, id.0, &out).unwrap();
+    let actual = image::open(out).unwrap().into_rgb8();
+    assert_eq!(actual.dimensions(), (3, 2));
+    let expected = [17,34,51,68,85,102,119,136,153, 153,136,119,102,85,68,51,34,17];
+    assert_eq!(actual.as_raw(), &expected);
+    assert_eq!(report["source_object"]["decoded_samples_sha256"], files::digest(&expected));
+    assert_eq!(report["method"], "lossless_sample_png");
+}
+
+#[test]
+fn malformed_predictor_layouts_and_rows_do_not_replace_existing_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let pdf = root.join("bad-row-metadata.pdf");
+    let mut doc = Document::with_version("1.5");
+    let declared = || predicted_params(15, 5, 1, 2);
+    let parent_dict = || image(5, 2, 2, Object::Name(b"DeviceGray".to_vec()));
+    let valid = [0, 0x1b, 0x40, 0, 0xe4, 0x80];
+    let mut cases = Vec::new();
+    for (name, p, bytes, reason) in [
+        // Different packed widths can fit the same downstream
+        // byte count in other cases. Here Width 5 and Columns 6 both use two.
+        ("Columns", predicted_params(15, 6, 1, 2), valid.as_slice(), "predictor layout"),
+        ("Colors", predicted_params(15, 5, 3, 2), valid.as_slice(), "predictor layout"),
+        ("Bits", predicted_params(15, 5, 1, 4), valid.as_slice(), "predictor layout"),
+        ("MissingTag", declared(), &[0x1b, 0x40, 0xe4, 0x80], "row byte count"),
+        ("Short", declared(), &valid[..5], "row byte count"),
+        // A stream-level predictor drops a dangling tag without producing
+        // another sample; checking only the final sample count misses it.
+        ("DanglingTag", declared(), &[0, 0x1b, 0x40, 0, 0xe4, 0x80, 0], "image byte budget"),
+        ("InvalidTag", declared(), &[0, 0x1b, 0x40, 5, 0xe4, 0x80], "invalid image predictor row"),
+        ("PackedTiff", predicted_params(2, 5, 1, 2), &valid[..4], "packed or Indexed TIFF"),
+    ] {
+        let mut d = parent_dict();
+        d.set("Filter", "FlateDecode");
+        d.set("DecodeParms", p);
+        cases.push((name, stream(&mut doc, d, craft_pdf::filters::encode_flate(bytes)), reason));
+    }
+    let mut d = parent_dict();
+    d.set("Filter", vec![Object::Name(b"FlateDecode".to_vec()), Object::Name(b"ASCIIHexDecode".to_vec())]);
+    d.set("DecodeParms", vec![Object::Dictionary(declared()), Object::Null]);
+    cases.push(("NotFinal", stream(&mut doc, d, vec![0]), "final Flate or LZW"));
+    let mut d = parent_dict();
+    d.set("Filter", "ASCIIHexDecode");
+    d.set("DecodeParms", declared());
+    cases.push(("WrongFilter", stream(&mut doc, d, vec![0]), "final Flate or LZW"));
+
+    let objects = cases.iter().map(|(n, id, _)| (*n, *id)).collect::<Vec<_>>();
+    let ops = objects.iter().map(|(name, _)| format!("/{name} Do ")).collect::<String>();
+    write_pdf(doc, &pdf, &objects, &format!("q 50 0 0 20 10 10 cm {ops}Q"));
+    let out = root.join("must-not-change.png");
+    fs::write(&out, b"pre-existing output").unwrap();
+    for (name, id, reason) in cases {
+        let err = format!("{:#}", export(&pdf, id.0, &out).unwrap_err());
+        assert!(err.contains("PAGE_RENDER_REQUIRED") && err.contains(reason), "{name}: {err}");
+        assert_eq!(fs::read(&out).unwrap(), b"pre-existing output");
+    }
+}

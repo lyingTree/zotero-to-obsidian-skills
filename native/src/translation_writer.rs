@@ -155,7 +155,11 @@ impl Writer{
     }
     fn glossary(&mut self)->Result<&glossary::Glossary>{
         let p=self.glossary_path.as_ref().context("TRW_GLOSSARY: actual glossary required")?;
-        let current=prep::bind_file(p)?;ensure!(current==self.data["bindings"]["glossary"],"TRW_STALE_BINDING: glossary changed");
+        // A historical ledger can bind a path relative to its own directory.
+        // Revalidate its hash after resolving that path, and require the same
+        // canonical file selected when the writer was opened.
+        let current=bind(&self.data["bindings"]["glossary"],&self.base)?;
+        ensure!(&path(&current["path"])?==p,"TRW_STALE_BINDING: glossary path changed");
         if self.index.is_none(){self.index=Some(glossary::Glossary::new(p)?);}
         let index=self.index.as_ref().unwrap();ensure!(index.binding==current,"TRW_STALE_BINDING: glossary index changed");Ok(index)
     }

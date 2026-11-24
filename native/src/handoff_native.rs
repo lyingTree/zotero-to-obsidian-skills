@@ -250,7 +250,9 @@ impl Ctx{
                 let root=if let Some(r)=d.get("resource_root"){files::canonical(&path(r)?)?}else{self.candidate_path.parent().unwrap().to_owned()};
                 ensure!(root.is_dir(),"MAP_RESOURCE_ROOT");let mut resources=vec![];
                 for a in rows(assets,"path")?{
-                    let b=self.bindings.capture(&root.join(path(&a["path"])?))?;
+                    let actual=files::canonical(&root.join(path(&a["path"])?))?;
+                    ensure!(actual.starts_with(&root),"MAP_RESOURCE_OUTSIDE_ROOT");
+                    let b=self.bindings.capture(&actual)?;
                     ensure!(a.get("sha256").is_none()||a["sha256"]==b["sha256"],"MAP_RESOURCE_HASH");resources.push(b);
                 }
                 row["resources"]=json!(resources);

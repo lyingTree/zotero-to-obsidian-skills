@@ -934,6 +934,55 @@ class NativeDeliveryPreparationComparison(unittest.TestCase):
         self.assertEqual(self.invoke("validate_delivery.scan_markdown_links",text),
                          [asdict(v) for v in delivery.scan_markdown_links(text)])
 
+    def test_source_mailto_target_preserves_literal_mailbox_after_uri_decoding(self):
+        from test_docx_source_inventory import make_docx, paragraph
+        from test_docx_complete_workflow import prepare, delivery, native_evidence
+
+        address = "author+method@example.org"
+        source = self.root / "通讯说明.docx"
+        make_docx(source, paragraph(f"Correspondence: {address}"))
+        inventory = prepare.prepare_sources(
+            {"main": source}, self.root / "source evidence",
+            source_roles={"main": "main"}, progress=None)
+        document = json.loads(inventory.read_text(encoding="utf-8"))
+        source_row = document["sources"][0]
+        location = native_evidence(source_row["native_blocks"][0], quote=address)
+        source_row["header_fields"] = {
+            field: {"status": "absent_in_source", "reason": "This source contains only correspondence.",
+                    "evidence": [location]}
+            for field in ("title", "authors", "affiliations", "publication_date")
+        }
+        document["units"] = [{"id": "email", "kind": "metadata", "source": "main", "field": "email",
+                              "value": address, "display_text": "Correspondence", "evidence": [location]}]
+        inventory.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+
+        for index, (href, matched) in enumerate((
+            ("mailto:" + address, True),
+            ("mailto:author%2Bmethod%40example.org?subject=Reference", True),
+            ("MAILTO:AUTHOR%2bMETHOD@example.org?subject=Project%3F", True),
+            ("mailto:wrong@example.org?to=" + address, False),
+            ("mailto:author%2Bmethod%40example.org%2Cother%40example.org", False),
+            ("https://example.org/?address=" + address, False),
+        )):
+            with self.subTest(href=href):
+                candidate = self.root / f"candidate-{index}.md"
+                markdown = f"[Correspondence]({href})"
+                candidate.write_text(markdown + "\n", encoding="utf-8")
+                manifest = self.root / f"delivery-{index}.json"
+                delivery.write_delivery_manifest(inventory, candidate, [{"unit": "email", "target": {"quote": markdown}}],
+                                                 manifest)
+                bound_paths = [source, inventory, candidate, manifest]
+                before = [p.read_bytes() for p in bound_paths]
+                reference = delivery.validate_delivery(manifest)
+                self.assertEqual(reference.structurally_consistent, matched, reference.findings)
+                native = self.invoke("validate_delivery.validate_delivery", str(manifest))
+                self.assertEqual(native["native_subset_consistent"], matched, native["findings"])
+                self.assertEqual(any(f["code"] == "DELIVERY_TARGET" and f["object_id"] == "email"
+                                     for f in native["findings"]), not matched, native["findings"])
+                self.assertFalse(native["structurally_consistent"])
+                self.assertEqual(native["source_fidelity"], "not_assessed")
+                self.assertEqual([p.read_bytes() for p in bound_paths], before)
+
     def test_header_note_uses_actual_visible_blockquote_context(self):
         import test_delivery_evidence as suite
         cases = (
@@ -971,6 +1020,90 @@ class NativeDeliveryPreparationComparison(unittest.TestCase):
                     self.assertEqual(fixture.manifest_path.read_bytes(), original)
                 finally:
                     fixture.doCleanups()
+
+    def test_bounded_svg_figure_decodes_offline_without_promoting_acceptance(self):
+        import test_delivery_evidence as suite
+        svg_root = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="24">'
+        rect = '<rect x="2" y="2" width="36" height="20" fill="#137fb1"/>'
+        valid = svg_root + (
+            '<title>source figure</title>'
+            '<defs><path id="mark" d="M5 18 L30 5 L35 18 Z"/>'
+            '<linearGradient id="shade"><stop offset="0" stop-color="#113355"/>'
+            '<stop offset="1" stop-color="#3366aa"/></linearGradient>'
+            '<clipPath id="inside"><rect width="38" height="22"/></clipPath></defs>'
+            '<g clip-path="url(#inside)"><use xlink:href="#mark" style="fill:url(#shade); stroke:#113355"/></g>'
+        ) + '</svg>'
+        cases = (
+            ("valid", valid, None),
+            ("outside-root", valid, "FIGURE_RESOURCE_OUTSIDE_ROOT"),
+            ("per-row-root", valid, "DELIVERY_RESOURCE_ROOT"),
+            ("malformed", svg_root + rect + '</svgg>', "FIGURE_SVG_XML"),
+            ("duplicate-id", svg_root + '<g id="x" />' * 2 + rect + '</svg>', "FIGURE_SVG_XML"),
+            ("malformed-geometry", svg_root + rect + '<path d="M 5 -4 L malformed"/></svg>', "FIGURE_SVG_XML"),
+            ("huge-geometry", svg_root + rect + '<path d="M 5 -4 L 2e100 10"/></svg>', "FIGURE_SVG_BUDGET"),
+            ("foreign-image", svg_root + rect + '<image href="https://example.invalid/image.svg"/></svg>', "FIGURE_SVG_UNSUPPORTED"),
+            ("external-use", svg_root + rect + '<use href="file:///not-an-input.svg#mark"/></svg>', "FIGURE_SVG_EXTERNAL_REFERENCE"),
+            ("data-use", svg_root + rect + '<use href="data:image/svg+xml,%3Csvg%3E"/></svg>', "FIGURE_SVG_EXTERNAL_REFERENCE"),
+            ("recursive-use", svg_root + rect + '<use id="again" href="#again"/></svg>', "FIGURE_SVG_EXTERNAL_REFERENCE"),
+            ("invalid-paint", svg_root + rect + '<rect width="10" height="10" fill="url(https://example.invalid/a)"/></svg>', "FIGURE_SVG_EXTERNAL_REFERENCE"),
+            ("doctype", '<!DOCTYPE svg SYSTEM "https://example.invalid/svg.dtd">' + svg_root + rect + '</svg>', "FIGURE_SVG_XML"),
+            ("stylesheet", '<?xml-stylesheet href="https://example.invalid/plot.css"?>' + svg_root + rect + '</svg>', "FIGURE_SVG_ACTIVE"),
+            ("event-handler", svg_root + rect + '<g onclick="doNotRun()"/></svg>', "FIGURE_SVG_UNSUPPORTED"),
+            ("unrendered-text", svg_root + rect + '<text x="2" y="3">Must not disappear silently</text></svg>', "FIGURE_SVG_UNSUPPORTED"),
+            ("canvas", svg_root.replace('width="40"', 'width="500000"') + rect + '</svg>', "FIGURE_SVG_BUDGET"),
+            ("depth", svg_root + '<g>' * 40 + rect + '</g>' * 40 + '</svg>', "FIGURE_SVG_BUDGET"),
+            ("elements", svg_root + rect * 2050 + '</svg>', "FIGURE_SVG_BUDGET"),
+            ("bytes", svg_root + '<!--' + 'x' * (1024 * 1024) + '-->' + rect + '</svg>', "FIGURE_SVG_BUDGET"),
+        )
+        for name, content, expected in cases:
+            with self.subTest(case=name):
+                f = suite.DeliveryEvidenceTests(methodName="test_consistent_evidence_never_claims_semantic_acceptance")
+                f.setUp()
+                try:
+                    svg = f.base.joinpath("figure.SVG")
+                    svg.write_bytes(content.encode("utf-8"))
+                    embed = "figure.SVG"
+                    if name == "outside-root":
+                        f.resource_root = f.base.joinpath("declared-resource-root")
+                        f.resource_root.mkdir()
+                        embed = "../figure.SVG"
+                    f.note.write_bytes(f.note.read_bytes().replace(b"figure.png", embed.encode("ascii")))
+                    next(u for u in f.units if u["id"] == "figure")["original_number"] = "1"
+                    figure = next(d for d in f.deliveries if d["unit"] == "figure")
+                    figure["target"]["quote"] = figure["target"]["quote"].replace("figure.png", embed)
+                    figure["assets"] = [{"path": embed}]
+                    if name == "per-row-root":
+                        alternative = f.base.joinpath("unrelated-root")
+                        alternative.mkdir()
+                        alternative.joinpath("figure.SVG").write_text(valid, encoding="utf-8")
+                        figure["resource_root"] = str(alternative)
+                    f.bind()
+                    before = f.manifest_path.read_bytes()
+                    if expected is None:
+                        reference = suite.checker.validate_delivery(f.manifest_path)
+                        self.assertTrue(reference.structurally_consistent, reference.findings)
+                    actual = self.invoke("validate_delivery.validate_delivery", str(f.manifest_path))
+                    diagnostics = [x for x in actual["findings"] if x["object_id"] == "figure" and x["code"] == "DELIVERY_TARGET"]
+                    if expected is None:
+                        self.assertEqual(diagnostics, [], actual)
+                        self.assertTrue(any(row["sha256"] == hashlib.sha256(svg.read_bytes()).hexdigest()
+                                            for row in actual["checked_files"]))
+                    elif name == "per-row-root":
+                        self.assertTrue(any(x["code"] == "DELIVERY_HANDOFF" and expected in x["message"]
+                                            for x in actual["findings"]), actual)
+                        self.assertFalse(any(Path(row["path"]) == alternative.joinpath("figure.SVG")
+                                             for row in actual["checked_files"]))
+                    else:
+                        self.assertTrue(any(expected in x["message"] for x in diagnostics), actual)
+                        if name == "outside-root":
+                            self.assertFalse(any(Path(row["path"]) == svg for row in actual["checked_files"]))
+                    self.assertIn("NATIVE_DELIVERY_PARITY_PENDING", {f["code"] for f in actual["findings"]})
+                    self.assertFalse(actual["structurally_consistent"])
+                    self.assertEqual(actual["source_fidelity"], "not_assessed")
+                    self.assertTrue(actual["independent_review_required"])
+                    self.assertEqual(f.manifest_path.read_bytes(), before)
+                finally:
+                    f.doCleanups()
 
 
 
@@ -1295,6 +1428,53 @@ class NativeTranslationSelectionComparison(unittest.TestCase):
 class NativeTranslationLifecycleComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp
     invoke = ReferenceComparison.invoke
+
+    def test_complete_legacy_review_replays_a_relative_glossary_binding(self):
+        import test_translation_review_writer as suite
+
+        root = self.root.joinpath("legacy-review")
+        legacy = suite.example.demonstrate(root)
+        prepared = root.joinpath("review-portable.json")
+        payload = json.loads(legacy["prepared_path"].read_text(encoding="utf-8"))
+        payload["bindings"]["glossary"]["path"] = legacy["glossary_path"].name
+        prepared.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        before = prepared.read_bytes()
+        writer = suite.tools.ReviewWriter(prepared, progress=None)
+        for command in json.loads(legacy["draft_path"].read_text(encoding="utf-8"))["decisions"]:
+            writer._replay(command)
+        writer.source_issues_review("passed", "Compared the complete invented source sentence.")
+        writer.terminology_review("reviewed", covered_units=[suite.example.UNIT_ID],
+                                  no_unlisted_reason="Both invented concepts match the actual contextual glossary entries.")
+        writer.review("reviewed")
+        draft = writer.save_draft(root.joinpath("legacy-decisions-portable.json"))
+        expected = writer.save(root.joinpath("python-review.json"),
+                               terminology_path=root.joinpath("python-terms.json")).to_dict()
+        snapshot = self.invoke("translation_review_writer.restore_decision_draft", str(draft))
+        self.assertEqual(snapshot["data"], writer.data)
+        self.assertEqual(snapshot["decisions"], writer._commands)
+        output, terms = root.joinpath("native-review.json"), root.joinpath("native-terms.json")
+        actual = self.invoke("translation_review_writer.save_review", str(prepared), snapshot["decisions"],
+                             output_path=str(output), terminology_path=str(terms))
+        self.assertEqual(actual, expected)
+        self.assertTrue(actual["records_ready"])
+        self.assertEqual(actual["findings"], [])
+        self.assertEqual(actual["source_fidelity"], "not_assessed")
+        self.assertEqual(actual["execution_truth"], "not_assessed")
+        self.assertEqual(json.loads(terms.read_text(encoding="utf-8")),
+                         json.loads(root.joinpath("python-terms.json").read_text(encoding="utf-8")))
+        self.assertEqual(prepared.read_bytes(), before)
+
+        draft_before = draft.read_bytes()
+        glossary = legacy["glossary_path"]
+        glossary.write_bytes(glossary.read_bytes() + b"\nSame rows, changed file bytes.\n")
+        with self.assertRaises(suite.tools.ReviewWriterError) as changed_legacy:
+            suite.tools.ReviewWriter.from_draft(draft, progress=None)
+        self.assertEqual(changed_legacy.exception.code, "TRW_STALE_BINDING")
+        with self.assertRaises(subprocess.CalledProcessError) as changed_native:
+            self.invoke("translation_review_writer.restore_decision_draft", str(draft))
+        self.assertIn("TRW_STALE_BINDING", changed_native.exception.stderr)
+        self.assertEqual(draft.read_bytes(), draft_before)
+        self.assertEqual(prepared.read_bytes(), before)
 
     def test_reference_completed_and_defective_ledgers(self):
         import test_translation_review as suite
