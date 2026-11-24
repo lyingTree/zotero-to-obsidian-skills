@@ -935,6 +935,61 @@ class NativeDeliveryPreparationComparison(unittest.TestCase):
 
 
 
+class NativeWorkflowDraftComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_docx_workflow_initialization_and_resume(self):
+        from test_docx_source_inventory import make_docx, paragraph
+        import complete_workflow as workflow
+        skills = self.root.joinpath("skills")
+        skill = skills.joinpath("synthetic-skill")
+        skill.mkdir(parents=True)
+        skill.joinpath("SKILL.md").write_text(
+            "# Synthetic\n- [ ] [DOCX-A01] A source sentence has a target. <!-- check-type: offline_outcome -->\n",
+            encoding="utf-8")
+        source = self.root.joinpath("source.docx")
+        make_docx(source, paragraph("First synthetic paragraph.") + paragraph("Second synthetic paragraph."))
+        candidate = self.root.joinpath("candidate.md")
+        py = workflow.initialize_workflow(skills_root=skills, work_root=self.root.joinpath("python"),
+            sources={"main": source}, source_roles={"main": "main"}, candidate_path=candidate,
+            resource_root=self.root, translation_required=False, progress=lambda *_: None)
+        rs = Path(self.invoke("complete_workflow.initialize_workflow", skills_root=str(skills),
+            work_root=str(self.root.joinpath("rust")), sources={"main": str(source)},
+            source_roles={"main": "main"}, candidate_path=str(candidate), resource_root=str(self.root),
+            translation_required=False))
+        expected = json.loads(py.read_text(encoding="utf-8"))
+        actual = json.loads(rs.read_text(encoding="utf-8"))
+        for field in ("schema_version", "run_id", "workflow_profile", "scope", "identity",
+                      "naming", "placement", "content_input", "stages", "issues", "publish"):
+            self.assertEqual(actual[field], expected[field], field)
+        for field in ("rule_files", "files"):
+            self.assertEqual(actual["versions"][field], expected["versions"][field])
+        self.assertEqual(set(actual["records"]), set(expected["records"]))
+        queue = Path(actual["records"]["draft_queue"])
+        checks = json.loads(Path(actual["records"]["checks"]).read_text(encoding="utf-8"))
+        self.assertTrue(all(row["status"] == "not_verified" for row in checks["checks"]))
+        paths = (rs, queue, Path(actual["records"]["checks"]))
+        before = [p.read_bytes() for p in paths]
+        ref_resume = workflow.resume_workflow(py)
+        state = self.invoke("complete_workflow.resume_workflow", str(rs))
+        for field in ("phase", "counts", "draft_ready", "source_fidelity", "boundary"):
+            self.assertEqual(state[field], ref_resume[field], field)
+        self.assertEqual(state["next_action"]["stage"], ref_resume["next_action"]["stage"])
+        self.assertEqual([p.read_bytes() for p in paths], before)
+        self.assertFalse(candidate.exists())
+        actual["scope"]["source_roles"]["main"] = "supplement"
+        rs.write_text(json.dumps(actual), encoding="utf-8")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("complete_workflow.resume_workflow", str(rs))
+        actual["scope"]["source_roles"]["main"] = "main"
+        rs.write_text(json.dumps(actual), encoding="utf-8")
+        source.write_bytes(source.read_bytes() + b"changed")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("complete_workflow.resume_workflow", str(rs))
+        self.assertEqual(queue.read_bytes(), before[1])
+
+
 class NativeFigurePreparationComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp
     invoke = ReferenceComparison.invoke

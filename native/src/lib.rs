@@ -29,6 +29,7 @@ pub mod check_scope;
 pub mod visible_edits;
 pub mod draft_queue;
 pub mod delivery_prepare;
+pub mod workflow;
 pub mod mapping_compare;
 pub mod pdf_structure;
 pub mod translation_validate;
@@ -116,6 +117,8 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_source_inventory.sha256_file",
     "prepare_source_inventory.prepare_sources",
     "complete_workflow.write_manifest",
+    "complete_workflow.initialize_workflow",
+    "complete_workflow.resume_workflow",
     "accept_note.accept_note",
     "docx_source_inventory.read_docx",
     "docx_source_inventory.prepare_docx_source",
@@ -701,6 +704,27 @@ pub fn invoke(request: Value) -> Result<Value> {
             let translation=c.option("translation_review_path",Value::Null);let translation=if translation.is_null(){None}else{Some(path(&translation)?)};
             let edges=c.option("figure_edge_reviews_required",json!(false)).as_bool().context("figure_edge_reviews_required must be a bool")?;
             c.finish()?;json!(path_text(&delivery_prepare::manifest(&inv,&candidate,&deliveries,&dest,root.as_deref(),translation.as_deref(),edges)?)?)
+        }
+        "complete_workflow.initialize_workflow" => {
+            let skills=path(&c.required("skills_root")?)?;
+            let work=path(&c.required("work_root")?)?;
+            let sources=c.required("sources")?;
+            let roles=c.required("source_roles")?;
+            let candidate=path(&c.required("candidate_path")?)?;
+            let resource=path(&c.required("resource_root")?)?;
+            let g=c.option("glossary_path",Value::Null);
+            let g=if g.is_null(){None}else{Some(path(&g)?)};
+            let translation=c.option("translation_required",json!(true)).as_bool().context("translation_required must be an explicit boolean")?;
+            let id=string(&c.option("run_id",json!("local-candidate")),"run_id")?;
+            c.finish()?;
+            let opt=workflow::Initialize{skills_root:&skills,work_root:&work,sources:&sources,
+                source_roles:&roles,candidate_path:&candidate,resource_root:&resource,
+                glossary_path:g.as_deref(),translation_required:translation,run_id:&id};
+            json!(path_text(&workflow::initialize(opt,|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
+        }
+        "complete_workflow.resume_workflow" => {
+            let p=path(&c.positional("run_path")?)?;
+            c.finish()?;workflow::resume(&p)?
         }
         "complete_workflow.write_manifest" => {
             let run=path(&c.positional("run_path")?)?;let deliveries=c.positional("deliveries")?;c.finish()?;

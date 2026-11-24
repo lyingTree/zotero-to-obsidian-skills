@@ -467,6 +467,25 @@ fn pdf_bounds(p:&Path,page:u64)->Result<[f64;4]>{
     ensure!(width>0.0&&height>0.0&&unit.is_finite()&&unit>0.0&& (width*unit).is_finite()&&(height*unit).is_finite(),"Invalid PDF page extent");
     Ok([0.0,0.0,width*unit,height*unit])
 }
+/// Read-only snapshot for workflow routing. No lock files or evidence are
+/// written; the caller compares the original hash before using the result.
+pub fn resume_snapshot(p:&Path)->Result<Value>{
+    let q=Queue::open(p)?;
+    let status=q.status();
+    if status["draft_ready"]==true{
+        for unit in q.data["units"].as_object().context("queue units")?.values(){
+            let revision=unit["revisions"].as_array().and_then(|a|a.last()).context("Missing saved revision")?;
+            binding(revision,q.path.parent().unwrap()).context("The saved draft fragment or resource changed")?;
+            for asset in rows(&revision["assets"],"fragment assets")?{
+                binding(asset,q.path.parent().unwrap()).context("The saved draft fragment or resource changed")?;
+            }
+        }
+    }
+    let next=q.next_task();
+    let b=file(&q.path)?;
+    ensure!(b["sha256"]==q.hash,"Draft queue changed during read-only resumption");
+    Ok(json!({"data":q.data,"binding":b,"status":status,"next_task":next}))
+}
 pub fn open(p:&Path)->Result<Value>{
     let q=Queue::open(p)?;Ok(json!({"data":q.data,"sha256":q.hash,"path":path_text(&q.path)?}))
 }

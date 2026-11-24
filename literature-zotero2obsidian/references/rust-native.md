@@ -109,3 +109,7 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 ### 图件审阅初始化增量
 
 `prepare_source_inventory.prepare_figure_reviews` 使用实际 PDF 页树、未旋转边界及可达 XObject 资源检查，或使用 DOCX 原生媒体定位，绑定已存在的页面渲染和最终图片，生成 28 个 pending 原子检查及每件资源四个 pending 边缘槽位。原始清单快照和恢复计划先发布，随后更新清单指针；不自动填充视觉结论。PDF 资源存在不等价于实际绘制，更不代表页面渲染与完整图件提取已经迁移。新增真实多页 PDF/XRef 参考差分测试，待 CI 验证。
+
+### 原生工作流初始化与断点续作增量
+
+新增 `complete_workflow.initialize_workflow` 的 DOCX 原生入口：冻结规则/技能文件和原始附件，调用真实来源清单、全量 pending 台账及不可变起草队列生成器，最后独占发布 run.json。PDF 输入在产生工作目录前明确阻断。`resume_workflow` 从真实运行记录和冻结来源只读恢复 setup/draft/assemble 阶段，重新核对角色、原始附件和已写片段哈希；当候选已存在并进入 review 阶段时，完整映射/交付检查未迁移，明确返回 UNMIGRATED_WORKFLOW_INSPECTION，不产生接受结论。新增 DOCX 参考差分和来源变更负例。尚不等价于完整工作流。
