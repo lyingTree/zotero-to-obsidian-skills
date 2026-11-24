@@ -71,12 +71,12 @@ fn rule_files(root:&Path)->Result<Vec<(String,PathBuf)>>{
     ensure!(!files.is_empty(),"No actual SKILL.md files were found under skills_root.");Ok(files)
 }
 #[derive(Clone)]
-struct Rule{id:String,skill:String,objective:String,location:Value,typ:String,environment:Option<String>}
+pub(crate) struct Rule{pub(crate) id:String,pub(crate) skill:String,pub(crate) objective:String,pub(crate) location:Value,pub(crate) typ:String,pub(crate) environment:Option<String>}
 impl Rule{
-    fn entry(&self)->Value{json!({"id":self.id,"skill":self.skill,"objective":self.objective,"rule":self.location,
+    pub(crate) fn entry(&self)->Value{json!({"id":self.id,"skill":self.skill,"objective":self.objective,"rule":self.location,
         "declared_type":self.typ,"declared_environment_kind":self.environment})}
 }
-struct Catalog{rules:Vec<Rule>,bindings:Vec<Value>}
+pub(crate) struct Catalog{pub(crate) rules:Vec<Rule>,pub(crate) bindings:Vec<Value>}
 fn atomic_lines(text:&str,skill:&str,p:&Path,digest:&str)->Result<Vec<Rule>>{
     static RULE:OnceLock<Regex>=OnceLock::new();static FENCE:OnceLock<Regex>=OnceLock::new();static TYPE:OnceLock<Regex>=OnceLock::new();
     let rule=RULE.get_or_init(||Regex::new(r"^ {0,3}(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?\[(?P<id>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[A-Z][0-9]+)\]\s+(?P<text>\S.*)$").unwrap());
@@ -122,7 +122,7 @@ fn atomic_lines(text:&str,skill:&str,p:&Path,digest:&str)->Result<Vec<Rule>>{
             location:json!({"path":path,"line":number,"sha256":digest}),typ,environment});
     }Ok(rows)
 }
-fn catalog(root:&Path,mut progress:impl FnMut(usize,usize,&str))->Result<Catalog>{
+pub(crate) fn catalog(root:&Path,mut progress:impl FnMut(usize,usize,&str))->Result<Catalog>{
     let root=files::canonical(root)?;
     let paths=rule_files(&root)?;
     let mut seen=HashMap::<String,Value>::new();let mut rules=Vec::new();let mut bindings=Vec::new();
@@ -193,7 +193,7 @@ fn publish_new(p:&Path,data:&[u8])->Result<()>{
     f.persist_noclobber(p).map_err(|e|anyhow!("Cannot exclusively publish {}: {}",p.display(),e.error))?;
     ensure!(fs::read(p)?==data,"Ledger readback differs");Ok(())
 }
-fn selected(catalog:&Catalog,mode:&str,extra:&Value)->Result<HashSet<String>>{
+pub(crate) fn selected(catalog:&Catalog,mode:&str,extra:&Value)->Result<HashSet<String>>{
     ensure!(matches!(mode,"acceptance"|"all"),"rule_selection must be acceptance or all.");
     let values=extra.as_array().context("additional_ids must be an explicit sequence of individual IDs.")?;
     let mut ids=HashSet::new();

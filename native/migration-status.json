@@ -42,7 +42,7 @@
     },
     "source_delivery_mapping_and_review_ledger": {
       "qualified": false,
-      "blocker": "Source/delivery handoff and atomic review ledger parity"
+      "blocker": "Atomic ledger validation and locked decision writer implemented; scope derivation, source/delivery handoff, transaction and full qualification remain"
     },
     "translation_review_lifecycle": {
       "qualified": false,

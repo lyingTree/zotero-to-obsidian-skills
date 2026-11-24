@@ -651,5 +651,75 @@ class NativeAtomicPreparationComparison(unittest.TestCase):
             fixture.doCleanups()
 
 
+import test_check_records as check_records_suite
+
+class NativeAtomicValidatorComparison(check_records_suite.CheckRecordsTests):
+    """Reuse original adversarial ledger fixtures; compare native diagnostics
+    and status counts for every validator call, not just a final pass boolean."""
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        from collections import Counter
+        original = check_records_suite.checker.validate_check_records
+
+        def validate(path, *, progress=None):
+            expected = original(path, progress=progress)
+            with tempfile.TemporaryDirectory() as directory:
+                request = Path(directory).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version": 1,
+                    "operation": "check_records.validate_check_records", "args": [str(path)]},
+                    ensure_ascii=False), encoding="utf-8")
+                result = subprocess.run([str(BINARY), "invoke", str(request)], check=True,
+                                        capture_output=True, encoding="utf-8", timeout=90)
+                actual = json.loads(result.stdout)["result"]
+            expected_value = expected.to_dict()
+            # Parser diagnostics may differ across libraries, but every
+            # independent rule ID, severity, count and readiness gate must match.
+            def diagnostics(v):
+                return Counter((r["code"], r["object_id"], r["level"]) for r in v["findings"])
+            self.assertEqual(diagnostics(actual), diagnostics(expected_value), actual["findings"])
+            for key, value in expected_value.items():
+                if key != "findings":
+                    self.assertEqual(actual[key], value, key)
+            return expected
+        patcher = patch.object(check_records_suite.checker, "validate_check_records", validate)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+class NativeAtomicWriterComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_explicit_batch_preserves_previous_decisions_and_evidence(self):
+        from complete_workflow import record_check_batch, record_decision_rows
+        fixture = check_records_suite.CheckRecordsTests(methodName="test_skeleton_discovers_all_atomic_ids_without_resolving_any")
+        fixture.setUp()
+        try:
+            a = fixture.path
+            b = fixture.base.joinpath("native-checks.json")
+            b.write_bytes(a.read_bytes())
+            evidence = {"result": check_records_suite.checker.bind_evidence(fixture.candidate, {"kind":"lines","start":1,"end":1})}
+            scope = fixture.scopes["EX-C01"]
+            rows = [{"id":"EX-C01","status":"passed","scope":scope,"reason":"Actual check.","evidence":["result"]}]
+            record_check_batch(a, rows, evidence=evidence)
+            self.invoke("complete_workflow.record_check_batch",str(b),rows,evidence=evidence)
+            contexts = {"table": {"scope":fixture.scopes["FMT-A01"],"evidence":["result"]}}
+            decisions = [["FMT-A01","failed","table","Missing cell."]]
+            record_decision_rows(a,decisions,contexts=contexts,evidence={})
+            self.invoke("complete_workflow.record_decision_rows",str(b),decisions,contexts=contexts,evidence={})
+            expected = json.loads(a.read_text(encoding="utf-8"))
+            actual = json.loads(b.read_text(encoding="utf-8"))
+            for report in (actual,expected):
+                for update in report["updates"]:
+                    update.pop("at")
+            self.assertEqual(actual,expected)
+            before = b.read_bytes()
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("complete_workflow.record_check_batch",str(b),[dict(rows[0],objective="forged")],evidence={})
+            self.assertEqual(b.read_bytes(),before)
+        finally:
+            fixture.doCleanups()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

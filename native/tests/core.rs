@@ -632,3 +632,72 @@ fn atomic_rule_catalog_ignores_comments_and_fences_and_binds_exact_bytes(){
     fs::write(skill.join("references").join("duplicate.md"),"- [X-A01] Duplicate.\n").unwrap();
     assert!(checks::coverage(&skills,|_,_,_|{}).is_err());
 }
+
+
+#[test]
+fn native_atomic_ledger_validates_evidence_and_records_without_rebinding(){
+    use z2o_native::{check_ledger,check_validate,check_write};
+    let root=tempdir().unwrap();
+    let skill=root.path().join("skills").join("example");fs::create_dir_all(&skill).unwrap();
+    fs::write(skill.join("SKILL.md"),"- [ ] [EX-A01] Actual file. <!-- check-type: offline_outcome -->\n- [ ] [EX-A02] Actual event. <!-- check-type: execution_process -->\n").unwrap();
+    let source=root.path().join("source.md");let candidate=root.path().join("candidate.md");
+    fs::write(&source,"source\n").unwrap();fs::write(&candidate,"候选\n").unwrap();
+    let scope=json!([{"object_id":"p1","locator":{"kind":"whole_file"}}]);
+    let p=root.path().join("checks.json");
+    check_ledger::prepare(&skill,&p,check_ledger::PrepareOptions{
+        sources:json!({"main":source.to_str().unwrap()}),candidates:Value::Null,candidate_path:Some(candidate.clone()),
+        scopes:json!({"EX-A01":scope,"EX-A02":scope}),types:Value::Null,environments:Value::Null,
+        mode:"acceptance".into(),additional:json!([])
+    },|_,_,_|{}).unwrap();
+    let validate=||check_validate::validate(&p,|_,_,_|{}).unwrap();
+    let start=validate();assert_eq!(start["structurally_consistent"],true);assert_eq!(start["offline_records_ready"],false);
+    let binding=check_ledger::bind_evidence(&candidate,&json!({"kind":"lines","start":1,"end":1}),"offline_result",&Value::Null).unwrap();
+    let evidence=json!({"file":binding});
+    let row=json!({"id":"EX-A01","status":"passed","reason":"Actual file reviewed.","scope":scope,"evidence":["file"]});
+    check_write::record_batch(&p,&json!([row]),&evidence).unwrap();
+    let after=validate();assert_eq!(after["offline_records_ready"],true);assert_eq!(after["recorded_checks_complete"],false);
+    assert_eq!(after["source_fidelity"],"not_assessed");
+    let saved=fs::read(&p).unwrap();
+    let mut bad=row.clone();bad["requirement_type"]=json!("unclassified");
+    assert!(check_write::record_batch(&p,&json!([bad]),&json!({})).is_err());assert_eq!(fs::read(&p).unwrap(),saved);
+    let trace=json!({"id":"EX-A02","status":"passed","reason":"Unobserved.","scope":scope,"evidence":["file"]});
+    check_write::record_batch(&p,&json!([trace]),&json!({})).unwrap();
+    assert!(validate()["findings"].as_array().unwrap().iter().any(|f|f["code"]=="CHECK_PROCESS_NOT_OBSERVED"));
+    let records=z2o_native::pipeline::read_json(&p).unwrap();assert_eq!(records["updates"].as_array().unwrap().len(),2);
+    fs::write(&candidate,"changed\n").unwrap();
+    assert!(validate()["findings"].as_array().unwrap().iter().any(|f|f["code"]=="CHECK_HASH_CHANGED"));
+}
+#[test]
+fn native_check_writer_rejects_competing_writer_and_preserves_record(){
+    use fs2::FileExt;
+    let root=tempdir().unwrap();
+    let p=root.path().join("checks.json");fs::write(&p,b"{}\n").unwrap();
+    let f=std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(root.path().join(".checks.json.z2o-lock")).unwrap();
+    FileExt::try_lock_exclusive(&f).unwrap();
+    let err=z2o_native::check_write::record_batch(&p,&json!([{}]),&json!({})).unwrap_err();
+    assert!(format!("{err:#}").contains("Another native process"));
+    assert_eq!(fs::read(&p).unwrap(),b"{}\n");
+    FileExt::unlock(&f).unwrap();
+}
+#[test]
+fn native_machine_audit_binds_real_files_and_never_accepts_caller_report(){
+    use z2o_native::{check_ledger,check_write,check_validate,properties};
+    let root=tempdir().unwrap();
+    let skill=root.path().join("skills").join("example");fs::create_dir_all(&skill).unwrap();
+    fs::write(skill.join("SKILL.md"),"- [ ] [WRITE-A04] Bytes match. <!-- check-type: offline_outcome -->\n- [ ] [WRITE-A05] No obsolete key. <!-- check-type: offline_outcome -->\n").unwrap();
+    let a=root.path().join("candidate.md");let b=root.path().join("written.md");
+    let bytes=properties::build(b"# Title\n","thesis",&json!({"类型":"学位论文","年份":2024,"关键词":[]})).unwrap();
+    fs::write(&a,&bytes).unwrap();fs::write(&b,&bytes).unwrap();
+    let p=root.path().join("checks.json");let report=root.path().join("report.json");
+    check_ledger::prepare(&skill,&p,check_ledger::PrepareOptions{
+        sources:json!({"source":a.to_str().unwrap()}),candidates:Value::Null,candidate_path:Some(b.clone()),
+        scopes:Value::Null,types:Value::Null,environments:Value::Null,mode:"acceptance".into(),additional:json!([])
+    },|_,_,_|{}).unwrap();
+    let opt=||check_write::AuditOptions{stage:"write",after:&b,before:Some(&a),mode:None,item_type:None,kind:None};
+    let ids=check_write::record_file_checks(&p,&report,opt()).unwrap();
+    assert_eq!(ids,json!(["WRITE-A04","WRITE-A05"]));
+    assert_eq!(check_validate::validate(&p,|_,_,_|{}).unwrap()["offline_records_ready"],true);
+    assert_eq!(check_write::record_file_checks(&p,&report,opt()).unwrap(),json!([]));
+    assert!(check_write::record_file_checks(&p,&a,opt()).is_err());
+    assert_eq!(fs::read(&a).unwrap(),bytes);
+}

@@ -23,6 +23,8 @@ pub mod docx;
 pub mod translation_prepare;
 pub mod source_prepare;
 pub mod check_ledger;
+pub mod check_validate;
+pub mod check_write;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -100,6 +102,11 @@ pub const OPERATIONS: &[&str] = &[
     "deterministic_stage_checks.coverage_catalog",
     "complete_workflow.pending_check_batch",
     "complete_workflow.pending_check_rows",
+    "check_records.validate_check_records",
+    "complete_workflow.record_check_batch",
+    "complete_workflow.record_decision_rows",
+    "complete_workflow.bind_candidate",
+    "deterministic_stage_checks.record_file_checks",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -561,6 +568,31 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             if op.ends_with("pending_check_batch"){check_ledger::pending_batch(&p,limit,prefix.as_deref())?}
             else{check_ledger::pending_rows(&p,limit,prefix.as_deref())?}
+        }
+        "check_records.validate_check_records" => {
+            let p=path(&c.positional("path")?)?;c.finish()?;
+            check_validate::validate(&p,|i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?
+        }
+        "complete_workflow.record_check_batch" | "complete_workflow.record_decision_rows" => {
+            let p=path(&c.positional("checks_path")?)?;
+            let rows=c.positional(if op.ends_with("record_check_batch"){"results"}else{"rows"})?;
+            let evidence=c.required("evidence")?;
+            if op.ends_with("record_check_batch"){c.finish()?;check_write::record_batch(&p,&rows,&evidence)?;}
+            else{let contexts=c.required("contexts")?;c.finish()?;check_write::record_rows(&p,&rows,&contexts,&evidence)?;}
+            Value::Null
+        }
+        "complete_workflow.bind_candidate" => {
+            let p=path(&c.positional("run_path")?)?;c.finish()?;check_write::bind_candidate(&p)?
+        }
+        "deterministic_stage_checks.record_file_checks" => {
+            let checks=path(&c.positional("checks_path")?)?;let report=path(&c.positional("report_path")?)?;
+            let stage=string(&c.required("stage")?,"stage")?;let after=path(&c.required("after")?)?;
+            let before=c.option("before",Value::Null);
+            let before=if before.is_null(){None}else{Some(path(&before)?)};
+            let mode=c.option("mode",Value::Null);let item_type=c.option("item_type",Value::Null);let kind=c.option("kind",Value::Null);
+            c.finish()?;
+            check_write::record_file_checks(&checks,&report,check_write::AuditOptions{stage:&stage,after:&after,
+                before:before.as_deref(),mode:mode.as_str(),item_type:item_type.as_str(),kind:kind.as_str()})?
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };
