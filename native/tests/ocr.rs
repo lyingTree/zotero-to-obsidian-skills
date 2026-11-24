@@ -119,3 +119,40 @@ fn actual_cpu_ocr_scan_with_verified_package(){
     assert_eq!(files::snapshot(&source).unwrap()["sha256"],report["source_file"]["sha256"]);
     println!("Real CPU OCR hypothesis: {text}");
 }
+
+
+#[test]
+fn offline_install_checks_every_profile_and_reuses_exact_package(){
+    let root=tempfile::tempdir().unwrap();let source=root.path().join("source");fs::create_dir(&source).unwrap();
+    let (manifest,_)=fixture(&source);
+    let mut data:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    let medium=source.join("medium.onnx");fs::write(&medium,b"medium fixture").unwrap();
+    data["profiles"]["medium"]=data["profiles"]["tiny"].clone();
+    data["profiles"]["medium"]["detector"]=json!({"path":"medium.onnx","sha256":files::digest(b"medium fixture")});
+    let raw=serde_json::to_vec(&data).unwrap();fs::write(&manifest,&raw).unwrap();
+    let digest=files::digest(&raw);let store=root.path().join("store");
+    let install=||ocr_backend::install_package(&manifest,&digest,&store,|_,_,_|{});
+    let a=install().unwrap();assert_eq!(a["resource_count"],5);assert_eq!(a["runtime_loaded"],false);
+    assert_eq!(a["reused_existing"],false);
+    let b=install().unwrap();assert_eq!(b["reused_existing"],true);
+    assert_eq!(b["package_manifest"],a["package_manifest"]);
+    let installed=std::path::PathBuf::from(a["package_root"].as_str().unwrap());
+    fs::write(installed.join("unexpected.dll"),b"not in manifest").unwrap();
+    assert!(install().is_err());
+    fs::remove_file(installed.join("unexpected.dll")).unwrap();
+    fs::write(&medium,b"changed").unwrap();
+    assert!(install().is_err());
+    assert_eq!(fs::read(installed.join("medium.onnx")).unwrap(),b"medium fixture");
+}
+#[test]
+fn offline_install_rejects_bad_unselected_model_before_creating_store(){
+    let root=tempfile::tempdir().unwrap();let source=root.path().join("source");fs::create_dir(&source).unwrap();
+    let (manifest,_)=fixture(&source);
+    let mut data:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    data["profiles"]["medium"]=data["profiles"]["tiny"].clone();
+    data["profiles"]["medium"]["detector"]=json!({"path":"../escape.onnx","sha256":"0".repeat(64)});
+    let raw=serde_json::to_vec(&data).unwrap();fs::write(&manifest,&raw).unwrap();
+    let store=root.path().join("store");
+    assert!(ocr_backend::install_package(&manifest,&files::digest(&raw),&store,|_,_,_|{}).is_err());
+    assert!(!store.exists());
+}

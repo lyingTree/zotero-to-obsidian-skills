@@ -96,7 +96,8 @@ def official_cpu_runtime() -> tuple[dict, dict]:
         raise ValueError("Release does not contain the expected regular CPU library.")
     return (
         {"platform": "linux", "architecture": "x86_64", "version": ORT_VERSION,
-         "file": records[runtime_name]},
+         "file": records[runtime_name],
+         "dependencies": [b for n, b in records.items() if n != runtime_name]},
         {"release": release["tag_name"], "archive": expected_url, "archive_sha256": digest,
          "libraries": records},
     )

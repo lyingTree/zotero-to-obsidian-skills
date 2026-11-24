@@ -151,3 +151,7 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 回收成功的 `resolve-lock` job（run 45406085584, job 138487297262）生成的完整 Cargo.lock，含固定 PdfCraft 和 ppocr-rs Git revisions、ort 2.0.0-rc.13；CI 恢复 `--locked`，不得静默重解析。新增 Ubuntu x86_64 独立 CPU OCR smoke：从 Microsoft 官方 release v1.28.3 读取发布校验值，从 PaddlePaddle Hugging Face 模型 metadata 确定实际 revision 并校验 LFS SHA-256/Git blob，使用模型配置中的字典，不信任无元数据下载。只提取指定常规运行库文件、不跟随 archive 链接。CI 生成虚构中英文扫描版 PDF（无文字层），通过真实 z2o 二进制，在空 PATH、禁用 GPU 条件下执行并验证英文字串、中文、数值、实际坐标与源文件哈希。CI Python 仅用于生成测试夹具及资源验证，不是用户运行依赖。首次真实测试尚未执行完；成功后仍需其余五个 target 的实际模型、内存/低端 CPU 及字体、可信发布模型包的资格审查。此测试资源清单不是已签名或已批准的生产安装目录，不能将其直接标记为合格安装包。
 
 CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GITHUB_ENV，避免在 job 级 env 中引用不可用的 runner context 导致整个 native workflow 无法创建 job。官方 ONNX Runtime 1.28.3 包含 1.28.2 之后的模型校验与内存安全修复，测试优先使用该补丁版；真实包仍须通过 release digest 核验。
+
+### 原生离线 OCR 资源安装
+
+新增 `prepare_source_inventory.install_ocr_package(package_manifest, expected_package_sha256=..., store=...)`。独立可信 SHA-256 绑定清单；所有声明的 tiny/small/medium、运行库及依赖、辅助模型逐一检查，包括当前机器不会加载的模型。仅复制被声明的常规文件，拒绝目录穿越、链接、冲突及额外文件；暂存目录校验完后发布到 `store/<manifest SHA-256>/package.json`，同包可复用，不覆盖或悄悄修复旧资源。运行时依赖列表 `runtime.dependencies` 纳入哈希核验。支持已有离线可信包，不包含自动下载、签名发布、GPU 探测或合格模型目录。用户无需 Python 执行本安装接口。新增真实文件的安装、复用、篡改与未选模型负例。

@@ -123,6 +123,7 @@ pub const OPERATIONS: &[&str] = &[
     "pdf_image_objects.extract_pdfcraft_text",
     "prepare_source_inventory.ocr_hardware_plan",
     "prepare_source_inventory.inspect_ocr_package",
+    "prepare_source_inventory.install_ocr_package",
     "prepare_source_inventory.recognize_ocr_png",
     "prepare_source_inventory.prepare_pdf_ocr_evidence",
     "prepare_source_inventory.prepare_pdfcraft_evidence",
@@ -791,6 +792,12 @@ pub fn invoke(request: Value) -> Result<Value> {
                 profile:&profile,layout:&layout,mode:&mode,dpi,expected_source_sha:expected.as_deref(),
                 regions:&regions,coordinate_system:&coordinate_system};
             json!(path_text(&ocr_pdf::prepare(&source,&dest,opt,|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
+        }
+        "prepare_source_inventory.install_ocr_package" => {
+            let manifest=path(&c.positional("package_manifest")?)?;
+            let expected=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
+            let store=path(&c.required("store")?)?;c.finish()?;
+            ocr_backend::install_package(&manifest,&expected,&store,|i,n,label|eprintln!("[{i}/{n}] install OCR resource {label}"))?
         }
         "prepare_source_inventory.ocr_hardware_plan" => {
             let profile=string(&c.option("profile",json!("auto")),"profile")?;c.finish()?;

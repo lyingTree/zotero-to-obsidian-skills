@@ -113,6 +113,161 @@ fn resource(root:&Path,v:&Value,label:&str)->Result<Value>{
     ensure!(record["sha256"]==expected,"OCR_RESOURCE_HASH_MISMATCH: {label}");
     ensure!(fs::metadata(p)?.len()>0,"Empty OCR resource: {label}");Ok(record)
 }
+fn package_records(data:&Value)->Result<Vec<(&str,&Value)>>{
+    ensure!(data.is_object()&&data["schema_version"].as_u64()==Some(1)&&data["engine"]=="ppocr-v6",
+        "Use the verified schema-1 PP-OCRv6 package manifest");
+    let runtime=&data["runtime"];
+    ensure!(runtime["platform"]==std::env::consts::OS&&runtime["architecture"]==std::env::consts::ARCH,
+        "OCR_RUNTIME_PLATFORM_MISMATCH");
+    let version=str_nonempty(&runtime["version"],"ONNX Runtime version")?;
+    ensure!(version.strip_prefix("1.28.").is_some_and(|v|!v.is_empty()&&v.bytes().all(|b|b.is_ascii_digit())),
+        "Package must name a qualified ONNX Runtime 1.28.x build");
+    let mut result=vec![("runtime",&runtime["file"])];
+    if let Some(rows)=runtime.get("dependencies"){
+        let rows=rows.as_array().filter(|r|r.len()<=64).context("runtime.dependencies must be an array of at most 64 resource records")?;
+        for row in rows{result.push(("runtime_dependency",row));}
+    }
+    let profiles=data["profiles"].as_object().filter(|m|!m.is_empty()).context("OCR profiles must be a nonempty object")?;
+    for (key,profile) in profiles{
+        ensure!(matches!(key.as_str(),"tiny"|"small"|"medium")&&profile.is_object(),"Invalid OCR profile");
+        for name in ["detector","recognizer","dictionary"]{result.push((name,&profile[name]));}
+    }
+    let aux=&data["auxiliary"];
+    ensure!(aux.is_null()||aux.is_object(),"auxiliary must be an object");
+    if let Some(aux)=aux.as_object(){
+        for (name,v) in aux{
+            match name.as_str(){
+                "orientation"|"layout"=>{if !v.is_null(){result.push(("auxiliary",v));}},
+                "table_structure"=>{
+                    if !v.is_null(){
+                        result.push(("table_model",&v["model"]));
+                        result.push(("table_dictionary",&v["dictionary"]));
+                    }
+                },
+                "table_cells_wired"|"table_cells_wireless"=>{if !v.is_null(){result.push(("table_cell_detector",v));}},
+                _=>bail!("Unknown OCR auxiliary model: {name}"),
+            }
+        }
+    }
+    Ok(result)
+}
+fn verified_manifest(p:&Path,expected:&str)->Result<(Vec<u8>,Value,Value,PathBuf)>{
+    let (raw,manifest)=read_small(p,MAX_MANIFEST_BYTES)?;
+    ensure!(manifest["sha256"]==sha(&json!(expected))?,"OCR_PACKAGE_MANIFEST_HASH_MISMATCH");
+    let root=path(&manifest["path"])?.parent().context("package directory")?.to_owned();
+    let data=parse_json(std::str::from_utf8(&raw)?)?;
+    Ok((raw,manifest,data,root))
+}
+fn all_package_files(data:&Value,root:&Path,manifest:&Value)->Result<std::collections::BTreeMap<String,Value>>{
+    let mut result=std::collections::BTreeMap::<String,Value>::new();
+    let mut canonical=std::collections::BTreeMap::<PathBuf,String>::new();
+    for (label,row) in package_records(data)?{
+        let raw=str_nonempty(&row["path"],label)?;
+        let checked=resource(root,row,label)?;
+        let p=path(&checked["path"])?;
+        ensure!(checked["path"]!=manifest["path"]&&raw!="package.json",
+            "Model assets must not alias the package manifest");
+        if let Some(previous)=canonical.get(&p){ensure!(previous==raw,"Two different paths alias an OCR resource");}
+        canonical.insert(p,raw.to_owned());
+        if let Some(previous)=result.get(raw){ensure!(previous==&checked,"Conflicting OCR asset bindings");}
+        result.insert(raw.to_owned(),checked);
+    }
+    Ok(result)
+}
+fn real_directory(p:&Path)->Result<()>{
+    let meta=fs::symlink_metadata(p)?;
+    ensure!(meta.is_dir()&&!meta.file_type().is_symlink(),"OCR store must be a real directory: {}",p.display());
+    #[cfg(windows)]{
+        use std::os::windows::fs::MetadataExt;
+        ensure!(meta.file_attributes()&0x400==0,"Refusing a reparse-point OCR directory");
+    }
+    Ok(())
+}
+fn check_installed_contents(root:&Path,expected:&std::collections::BTreeMap<String,Value>)->Result<()>{
+    let mut todo=vec![root.to_owned()];
+    let mut seen=HashSet::new();
+    while let Some(dir)=todo.pop(){
+        real_directory(&dir)?;
+        for entry in fs::read_dir(dir)?{
+            let entry=entry?;let p=entry.path();let ty=entry.file_type()?;
+            ensure!(!ty.is_symlink(),"Unexpected symlink in OCR package");
+            if ty.is_dir(){real_directory(&p)?;todo.push(p);continue;}
+            check_write::no_link(&p)?;
+            let relative=p.strip_prefix(root)?.to_str().context("Non-UTF-8 package path")?.replace('\\',"/");
+            if relative=="package.json"{continue;}
+            let b=expected.get(&relative).context("Unexpected file in installed OCR package")?;
+            let current=binding(&p)?;
+            ensure!(current["sha256"]==b["sha256"],"Installed OCR resource hash mismatch: {relative}");
+            seen.insert(relative);
+        }
+    }
+    ensure!(seen.len()==expected.len(),"Installed OCR package lost a resource");Ok(())
+}
+
+/// Import only explicitly declared resources from an already trusted package.
+/// Does not download, execute, unpack arbitrary archives, or load an ONNX library.
+/// The package's expected hash must be obtained independently of its contents.
+/// Every profile is checked, even if this machine would only select Tiny.
+pub fn install_package(manifest_path:&Path,expected_sha:&str,store:&Path,
+    mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    let (raw,manifest,data,source_root)=verified_manifest(manifest_path,expected_sha)?;
+    let assets=all_package_files(&data,&source_root,&manifest)?;
+    ensure!(!assets.is_empty(),"Empty OCR package");
+    match fs::symlink_metadata(store){
+        Ok(_)=>real_directory(store)?,
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>fs::create_dir_all(store)?,
+        Err(e)=>return Err(e.into()),
+    }
+    real_directory(store)?;
+    let store=files::canonical(store)?;
+    let digest=manifest["sha256"].as_str().context("Package SHA-256")?;
+    let destination=store.join(digest);
+    ensure!(source_root!=destination,"Use an external package as installation input");
+    let _lock=check_write::lock_target(&destination)?;
+    let reused=match fs::symlink_metadata(&destination){
+        Ok(_)=>{
+            real_directory(&destination)?;
+            let (_,_,installed,installed_root)=verified_manifest(&destination.join("package.json"),digest)?;
+            all_package_files(&installed,&installed_root,&manifest)?;
+            check_installed_contents(&destination,&assets)?;
+            true
+        },
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{
+            let staging=tempfile::Builder::new().prefix(".pending-ocr-package-").tempdir_in(&store)?;
+            for (i,(relative,b)) in assets.iter().enumerate(){
+                let source=path(&b["path"])?;
+                let dest=staging.path().join(relative);
+                fs::create_dir_all(dest.parent().context("OCR resource parent")?)?;
+                let mut reader=fs::File::open(&source)?;
+                let mut writer=fs::OpenOptions::new().write(true).create_new(true).open(&dest)?;
+                std::io::copy(&mut reader,&mut writer)?;
+                writer.sync_all()?;
+                ensure!(binding(&dest)?["sha256"]==b["sha256"]&&binding(&source)?==*b,
+                    "OCR resource changed during installation: {relative}");
+                progress(i+1,assets.len(),relative);
+            }
+            let p=staging.path().join("package.json");
+            {
+                use std::io::Write;
+                let mut output=fs::OpenOptions::new().write(true).create_new(true).open(&p)?;
+                output.write_all(&raw)?;output.sync_all()?;
+            }
+            check_installed_contents(staging.path(),&assets)?;
+            ensure!(binding(manifest_path)?==manifest,"Source package manifest changed during installation");
+            ensure!(!destination.exists()&&!destination.is_symlink(),"Package destination appeared during installation");
+            fs::rename(staging.path(),&destination).context("Cannot publish verified OCR package")?;
+            check_installed_contents(&destination,&assets)?;
+            false
+        },
+        Err(e)=>return Err(e.into()),
+    };
+    let installed=binding(&destination.join("package.json"))?;
+    ensure!(installed["sha256"]==digest,"Installed manifest changed");
+    Ok(json!({"schema_version":1,"package_manifest":installed,"package_root":path_text(&destination)?,
+        "resource_count":assets.len(),"reused_existing":reused,"execution_provider":"CPUExecutionProvider",
+        "runtime_loaded":false,"qualified":false,"boundary":"Hash-verified import only. Actual CPU inference, authenticity of the independent package hash, and distribution licensing are separate qualifications."}))
+}
+
 pub struct Package{manifest:Value,resources:Map<String,Value>,policy:Value}
 impl Package{
     pub fn load(manifest_path:&Path,expected_sha:&str,requested:&str,layout:&str)->Result<Self>{
@@ -143,6 +298,15 @@ impl Package{
         resources.insert("runtime".into(),resource(&root,&runtime["file"],"runtime")?);
         let mut distinct=HashSet::new();
         distinct.insert(resources["runtime"]["path"].as_str().unwrap().to_owned());
+        if let Some(rows)=runtime.get("dependencies"){
+            let rows=rows.as_array().filter(|r|r.len()<=64).context("Invalid runtime dependency list")?;
+            for (i,row) in rows.iter().enumerate(){
+                let b=resource(&root,row,"runtime dependency")?;
+                ensure!(distinct.insert(b["path"].as_str().unwrap().to_owned()),"Duplicate runtime dependency");
+                resources.insert(format!("runtime_dependency_{i}"),b);
+            }
+        }
+
         for name in ["detector","recognizer","dictionary"]{
             let b=resource(&root,&profile[name],name)?;
             ensure!(distinct.insert(b["path"].as_str().unwrap().to_owned()),"OCR assets must be distinct actual files");

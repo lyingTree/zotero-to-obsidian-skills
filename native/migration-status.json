@@ -54,7 +54,7 @@
     },
     "native_installation_and_external_integration": {
       "qualified": false,
-      "blocker": "Native installer, Zotero and Obsidian integration without Python"
+      "blocker": "Native OCR local verified package installation implemented; trusted distribution catalog, runtime platform and existing installer/Zotero/Obsidian integration remain"
     },
     "twelve_skill_production_entrypoints": {
       "qualified": false,
