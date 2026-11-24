@@ -37,6 +37,12 @@
 
 ## 安装
 
+### 独立二进制安装（试验性）
+
+参见[独立运行器](literature-zotero2obsidian/references/binary-runtime.md)。构建与发布验收后，用户解压平台包，运行主技能 bin/z2o 的 install；不再安装 Python、pip 或 Git。开发者使用 requirements-binary.txt 与 scripts/build_binary.py 构建。当前分支新增跨平台构建及无系统 Python/Git PATH 的 smoke 测试；未取得最终结果前不宣称二进制已发布。长期原生方案见 [Rust 迁移评估](literature-zotero2obsidian/references/rust-migration.md)。
+
+### 源码安装（开发者兼容入口）
+
 需要 Python 3.10+ 和 Git。推荐在 Python 编辑器中打开 [install.py](install.py)，设置顶部配置后运行脚本，无需拼接命令行参数：
 
 ```python

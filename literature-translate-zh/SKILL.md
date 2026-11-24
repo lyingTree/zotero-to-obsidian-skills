@@ -5,6 +5,8 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 
 # 按术语表翻译
 
+使用已安装的[独立二进制运行器](../literature-zotero2obsidian/references/binary-runtime.md)时，原 Python API 的任务脚本由主技能 bin/z2o 的 run-script 执行；已注册的确定性操作可用 invoke JSON 请求文件。无需系统 Python 或 pip；开发环境才直接运行源码。不得用模型手工替代程序验收。
+
 ## 必要输入
 
 - item.json、实际源块文字及来源定位、术语表。完整任务可使用来源库存与产出队列；独立翻译任务可使用已有 source.md 和来源映射。

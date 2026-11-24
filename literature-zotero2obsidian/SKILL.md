@@ -5,6 +5,8 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 # Zotero → Obsidian 文献流程
 
+使用已安装的[独立二进制运行器](references/binary-runtime.md)时，原 Python API 的任务脚本由主技能 bin/z2o 的 run-script 执行；已注册的确定性操作可用 invoke JSON 请求文件。无需系统 Python 或 pip；开发环境才直接运行源码。不得用模型手工替代程序验收。
+
 每条规则的 ID 用于定位对应证据。
 
 验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，不审查应用界面，不要求点击交互、阅读视图、插件显示或原生缓存检查。

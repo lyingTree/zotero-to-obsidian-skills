@@ -5,6 +5,8 @@ description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、�
 
 # 处理补充材料
 
+使用已安装的[独立二进制运行器](../literature-zotero2obsidian/references/binary-runtime.md)时，原 Python API 的任务脚本由主技能 bin/z2o 的 run-script 执行；已注册的确定性操作可用 invoke JSON 请求文件。无需系统 Python 或 pip；开发环境才直接运行源码。不得用模型手工替代程序验收。
+
 ## 必要输入
 
 - item.json 中的 supplement 附件、第 3 步选定主稿及术语记录。

@@ -1,0 +1,3 @@
+-r literature-zotero2obsidian/requirements.txt
+PyInstaller==6.22.3
+pyzotero>=1.5,<2

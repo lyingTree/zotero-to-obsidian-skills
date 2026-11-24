@@ -5,6 +5,8 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 
 # 提取全文与段落
 
+使用已安装的[独立二进制运行器](../literature-zotero2obsidian/references/binary-runtime.md)时，原 Python API 的任务脚本由主技能 bin/z2o 的 run-script 执行；已注册的确定性操作可用 invoke JSON 请求文件。无需系统 Python 或 pip；开发环境才直接运行源码。不得用模型手工替代程序验收。
+
 ## 必要输入
 
 - item.json 已确认的主全文及附件哈希。

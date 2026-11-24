@@ -33,3 +33,7 @@ install.local.json
 .env
 .env.*
 .pytest_cache/
+
+# Local binary packaging outputs
+/build/z2o-binary/
+/dist/z2o-binary/
