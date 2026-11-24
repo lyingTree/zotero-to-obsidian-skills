@@ -173,3 +173,9 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 新增 `pdf_image_objects.export_image_object`、`inspect_crop_boundaries`、`render_page_region`。复用同一已锁定 craft-pdf filters 严格解码、限制实际像素和工作量；实际调用 XRef/generation、页面矩阵、原文件哈希、原 JPEG 字节、8-bit RGB/Gray 样本及同尺寸灰度 SMask（含反转 Decode）均留证。未知色彩空间、特殊显示状态、显式 Mask/Matte/Decode、旋转、非均匀缩放及未支持编码要求页面渲染。边界检查使用实际 PdfCraft glyph 行和图像调用几何，输出独立原始上下文与红/绿标注，建议裁剪框不自动应用，四边待审。glyph 几何不等于 painted ink，不能声称与旧 PyMuPDF 完全一致。新增原始字节、Alpha、错误扩展名、未调用 XRef、覆盖及实际 crop 负例。锁文件复用现有 craft-pdf 节点，仅加入 root 依赖边，仍以 CI --locked 验证。
 
 1364743：真实 Linux x86_64 CPU OCR（中英文和数字）通过，7.22 秒；原生五平台通过，macOS ARM64 被取消；差分 264/265 通过，唯一错误是 debug process_markdown 超时。改用 release 二进制差分与发布门禁，保留 45 秒超时及完整原用例。新图像候选尚未获得编译和实际回归资格。MiniCPM/Jev、GPU 回退和完整自动下载仍待实现。
+
+### PDF/DOCX 混合来源清单与真实原生重放
+
+`prepare_source_inventory.prepare_sources` 与 `complete_workflow.initialize_workflow` 现支持 PDF/DOCX 混合来源，可选 `ocr={package_manifest,expected_package_sha256,profile,layout}`，正常文字页不会启动 OCR。每页保留 PNG、RGB 像素哈希、实际 PdfCraft glyph JSON、原生行块、结构索引、来源绑定及待审的 OCR 候选。扫描页无可信模型时记录 `ocr_resources_required`，仍保留完整实际页面和图像调用，必须通过逐页补充对象复核。原生行 ID 明确 `-pc-line-`，不冒充 PyMuPDF 块编号；OCR 候选不混进原生文字块。实际调用 XRef 以 generation 区分，同一对象在来源内保存一次编码流；仅严格支持的独立对象导出 PNG/JPEG，否则显式要求区域渲染。草稿队列冻结新增证据，在当前页面复核/完整草稿恢复时验证绑定。`prepare_docx_sources` 仍为原有 DOCX-only API。
+
+新增 `validate_delivery.replay_native_pdf_inventory`，由同一固定 PdfCraft 实际重新提取文字、glyph/line、重新渲染页面与比较 RGB 像素/PNG 哈希、重新解析图像调用及重新导出独立对象样本；检验 OCR 候选的实际栅格、原 PDF 与模型资源绑定，不虚构 OCR 正确性。`check_source_provenance` 对新原生 PDF 自动使用重放子集，仍保留独立视觉验证和完整交付门禁。重放不是跨引擎准确率验证。新增 PDF 双页与扫描页、篡改、未定位字形和图像对象证据测试。当前完整工作流仍缺 post-draft handoff generation、实际 mapping rerun 和 final validation；不提高任何 release qualification 状态。

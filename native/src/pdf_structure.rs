@@ -413,7 +413,11 @@ pub fn export_image_object(source:&Path,page:u64,xref:u32,dest:&Path,expected:Op
     ensure!(xref>0,"Invalid image_xref");
     let before=check_ledger::bind_file(source)?;
     if let Some(hash)=expected{ensure!(before["sha256"]==hash,"Source PDF hash differs from selected inventory");}
-    let pdf=Pdf::open(source)?;let doc=&pdf.doc;let index=pdf.index(page)?;
+    let pdf=Pdf::open(source)?;let index=pdf.index(page)?;
+    export_indexed(&pdf,source,&before,page,xref,dest,&index)
+}
+pub(crate) fn export_indexed(pdf:&Pdf,source:&Path,before:&Value,page:u64,xref:u32,dest:&Path,index:&Value)->Result<Value>{
+    let doc=&pdf.doc;
     let issues=index["issues"].as_array().context("Missing index issues")?;
     ensure!(index["status"]=="structurally_indexed"||(!issues.is_empty()&&issues.iter().all(|r|r["code"]=="FORM_UNRESOLVED")),
         "PAGE_RENDER_REQUIRED: unresolved page image calls");
@@ -461,10 +465,10 @@ pub fn export_image_object(source:&Path,page:u64,xref:u32,dest:&Path,expected:Op
     fs::create_dir_all(parent)?;
     let target=files::canonical(parent)?.join(target.file_name().context("Missing output filename")?);
     ensure!(path_text(&target)?!=before["path"],"Cannot replace source PDF");
-    ensure!(check_ledger::bind_file(source)?==before,"Source PDF changed during extraction");
+    ensure!(check_ledger::bind_file(source)?==*before,"Source PDF changed during extraction");
     pipeline::publish(&target,data)?;
     let asset=check_ledger::bind_file(&target)?;
-    ensure!(asset["sha256"]==files::digest(data)&&check_ledger::bind_file(source)?==before,"Source or output changed");
+    ensure!(asset["sha256"]==files::digest(data)&&check_ledger::bind_file(source)?==*before,"Source or output changed");
     Ok(json!({"schema_version":1,"source_file":before,"page":page,"image_xref":xref,"source_locations":locations,
         "source_index_status":index["status"],"source_index_issues":issues,"page_rotation":geo.rotation,
         "page_to_rotated_page_transform":geo.rotated,"coordinate_system":index["coordinate_system"],

@@ -65,7 +65,10 @@ pub struct Initialize<'a>{
     pub glossary_path:Option<&'a Path>,pub translation_required:bool,pub run_id:&'a str,
 }
 
-pub fn initialize(opt:Initialize<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
+pub fn initialize(opt:Initialize<'_>,progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
+    initialize_with_ocr(opt,None,progress)
+}
+pub fn initialize_with_ocr(opt:Initialize<'_>,ocr:Option<&crate::pdf_inventory::OcrSettings>,mut progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
     let skills=files::canonical(opt.skills_root)?;
     ensure!(skills.is_dir(),"skills_root must be a directory");
     let work=resolve_future(opt.work_root)?;
@@ -81,9 +84,8 @@ pub fn initialize(opt:Initialize<'_>,mut progress:impl FnMut(usize,usize,&str))-
     let mut original_sources=BTreeMap::new();
     for (id,v) in source{
         let p=files::canonical(&path(v)?)?;
-        // The complete native PDF inventory is not yet implemented.
-        ensure!(p.extension().and_then(|s|s.to_str()).is_some_and(|s|s.eq_ignore_ascii_case("docx")),
-            "UNMIGRATED_PDF_INVENTORY: {id}; no Python fallback");
+        ensure!(p.extension().and_then(|s|s.to_str()).is_some_and(|s|s.eq_ignore_ascii_case("docx")||s.eq_ignore_ascii_case("pdf")),
+            "Unsupported source format: {id}; no Python fallback");
         let b=check_ledger::bind_file(&p)?;
         resolved.insert(id.clone(),json!(path_text(&p)?));
         original_sources.insert(id.clone(),b);
@@ -124,8 +126,8 @@ pub fn initialize(opt:Initialize<'_>,mut progress:impl FnMut(usize,usize,&str))-
     // Never manufacture ready records: each existing native engine creates
     // actual evidence, an all-pending ledger, and an immutable drafting queue.
     let resolved=Value::Object(resolved);
-    source_prepare::prepare_docx_sources(&resolved,inventory.parent().unwrap(),opt.source_roles,
-        glossary_path.as_deref(),144,|n,total,label|progress(n,total,label))?;
+    source_prepare::prepare_sources(&resolved,inventory.parent().unwrap(),opt.source_roles,
+        glossary_path.as_deref(),144,ocr,|n,total,label|progress(n,total,label))?;
     let prepare=check_ledger::PrepareOptions{sources:resolved.clone(),candidates:Value::Null,
         candidate_path:None,scopes:Value::Null,types:Value::Null,environments:Value::Null,
         mode:"acceptance".into(),additional:json!([])};

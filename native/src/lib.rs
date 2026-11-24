@@ -36,6 +36,7 @@ pub mod handoff_conflicts;
 pub mod pdf_structure;
 pub mod pdf_boundary;
 pub mod pdfcraft_backend;
+pub mod pdf_inventory;
 pub mod ocr_backend;
 pub mod ocr_pdf;
 pub mod ocr_table;
@@ -138,6 +139,7 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_source_inventory.recognize_pdf_formula_region",
     "prepare_source_inventory.prepare_pdf_ocr_evidence",
     "prepare_source_inventory.prepare_pdfcraft_evidence",
+    "validate_delivery.replay_native_pdf_inventory",
     "prepare_source_inventory.prepare_pdf_structure_evidence",
     "prepare_source_inventory.record_figure_edges",
     "prepare_source_inventory.prepare_figure_reviews",
@@ -605,9 +607,15 @@ pub fn invoke(request: Value) -> Result<Value> {
             let glossary=c.option("glossary_path",Value::Null);
             let glossary=if glossary.is_null(){None}else{Some(path(&glossary)?)};
             let dpi=c.option("dpi",json!(144)).as_u64().context("dpi must be an integer")?;
+            let ocr=crate::pdf_inventory::OcrSettings::from_value(&c.option("ocr",Value::Null))?;
             c.finish()?;
-            json!(path_text(&source_prepare::prepare_docx_sources(&sources,&root,&roles,glossary.as_deref(),dpi,
-                |i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?)?)
+            let result=if op.ends_with("prepare_docx_sources"){
+                ensure!(ocr.is_none(),"DOCX-only preparation does not use OCR");
+                source_prepare::prepare_docx_sources(&sources,&root,&roles,glossary.as_deref(),dpi,|i,n,label|eprintln!("[{i}/{n}] {label}"))?
+            }else{
+                source_prepare::prepare_sources(&sources,&root,&roles,glossary.as_deref(),dpi,ocr.as_ref(),|i,n,label|eprintln!("[{i}/{n}] {label}"))?
+            };
+            json!(path_text(&result)?)
         }
         "check_records.bind_file" | "check_records.bind_evidence" => {
             let p=path(&c.positional("path")?)?;
@@ -747,11 +755,12 @@ pub fn invoke(request: Value) -> Result<Value> {
             let g=if g.is_null(){None}else{Some(path(&g)?)};
             let translation=c.option("translation_required",json!(true)).as_bool().context("translation_required must be an explicit boolean")?;
             let id=string(&c.option("run_id",json!("local-candidate")),"run_id")?;
+            let ocr=crate::pdf_inventory::OcrSettings::from_value(&c.option("ocr",Value::Null))?;
             c.finish()?;
             let opt=workflow::Initialize{skills_root:&skills,work_root:&work,sources:&sources,
                 source_roles:&roles,candidate_path:&candidate,resource_root:&resource,
                 glossary_path:g.as_deref(),translation_required:translation,run_id:&id};
-            json!(path_text(&workflow::initialize(opt,|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
+            json!(path_text(&workflow::initialize_with_ocr(opt,ocr.as_ref(),|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
         }
         "complete_workflow.resume_workflow" => {
             let p=path(&c.positional("run_path")?)?;
@@ -771,6 +780,21 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             handoff_conflicts::record(&p,&unit,handoff_conflicts::Conflict{conflict_id:&id,page_number:page,
                 text_locator:&locator,text_layer_text:&layer,visible_text:&visible,bbox:&bbox,decision:&decision})?
+        }
+        "validate_delivery.replay_native_pdf_inventory" => {
+            let inventory=path(&c.positional("inventory_path")?)?;
+            let source_id=string(&c.required("source_id")?,"source_id")?;
+            c.finish()?;
+            let (raw,binding)=files::read_bound(&inventory)?;
+            let inv=parse_json(std::str::from_utf8(&raw)?)?;
+            let rows=inv["sources"].as_array().context("Inventory sources required")?;
+            let selected:Vec<_>=rows.iter().filter(|r|r["id"]==source_id).collect();
+            ensure!(selected.len()==1,"Choose one actual source ID");
+            let source=selected[0];
+            let p=path(&source["path"])?;
+            let result=pdf_inventory::replay(source,&p,|i,n,label|eprintln!("[{i}/{n}] {label}"))?;
+            ensure!(check_ledger::bind_file(&inventory)?==binding,"Source inventory changed during replay");
+            result
         }
         "validate_delivery.check_source_provenance" => {
             let inv=path(&c.positional("inventory_path")?)?;c.finish()?;

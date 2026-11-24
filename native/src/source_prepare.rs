@@ -1,5 +1,5 @@
-//! Prepare one or more real DOCX sources using the common inventory contract.
-//! PDF requests must remain blocked until full page/image provenance is native.
+//! Prepare real PDF and DOCX sources using the common inventory contract.
+//! PdfCraft native line records and OCR hypotheses remain explicitly pending.
 use crate::{docx,files,path,path_text};
 use anyhow::{anyhow,ensure,Context,Result};
 use serde_json::{json,Value,Map};
@@ -27,7 +27,13 @@ fn safe_dir(dir:&Path)->Result<PathBuf>{
     fs::create_dir_all(dir)?;files::canonical(dir)
 }
 fn id_ok(id:&str)->bool{id.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)&&id.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'_'|b'-'))}
-pub fn prepare_docx_sources(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dpi:u64,mut progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
+pub fn prepare_docx_sources(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dpi:u64,progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
+    prepare_impl(sources,root,roles,glossary,dpi,None,true,progress)
+}
+pub fn prepare_sources(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dpi:u64,ocr:Option<&crate::pdf_inventory::OcrSettings>,progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
+    prepare_impl(sources,root,roles,glossary,dpi,ocr,false,progress)
+}
+fn prepare_impl(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dpi:u64,ocr:Option<&crate::pdf_inventory::OcrSettings>,docx_only:bool,mut progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
     let map=sources.as_object().filter(|m|!m.is_empty()).context("Provide at least one source PDF or DOCX")?;
     ensure!((72..=600).contains(&dpi),"dpi must be between 72 and 600");
     ensure!(roles.is_null()||roles.is_object(),"source_roles must be an object");
@@ -37,12 +43,15 @@ pub fn prepare_docx_sources(sources:&Value,root:&Path,roles:&Value,glossary:Opti
     for (id,v) in map{
         ensure!(id_ok(id),"Invalid source ID: {id}");
         let p=files::canonical(&path(v)?)?;
-        ensure!(p.extension().and_then(|s|s.to_str()).is_some_and(|s|s.eq_ignore_ascii_case("docx")),
-            "UNMIGRATED_PDF_INVENTORY: {id}; full PDF provenance is required and there is no Python fallback");
+        let extension=p.extension().and_then(|s|s.to_str()).unwrap_or("").to_ascii_lowercase();
+        if docx_only{ensure!(extension=="docx","UNMIGRATED_PDF_INVENTORY: {id}; this entrypoint is DOCX-only");}
+        else{ensure!(matches!(extension.as_str(),"docx"|"pdf"),"Unsupported source format: {id}");}
+        if extension=="pdf"{crate::pdf_structure::Pdf::open(&p).with_context(||format!("{id}: accessible PDF required"))?;}
         let role=roles.get(id).cloned().unwrap_or(json!("pending"));
         ensure!(role.is_string(),"source role must be a string");
         ids.push((id,p.clone(),role));bound.push(binding(&p)?);
     }
+    if let Some(o)=ocr{o.binding()?;}
     let glossary=match glossary{Some(p)=>Some(binding(p)?),None=>None};
     let root=safe_dir(root)?;
     let output=root.join("source-inventory.json");let terminology=root.join("terminology.json");
@@ -55,13 +64,15 @@ pub fn prepare_docx_sources(sources:&Value,root:&Path,roles:&Value,glossary:Opti
     for (i,(id,p,role)) in ids.iter().enumerate(){
         let destination=evidence.join(id);
         fs::create_dir(&destination)?;
-        let mut native=docx::prepare_docx_source(p,id,&destination,|n,total,label|progress(n,total,label))?;
+        let mut native=if p.extension().and_then(|s|s.to_str()).is_some_and(|s|s.eq_ignore_ascii_case("docx")){
+            docx::prepare_docx_source(p,id,&destination,|n,total,label|progress(n,total,label))?
+        }else{crate::pdf_inventory::prepare_source(p,id,&destination,dpi,ocr,|n,total,label|progress(n,total,label))?};
         ensure!(binding(p)?==bound[i],"{id}: source changed during evidence preparation");
         native["id"]=json!(id);native["role"]=role.clone();
         native["path"]=bound[i]["path"].clone();native["sha256"]=bound[i]["sha256"].clone();
         let headers:Map<String,Value>=["title","authors","affiliations","publication_date"].iter().map(|key|((*key).into(),json!({"status":"pending"}))).collect();
         native["header_fields"]=json!(headers);rows.push(native);
-        progress(i+1,ids.len(),"DOCX sources");
+        progress(i+1,ids.len(),if docx_only{"DOCX sources"}else{"PDF/DOCX sources"});
     }
     let mut inventory=json!({"schema_version":1,"evidence_boundary":"Rendered files do not prove that a model viewed or understood them.",
         "sources":rows,"units":[],"excluded_blocks":[],"excluded_pages":[]});
@@ -72,6 +83,7 @@ pub fn prepare_docx_sources(sources:&Value,root:&Path,roles:&Value,glossary:Opti
         exclusive(&terminology,&value)?;inventory["terminology_path"]=json!(path_text(&terminology)?);
     }
     for (i,(_,p,_)) in ids.iter().enumerate(){ensure!(binding(p)?==bound[i],"source changed before inventory publication");}
+    if let Some(o)=ocr{o.binding()?;}
     exclusive(&output,&inventory)?;
     Ok(output)
 }

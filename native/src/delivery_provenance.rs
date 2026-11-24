@@ -12,6 +12,7 @@ struct Audit{
     checked:BTreeMap<PathBuf,Value>,
     native_count:usize,
     pdf_count:usize,
+    pdf_replays:Vec<Value>,
 }
 impl Audit{
     fn fail(&mut self,code:&str,id:&str,message:impl AsRef<str>){
@@ -141,7 +142,13 @@ impl Audit{
             self.record(&row["render"],&format!("{id}:page-{n}:render"));
             if let Err(e)=pdf.bounds(n){self.fail("SOURCE_PDF_GEOMETRY",id,e.to_string());}
         }
-        // A matching hash does not prove a faithful PDF text or render.
+        if source["inventory_backend"]==crate::pdf_inventory::BACKEND{
+            match crate::pdf_inventory::replay(source,p,|_,_,_|{}){
+                Ok(mut report)=>{report["source_id"]=json!(id);self.pdf_replays.push(report);},
+                Err(e)=>self.fail("PDF_NATIVE_REPLAY_MISMATCH",id,format!("{e:#}")),
+            }
+        }
+        // A matching hash or same-backend replay does not prove full independent source fidelity.
         self.fail("PDF_FULL_PROVENANCE_UNMIGRATED",id,
             "Actual PDF text/block and full rendered-pixel provenance are not qualified by this native source check.");
     }
@@ -152,7 +159,7 @@ pub fn validate(inventory_path:&Path,mut progress:impl FnMut(usize,usize,&str))-
     let inventory=crate::parse_json(std::str::from_utf8(&raw)?)?;
     ensure!(inventory.is_object(),"Expected source inventory object");
     let mut audit=Audit{base:p.parent().context("inventory parent")?.to_owned(),findings:vec![],
-        checked:BTreeMap::new(),native_count:0,pdf_count:0};
+        checked:BTreeMap::new(),native_count:0,pdf_count:0,pdf_replays:vec![]};
     if inventory["schema_version"].as_u64()!=Some(1){audit.fail("INVENTORY_VERSION","inventory","Expected schema_version 1.");}
     let rows=audit.rows(&inventory["sources"],"inventory","sources");
     let (order,sources)=audit.index(rows,"sources");
@@ -178,8 +185,10 @@ pub fn validate(inventory_path:&Path,mut progress:impl FnMut(usize,usize,&str))-
         audit.fail("FILE_HASH_MISMATCH","inventory","Inventory changed during validation.");
     }
     let complete=audit.findings.is_empty()&&audit.native_count>0&&audit.pdf_count==0;
-    Ok(json!({"inventory":inventory_binding,"findings":audit.findings,"native_sources_checked":audit.native_count,
+    let mut result=json!({"inventory":inventory_binding,"findings":audit.findings,"native_sources_checked":audit.native_count,
         "pdf_structure_sources_checked":audit.pdf_count,"source_checks_complete":complete,"delivery_ready":false,
         "source_fidelity":"not_assessed","independent_review_required":true,
-        "boundary":"Source-provenance subset only. Full delivery, inventory accounting, candidate targets, PDF pixels/text and independent review are not certified."}))
+        "boundary":"Source-provenance subset only. Full delivery, inventory accounting, candidate targets, PDF pixels/text and independent review are not certified."});
+    if !audit.pdf_replays.is_empty(){result["pdf_native_replays"]=json!(audit.pdf_replays);}
+    Ok(result)
 }

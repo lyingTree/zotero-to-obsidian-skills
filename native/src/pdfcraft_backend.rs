@@ -5,6 +5,7 @@ use anyhow::{anyhow,ensure,Context,Result};
 use image::{codecs::png::PngEncoder,ExtendedColorType,ImageEncoder};
 use pdfcraft_render::{PageRenderer,PageInfo,RenderConfig,RenderRequest,RequestKind,Tile,device_pixels};
 use serde_json::{json,Value};
+use sha2::{Digest,Sha256};
 use std::{fs,io::{Read,Write},path::{Path,PathBuf},sync::Arc};
 use crate::{check_ledger,files,path,path_text,pdf_structure::Pdf,pipeline};
 
@@ -106,6 +107,12 @@ impl Backend{
         result["page"]=json!(page);Ok(result)
     }
 
+    pub(crate) fn image_stream(&self,xref:u32,generation:u16)->Result<&[u8]>{
+        Ok(self.structural.raw_object(xref,generation)?.content.as_slice())
+    }
+    pub(crate) fn export_indexed(&self,page:u64,xref:u32,destination:&Path,index:&Value)->Result<Value>{
+        crate::pdf_structure::export_indexed(&self.structural,&self.source_path,&self.source,page,xref,destination,index)
+    }
     pub(crate) fn verify(&self)->Result<()>{
         ensure!(check_ledger::bind_file(&self.source_path)?==self.source,"Source PDF changed during evidence preparation");
         Ok(())
@@ -152,7 +159,7 @@ impl Backend{
             "warnings":warnings,"inspection_warnings":self.inspection_warnings,
             "source_fidelity":"not_assessed","evidence_boundary":BOUNDARY}))
     }
-    fn raster(&mut self,page:u64,region:Option<[f64;4]>,dpi:u64)->Result<(Vec<u8>,Value)>{
+    pub(crate) fn raster(&mut self,page:u64,region:Option<[f64;4]>,dpi:u64)->Result<(Vec<u8>,Value)>{
         ensure!((72..=1200).contains(&dpi),"dpi must be an integer between 72 and 1200");
         let (index,geometry,bounds,m)=self.geometry(page)?;
         let scale=dpi as f32/72.;
@@ -183,6 +190,18 @@ impl Backend{
         let rgba=result.rgba.as_ref();
         let length=(result.width as usize).checked_mul(result.height as usize).and_then(|n|n.checked_mul(4)).context("Raster size overflow")?;
         ensure!(rgba.len()==length&&rgba.chunks_exact(4).all(|p|p[3]==255),"PdfCraft white-background raster is not opaque RGBA8");
+        // Canonical opaque RGB pixel digest, independent of PNG compression.
+        // Batch the conversion instead of copying the entire RGBA raster.
+        let mut hash=Sha256::new();
+        let mut rgb=[0u8;12_288];
+        for chunk in rgba.chunks(16_384){
+            let count=chunk.len()/4;
+            for (out,pixel) in rgb[..count*3].chunks_exact_mut(3).zip(chunk.chunks_exact(4)){
+                out.copy_from_slice(&pixel[..3]);
+            }
+            hash.update(&rgb[..count*3]);
+        }
+        let pixel_sha256=format!("{:x}",hash.finalize());
         let mut bytes=Vec::new();
         PngEncoder::new(&mut bytes).write_image(rgba,result.width,result.height,ExtendedColorType::Rgba8)?;
         let warnings:Vec<_>=result.warnings.iter().map(|w|format!("{w:?}")).collect();
@@ -190,7 +209,7 @@ impl Backend{
         let pixel_matrix=[m[0]*f,m[1]*f,m[2]*f,m[3]*f,m[4]*f-f64::from(px[0]),m[5]*f-f64::from(px[1])];
         let value=json!({"schema_version":1,"backend":"pdfcraft-render","backend_revision":PDFCRAFT_REV,
             "source_file":self.source,"page":page,"page_geometry":geometry,"coordinate_system":coordinates(),
-            "requested_bbox":clip,"dpi":dpi,"width":result.width,"height":result.height,
+            "requested_bbox":clip,"dpi":dpi,"width":result.width,"height":result.height,"pixel_sha256":pixel_sha256,"pixel_format":"rgb8",
             "pixel_bounds_in_rotated_page":px,"unrotated_page_to_pixel_transform":pixel_matrix,
             "orientation":"source_page_display","method":if tile.is_some(){"pdfcraft_tile_render"}else{"pdfcraft_page_render"},
             "warnings":warnings,"inspection_warnings":self.inspection_warnings,

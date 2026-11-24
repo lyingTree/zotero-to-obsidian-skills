@@ -111,3 +111,56 @@ fn native_crop_with_context_keeps_four_pending_edges(){
     assert_eq!(image::open(&dest).unwrap().width(),40);assert_eq!(fs::read(&pdf).unwrap(),original);
     assert!(pdf_boundary::inspect_crop_boundaries(&pdf,1,&json!([0,0,201,100]),&coords,&root.join("bad.png"),20.,72,None).is_err());
 }
+
+
+#[test]
+fn mixed_inventory_pdf_uses_real_lines_and_independent_source_replay(){
+    use z2o_native::{source_prepare,pdf_inventory,draft_queue,pipeline,delivery_provenance};
+    let tmp=tempfile::tempdir().unwrap();let root=tmp.path();
+    let pdf=root.join("fixture.pdf");fixture(&pdf);
+    let sources=json!({"main":pdf});
+    let inv=source_prepare::prepare_sources(&sources,&root.join("work"),&json!({"main":"main"}),None,72,None,|_,_,_|{}).unwrap();
+    let inventory=pipeline::read_json(&inv).unwrap();let row=&inventory["sources"][0];
+    assert_eq!(row["inventory_backend"],pdf_inventory::BACKEND);assert_eq!(row["page_count"],2);
+    assert!(row["pages"][0]["blocks"].as_array().unwrap().iter().any(|b|b["text"].as_str().unwrap().contains("Native PDF evidence")));
+    assert!(row["pages"][0]["blocks"][0]["id"].as_str().unwrap().contains("-pc-line-"));
+    assert_eq!(row["pages"][0]["pdf_evidence"]["reading_order_review"],"pending");
+    assert_eq!(row["pages"][1]["pdf_evidence"]["render_metadata"]["page_geometry"]["page_rotation"],90);
+    let report=pdf_inventory::replay(row,&pdf,|_,_,_|{}).unwrap();
+    assert_eq!(report["same_backend_replay_complete"],true);assert_eq!(report["source_checks_complete"],false);
+    let audit=delivery_provenance::validate(&inv,|_,_,_|{}).unwrap();
+    assert_eq!(audit["pdf_native_replays"][0]["same_backend_replay_complete"],true);
+    assert_eq!(audit["delivery_ready"],false);
+    let queue=root.join("draft.json");draft_queue::prepare(&inv,&queue,|_,_,_|{}).unwrap();
+    let task=draft_queue::resume_snapshot(&queue).unwrap();
+    assert_eq!(task["next_task"]["stage"],"inventory_page");
+    assert_eq!(task["next_task"]["page"]["pdf_evidence"]["reading_order_review"],"pending");
+    let mut altered=row.clone();altered["pages"][0]["blocks"][0]["text"]=json!("invented");
+    assert!(pdf_inventory::replay(&altered,&pdf,|_,_,_|{}).is_err());
+    let p=Path::new(row["pages"][0]["pdf_evidence"]["glyphs"]["path"].as_str().unwrap());
+    fs::write(p,b"tampered").unwrap();
+    assert!(draft_queue::resume_snapshot(&queue).is_err());
+    assert!(pdf_inventory::replay(row,&pdf,|_,_,_|{}).is_err());
+}
+#[test]
+fn scan_without_ocr_resources_preserves_page_and_requires_review(){
+    use z2o_native::{source_prepare,pipeline,pdf_inventory,draft_queue};
+    let tmp=tempfile::tempdir().unwrap();let root=tmp.path();let pdf=root.join("scan.pdf");
+    let mut doc=Document::with_version("1.5");let pages=doc.new_object_id();
+    let obj=doc.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Image","Width"=>1,"Height"=>1,"BitsPerComponent"=>8,"ColorSpace"=>"DeviceRGB"},vec![20,30,40]));
+    let content=doc.add_object(Stream::new(dictionary!{},b"q 100 0 0 100 0 0 cm /Img Do Q".to_vec()));
+    let page=doc.add_object(dictionary!{"Type"=>"Page","Parent"=>pages,"Contents"=>content,"Resources"=>dictionary!{"XObject"=>dictionary!{"Img"=>obj}}});
+    doc.objects.insert(pages,Object::Dictionary(dictionary!{"Type"=>"Pages","Kids"=>vec![Object::Reference(page)],"Count"=>1,"MediaBox"=>vec![0.into(),0.into(),100.into(),100.into()]}));
+    let catalog=doc.add_object(dictionary!{"Type"=>"Catalog","Pages"=>pages});doc.trailer.set("Root",catalog);doc.save(&pdf).unwrap();
+    let inv=source_prepare::prepare_sources(&json!({"main":pdf}),&root.join("work"),&json!({"main":"main"}),None,72,None,|_,_,_|{}).unwrap();
+    let v=pipeline::read_json(&inv).unwrap();let s=&v["sources"][0];let page=&s["pages"][0];
+    assert_eq!(page["pdf_evidence"]["ocr"]["status"],"ocr_resources_required");assert_eq!(page["blocks"],json!([]));
+    assert_eq!(s["image_objects"][0]["image_xref"],obj.0);
+    assert_eq!(fs::read(s["image_objects"][0]["encoded_stream"]["path"].as_str().unwrap()).unwrap(),vec![20,30,40]);
+    assert_eq!(pdf_inventory::replay(s,&pdf,|_,_,_|{}).unwrap()["same_backend_replay_complete"],true);
+    let queue=root.join("queue.json");draft_queue::prepare(&inv,&queue,|_,_,_|{}).unwrap();
+    let state=draft_queue::resume_snapshot(&queue).unwrap();
+    assert_eq!(state["status"]["draft_ready"],false);assert_eq!(state["next_task"]["page"]["pdf_evidence"]["ocr"]["status"],"ocr_resources_required");
+    let mut changed=s.clone();changed["image_objects"]=json!([]);
+    assert!(pdf_inventory::replay(&changed,&pdf,|_,_,_|{}).is_err());
+}

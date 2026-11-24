@@ -95,8 +95,13 @@ fn extract(inventory:&Value,base:&Path,mut progress:impl FnMut(usize,usize,&str)
                     add_block(&mut blocks,&bid,json!({"source":id,"page":n,"kind":"image_call","text":"","bbox":call["bbox"],"image_call":call}))?;
                     page_ids.push(bid);
                 }
-                pages.insert(key.clone(),json!({"source":id,"page":n,"block_ids":page_ids,"render":page["render"],"text":page["text"],
-                    "image_index":image_index,"order_review":null,"additional_object_review":null}));
+                let mut frozen_page=json!({"source":id,"page":n,"block_ids":page_ids,"render":page["render"],"text":page["text"],
+                    "image_index":image_index,"order_review":null,"additional_object_review":null});
+                if source["inventory_backend"]==crate::pdf_inventory::BACKEND{
+                    ensure!(page["pdf_evidence"].is_object(),"Retain actual native PDF evidence");
+                    frozen_page["pdf_evidence"]=page["pdf_evidence"].clone();
+                }
+                pages.insert(key.clone(),frozen_page);
                 page_keys.push(key);block_ids.extend(page_ids);
             }
         }
@@ -183,7 +188,7 @@ impl Queue{
         }
         for(key,expected)in baseline_pages{
             let page=&pages[key];
-            for field in ["source","page","render","text","image_index"]{ensure!(page[field]==expected[field],"Keep frozen page evidence unchanged");}
+            for field in ["source","page","render","text","image_index","pdf_evidence"]{ensure!(page[field]==expected[field],"Keep frozen page evidence unchanged");}
             let entries=page_entries.get(key).unwrap_or(&empty);
             same_set(&page["block_ids"],entries,"The page entry list")?;
             if !page["order_review"].is_null(){
@@ -282,7 +287,10 @@ impl Queue{
             if let Some(n)=block["page"].as_u64(){
                 let k=page_key(sid,n);
                 if seen.insert(k.clone()){
-                    let page=&d["pages"][&k];pages.push(Value::Object(["source","page","render","text"].into_iter().map(|k|(k.to_owned(),page[k].clone())).collect()));
+                    let page=&d["pages"][&k];
+                    let mut row=Value::Object(["source","page","render","text"].into_iter().map(|k|(k.to_owned(),page[k].clone())).collect());
+                    if let Some(v)=page.get("pdf_evidence"){row["pdf_evidence"]=v.clone();}
+                    pages.push(row);
                 }
             }
         }json!({"source_files":sources,"source_pages":pages})
@@ -473,6 +481,7 @@ pub fn resume_snapshot(p:&Path)->Result<Value>{
     let q=Queue::open(p)?;
     let status=q.status();
     if status["draft_ready"]==true{
+        for page in q.data["pages"].as_object().context("queue pages")?.values(){crate::pdf_inventory::verify_page_files(page)?;}
         for unit in q.data["units"].as_object().context("queue units")?.values(){
             let revision=unit["revisions"].as_array().and_then(|a|a.last()).context("Missing saved revision")?;
             binding(revision,q.path.parent().unwrap()).context("The saved draft fragment or resource changed")?;
@@ -482,12 +491,18 @@ pub fn resume_snapshot(p:&Path)->Result<Value>{
         }
     }
     let next=q.next_task();
+    verify_task_pages(&next)?;
     let b=file(&q.path)?;
     ensure!(b["sha256"]==q.hash,"Draft queue changed during read-only resumption");
     Ok(json!({"data":q.data,"binding":b,"status":status,"next_task":next}))
 }
 pub fn open(p:&Path)->Result<Value>{
     let q=Queue::open(p)?;Ok(json!({"data":q.data,"sha256":q.hash,"path":path_text(&q.path)?}))
+}
+fn verify_task_pages(task:&Value)->Result<()>{
+    if let Some(page)=task.get("page"){crate::pdf_inventory::verify_page_files(page)?;}
+    if let Some(pages)=task["source_pages"].as_array(){for page in pages{crate::pdf_inventory::verify_page_files(page)?;}}
+    Ok(())
 }
 pub fn operate(p:&Path,action:&str,params:&Value,expected:&Value,progress:impl FnMut(usize,usize,&str))->Result<Value>{
     check_write::no_link(p)?;let p=files::canonical(p)?;
@@ -497,15 +512,16 @@ pub fn operate(p:&Path,action:&str,params:&Value,expected:&Value,progress:impl F
     let s=|k:&str|text(&params[k],k);
     let n=||params["page"].as_u64().filter(|n|*n>0).context("page must be a positive integer");
     match action{
-        "status"=>Ok(q.status()),"next_task"=>Ok(q.next_task()),
+        "status"=>Ok(q.status()),"next_task"=>{let task=q.next_task();verify_task_pages(&task)?;Ok(task)},
         "review_pdf_page_order"=>{
             let sid=s("source_id")?;let page=n()?;let reason=s("reason")?;let key=q.page(sid,page)?;
+            crate::pdf_inventory::verify_page_files(&q.data["pages"][&key])?;
             let current=array_set(&q.data["pages"][&key]["block_ids"],"actual page entries")?;
             ensure!(array_set(&params["ordered_block_ids"],"confirmed page order")?==current,"Page order must include every text, image-call and added entry exactly once");
             q.data["pages"][&key]["order_review"]=json!({"block_ids":params["ordered_block_ids"],"reason":reason});q.commit("review_page_order",&key)
         }
         "review_additional_objects"=>{
-            let key=q.page(s("source_id")?,n()?)?;q.data["pages"][&key]["additional_object_review"]=json!({"reason":s("reason")?});q.commit("review_additional_objects",&key)
+            let key=q.page(s("source_id")?,n()?)?;crate::pdf_inventory::verify_page_files(&q.data["pages"][&key])?;q.data["pages"][&key]["additional_object_review"]=json!({"reason":s("reason")?});q.commit("review_additional_objects",&key)
         }
         "group"=>q.group(s("unit_id")?,&params["block_ids"],s("kind")?,s("reason")?),
         "exclude"=>q.exclude(s("block_id")?,s("reason")?),

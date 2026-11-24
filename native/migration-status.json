@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "PdfCraft render, bounded native JPEG/sample/SMask export and geometric crop candidate; Linux x86_64 bilingual CPU OCR passed at 1364743. Full codec/painted-text parity, source inventory, remaining real model targets and source review remain"
+      "blocker": "Native PDF page/line/object inventory and same-backend replay integrated; independent codec/painted-text, OCR accuracy and all-platform qualification remain"
     },
     "docx_source_qualification": {
       "qualified": false,
@@ -42,7 +42,7 @@
     },
     "source_delivery_mapping_and_review_ledger": {
       "qualified": false,
-      "blocker": "Native manifest preparation, source-unit validation and stable projections implemented; actual handoff map generation and complete delivery validation remain"
+      "blocker": "Actual PDF/DOCX inventory replay and draft evidence binding integrated; full handoff generation, mapping rerun and delivery validation remain"
     },
     "translation_review_lifecycle": {
       "qualified": false,
@@ -50,7 +50,7 @@
     },
     "native_complete_workflow": {
       "qualified": false,
-      "blocker": "Native draft queue candidate implemented; complete orchestration, restart, mapping rerun and integration parity remain"
+      "blocker": "PDF/DOCX mixed-source initialization and draft routing implemented; complete post-draft handoff, mapping rerun and delivery validation remain"
     },
     "native_installation_and_external_integration": {
       "qualified": false,
