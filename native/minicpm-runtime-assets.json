@@ -64,21 +64,6 @@
         "size": 25256565
       }
     },
-    "x86_64-apple-darwin": {
-      "cpu": {
-        "name": "llama-b11901-bin-macos-x64.tar.gz",
-        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-macos-x64.tar.gz",
-        "sha256": "44e20ca54d93ae3987272ca2631a7f4b9d3745962654ddfd89ff9e9a21f606aa",
-        "size": 12038516
-      },
-      "gpu": {
-        "variant": "metal",
-        "name": "llama-b11901-bin-macos-x64.tar.gz",
-        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-macos-x64.tar.gz",
-        "sha256": "44e20ca54d93ae3987272ca2631a7f4b9d3745962654ddfd89ff9e9a21f606aa",
-        "size": 12038516
-      }
-    },
     "aarch64-apple-darwin": {
       "cpu": {
         "name": "llama-b11901-bin-macos-arm64.tar.gz",

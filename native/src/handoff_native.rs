@@ -440,7 +440,7 @@ fn check_rows(actual:&Value,expected:&Value,key:&str,name:&str)->Result<()>{
 // A historical block view may explicitly merge several actual source blocks.
 // Validate the partition and the hash of the joined original text, rather than
 // pretending a generated per-block view is its only legitimate representation.
-fn check_block_partition(c:&Ctx,actual:&Value,expected:&Value,name:&str)->Result<BTreeMap<String,BTreeSet<String>>>{
+fn check_block_partition(c:&Ctx,actual:&Value,expected:&Value,name:&str,legacy:bool)->Result<BTreeMap<String,BTreeSet<String>>>{
     let a=index(actual,"block_id")?;let b=index(expected,"block_id")?;
     let mut aliases=BTreeMap::new();let mut covered=BTreeSet::new();let mut orders=BTreeSet::new();
     for(id,row)in a{
@@ -475,7 +475,8 @@ fn check_block_partition(c:&Ctx,actual:&Value,expected:&Value,name:&str)->Result
         ensure!(row["original_sha256"]==files::digest(original.as_bytes())&&row.get("original_text").is_none_or(|v|v==&json!(original)),"MAP_BLOCK_ORIGINAL_HASH: {id}");
         let order=row["order"].as_u64().context("MAP_BLOCK_ORDER")?;
         ensure!(orders.insert((source.unwrap().to_owned(),order)),"MAP_BLOCK_ORDER: duplicate source order");
-        ensure!(nonempty(&row["kind"])&&nonempty(&row["reason"])&&nonempty(&row["status"]),"MAP_BLOCK_DECISION: {id}");
+        ensure!(nonempty(&row["kind"])&&nonempty(&row["reason"])&&
+            (nonempty(&row["status"])||legacy&&row.get("status").is_none()),"MAP_BLOCK_DECISION: {id}");
         if let Some(s)=row.get("review_status"){ensure!(nonempty(s),"MAP_RECORD_STATUS: {id}");}
         let values=match row.get("target_units"){
             Some(v)=>v.as_array().context("MAP_BLOCK_TARGET_SET")?.clone(),
@@ -487,7 +488,9 @@ fn check_block_partition(c:&Ctx,actual:&Value,expected:&Value,name:&str)->Result
         ensure!(actual_units==units,"MAP_BLOCK_TARGET_SET: {id}");
         let kinds:BTreeSet<_>=units.iter().map(|u|c.units[u]["kind"].as_str().unwrap()).collect();
         let expected_kind=if kinds.len()==1{*kinds.iter().next().unwrap()}else if kinds.is_empty(){"excluded"}else{"mixed"};
-        ensure!(row["kind"]==expected_kind,"MAP_BLOCK_KIND: {id}");
+        let historical_title=legacy&&row["kind"]=="title"&&expected_kind=="metadata"&&
+            units.iter().all(|u|c.units[u]["field"]=="title");
+        ensure!(row["kind"]==expected_kind||historical_title,"MAP_BLOCK_KIND: {id}");
         if excluded==Some(true){
             ensure!(row["decision"]=="exclude"&&units.is_empty()&&reasons.len()==1&&reasons.contains(text(&row["reason"],"exclusion reason")?),"MAP_EXCLUSION_CONFLICT: {id}");
         }else{ensure!(row["decision"]=="keep"&&!units.is_empty(),"MAP_BLOCK_DECISION: {id}");}
@@ -510,34 +513,132 @@ fn check_link_origins(actual:&Value,expected:&Value,aliases:&BTreeMap<String,BTr
     check_rows(&json!(normalized),expected,"id",name)
 }
 pub(crate) struct VerifiedMaps{pub docs:Value,pub checked:Map<String,Value>,pub bindings:Bindings}
+fn check_map_status(got:&Value,name:&str,legacy:bool)->Result<()>{
+    ensure!((got["source_fidelity"]=="not_assessed"||legacy&&got.get("source_fidelity").is_none())&&
+        ["status","review_status"].iter().all(|k|nonempty(&got[*k])||legacy&&got.get(*k).is_none()),"MAP_RECORD_STATUS: {name}");
+    Ok(())
+}
+fn check_compact_anchors(actual:&Value,expected:&Value)->Result<()>{
+    let a=index(actual,"id")?;let b=index(expected,"id")?;
+    ensure!(a.keys().eq(b.keys()),"MAP_COLLECTION_COVERAGE: link_map.anchors");
+    for(id,want)in b{
+        let got=a[&id];
+        ensure!(got["target_id"]==want["target_id"]&&got["source_id"]==want["source_id"]&&nonempty(&got["status"]),
+            "MAP_ANCHOR_SOURCE_OR_TARGET: {id}");
+        for (k,v) in want.as_object().unwrap(){
+            if !matches!(k.as_str(),"status"|"review_status"){
+                if let Some(recorded)=got.get(k){ensure!(recorded==v,"MAP_RECORD_MISMATCH: link_map.anchors.{id}.{k}");}
+            }
+        }
+        if let Some(v)=got.get("unit"){ensure!(v==&want["target_unit"],"MAP_ANCHOR_UNIT: {id}");}
+        if let Some(v)=got.get("review_status"){ensure!(nonempty(v),"MAP_RECORD_STATUS: {id}");}
+    }
+    Ok(())
+}
 pub(crate) fn validate_full(inventory:&Path,candidate:&Path,paths:&Value,expected:&Value,progress:&mut impl FnMut(usize,usize,&str))->Result<VerifiedMaps>{
+    validate_full_inner(inventory,candidate,paths,expected,None,progress)
+}
+fn validate_full_inner(inventory:&Path,candidate:&Path,paths:&Value,expected:&Value,workflow_manifest:Option<(&Path,&Value)>,
+    progress:&mut impl FnMut(usize,usize,&str))->Result<VerifiedMaps>{
     let mut c=Ctx::load(inventory,candidate,expected,true,progress)?;let dest=map_paths(paths,&c.names(),false,&c.bindings)?;
     let mut actual=Map::new();let mut checked=Map::new();let mut deliveries=vec![];
+    let mut legacy=BTreeSet::new();
     checked.insert("source_inventory".into(),c.common["source_inventory"].clone());checked.insert("candidate".into(),c.common["candidate"].clone());
     for(name,p)in &dest{
         let (v,b)=c.bindings.json(p)?;ensure!(v["bindings"]==c.common,"MAP_BINDINGS: {name}");
-        if name!="link_map"{for row in rows(&v["units"],"unit")?{
-            let d=&row["delivery"];ensure!(d.is_object()&&d["unit"]==row["unit"]&&d["target"]==row["target"],"MAP_DELIVERY_CONFLICT");
-            deliveries.push(d.clone());
-        }}
+        if name!="link_map"{
+            if workflow_manifest.is_some()&&v.get("units").is_none(){legacy.insert(name.as_str());}
+            else{for row in rows(&v["units"],"unit")?{
+                let d=&row["delivery"];ensure!(d.is_object()&&d["unit"]==row["unit"]&&d["target"]==row["target"],"MAP_DELIVERY_CONFLICT");
+                deliveries.push(d.clone());
+            }}
+        }
         checked.insert(name.clone(),b);actual.insert(name.clone(),v);
+    }
+    if !legacy.is_empty(){
+        ensure!(expected.as_object().is_some_and(|sources|!sources.is_empty()),
+            "MAP_LEGACY_SOURCE_SCOPE: verified original workflow sources are required");
+        let (manifest_path,bound)=workflow_manifest.unwrap();
+        let (manifest,actual)=c.bindings.json(manifest_path)?;
+        ensure!(&actual==bound&&manifest["inventory"]==c.common["source_inventory"]&&
+            manifest["candidate"]==c.common["candidate"],"MAP_LEGACY_MANIFEST_BINDING");
+        let manifest_deliveries=index(&manifest["deliveries"],"unit")?;
+        ensure!(manifest_deliveries.keys().eq(c.units.keys()),"MAP_DELIVERY_SET: every unit needs exactly one manifest delivery");
+        for d in &deliveries{
+            let id=text(&d["unit"],"delivery unit")?;
+            let other=manifest_deliveries.get(id).context("MAP_LEGACY_MANIFEST_UNIT")?;
+            ensure!(d["target"]==other["target"]&&d["sheet"]==other["sheet"],"MAP_DELIVERY_CONFLICT: {id}");
+        }
+        let resource_root=if let Some(v)=manifest.get("resource_root"){
+            Some(files::canonical(&manifest_path.parent().context("Manifest directory")?.join(path(v)?))?)
+        }else{None};
+        for(did,delivery)in manifest_deliveries{
+            let unit=&c.units[&did];
+            let role=&c.sources[unit["source"].as_str().unwrap()]["role"];
+            if legacy.contains(if role=="main"{"source_map"}else{"si_map"}){
+                let mut delivery=delivery.clone();
+                if delivery.get("assets").is_some()&&delivery.get("resource_root").is_none(){
+                    if let Some(root)=&resource_root{delivery["resource_root"]=json!(path_text(root)?);}
+                }
+                deliveries.push(delivery);
+            }
+        }
     }
     let docs=c.derive(&json!(deliveries),progress)?;
     let mut aliases=BTreeMap::new();
     for name in dest.keys().filter(|n|n.as_str()!="link_map"){
-        let got=&actual[name];let want=&docs[name];
-        ensure!(got["source_fidelity"]=="not_assessed"&&nonempty(&got["status"])&&nonempty(&got["review_status"]),"MAP_RECORD_STATUS: {name}");
-        for(id,group)in check_block_partition(&c,&got["blocks"],&want["blocks"],name)?{
-            ensure!(aliases.insert(id.clone(),group).is_none(),"MAP_BLOCK_ID: duplicate view identity {id}");
+        let got=&actual[name];let want=&docs[name];let compact=legacy.contains(name.as_str());
+        check_map_status(got,name,compact)?;
+        let block_groups=check_block_partition(&c,&got["blocks"],&want["blocks"],name,compact)?;
+        for(id,group)in &block_groups{
+            ensure!(aliases.insert(id.clone(),group.clone()).is_none(),"MAP_BLOCK_ID: duplicate view identity {id}");
+        }
+        let mut covered=BTreeSet::new();
+        if compact{
+            for bid in block_groups.values().flatten(){
+                covered.extend(c.block_units.get(bid).into_iter().flatten().map(String::as_str));
+            }
+            // This historical shape is recoverable only when no mapped
+            // object/call or text/visual decision substitutes for an actual
+            // unit record. Their dedicated collections are still exact.
+            let mut category_covered=BTreeSet::new();
+            for group in ["metadata","objects","references","citations"]{
+                if let Some(value)=got.get(group){
+                    for r in index(value,"unit")?.into_values(){category_covered.insert(r["unit"].as_str().unwrap());}
+                }
+            }
+            for u in rows(&want["units"],"unit")?{
+                let id=text(&u["unit"],"compact manifest unit")?;
+                ensure!(covered.contains(id)||category_covered.contains(id),"MAP_UNIT_MISSING: {name}.{id}");
+                if u["text_visual_conflicts"].as_array().is_some_and(|r|!r.is_empty()){
+                    ensure!(category_covered.contains(id),"MAP_CONFLICT_MISSING: {name}.{id}");
+                }
+            }
         }
         for(group,key)in [("sources","id"),("units","unit"),("metadata","unit"),("objects","unit"),("references","unit"),("citations","unit")]{
+            if compact&&got.get(group).is_none(){
+                if group=="units"{continue;}
+                if group=="sources"&&name=="source_map"{
+                    let proven:BTreeSet<_>=block_groups.values().flatten().map(|id|c.blocks[id].source.as_str()).collect();
+                    ensure!(rows(&want["sources"],"id")?.iter().all(|r|r["id"].as_str().is_some_and(|id|proven.contains(id))),
+                        "MAP_ROLE_SOURCE_SET: omitted main-source rows require a bound block for each source");
+                    continue;
+                }
+                if group=="metadata"{
+                    ensure!(rows(&want["metadata"],"unit")?.iter().all(|r|r["field"]=="title"),
+                        "MAP_UNIT_MISSING: omitted compact metadata is supported only for block-covered titles");
+                    continue;
+                }
+            }
             let optional_empty=group=="metadata"||(name=="si_map"&&matches!(group,"objects"|"references"|"citations"));
             check_collection(got,want,group,key,name,optional_empty)?;
         }
     }
     let got=&actual["link_map"];let want=&docs["link_map"];
-    ensure!(got["source_fidelity"]=="not_assessed"&&nonempty(&got["status"])&&nonempty(&got["review_status"]),"MAP_RECORD_STATUS: link_map");
-    for group in ["anchors","unresolved"]{check_collection(got,want,group,"id","link_map",false)?;}
+    check_map_status(got,"link_map",!legacy.is_empty())?;
+    if legacy.is_empty(){check_collection(got,want,"anchors","id","link_map",false)?;}
+    else{check_compact_anchors(&got["anchors"],&want["anchors"])?;}
+    check_collection(got,want,"unresolved","id","link_map",false)?;
     for &group in LINKS{
         if matches!(group,"external_links"|"resource_links")&&got.get(group).is_none()&&want[group].as_array().is_some_and(Vec::is_empty){continue;}
         check_link_origins(&got[group],&want[group],&aliases,&format!("link_map.{group}"))?;
@@ -545,7 +646,11 @@ pub(crate) fn validate_full(inventory:&Path,candidate:&Path,paths:&Value,expecte
     c.bindings.verify()?;Ok(VerifiedMaps{docs:Value::Object(actual),checked,bindings:c.bindings})
 }
 pub fn validate(inventory:&Path,candidate:&Path,paths:&Value,expected:&Value,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
-    match validate_full(inventory,candidate,paths,expected,&mut progress){
+    validate_with_manifest(inventory,candidate,paths,expected,None,&mut progress)
+}
+pub(crate) fn validate_with_manifest(inventory:&Path,candidate:&Path,paths:&Value,expected:&Value,
+    manifest:Option<(&Path,&Value)>,progress:&mut impl FnMut(usize,usize,&str))->Result<Value>{
+    match validate_full_inner(inventory,candidate,paths,expected,manifest,progress){
         Ok(v)=>{
             let mut r=report(v.checked,Map::new(),vec![]);
             r["evidence_files"]=json!(v.bindings.all());Ok(r)

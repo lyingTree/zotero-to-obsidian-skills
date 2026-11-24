@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: rust-native-${{ github.workflow }}-${{ github.ref }}
-  # Keep a started six-platform qualification run intact; avoid duplicate
+  # Keep a started five-platform qualification run intact; avoid duplicate
   # branch push + pull_request jobs and repeated cancellation on new commits.
   cancel-in-progress: false
 
@@ -54,8 +54,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
           - runner: macos-15
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
@@ -151,7 +149,7 @@ jobs:
           if-no-files-found: warn
 
   # Real weights and the official CPU runtime are test-only resources. The
-  # regular six-platform jobs require neither an OCR model nor a GPU SDK.
+  # regular five-platform jobs require neither an OCR model nor a GPU SDK.
   ocr-cpu-smoke:
     needs: resolve-lock
     runs-on: ubuntu-22.04
@@ -195,8 +193,7 @@ jobs:
           if-no-files-found: warn
 
   # Cross-platform qualification consumes the same original scan and exact
-  # model revisions from the successful Linux x64 reference run. Intel Mac
-  # still has no verified API-28 CPU artifact in the pinned catalog.
+  # model revisions from the successful Linux x64 reference run.
   ocr-cpu-platforms:
     needs: [resolve-lock, ocr-cpu-smoke]
     strategy:
@@ -248,16 +245,6 @@ jobs:
             ${{ runner.temp }}/z2o-ocr-fixture/ocr-evidence/**
           if-no-files-found: warn
 
-  ocr-intel-macos-resource-gate:
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - name: Record the explicit upstream CPU artifact blocker (not an inference pass)
-        shell: bash
-        run: |
-          cat native/ocr-cpu-assets.json
-          echo "Intel macOS OCR is BLOCKED: no verified compatible runtime in this catalog. Six-platform OCR qualification remains false."
-
   minicpm-native-runtime:
     strategy:
       fail-fast: false
@@ -271,8 +258,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
           - runner: macos-15
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
@@ -295,7 +280,7 @@ jobs:
           path: ${{ runner.temp }}/z2o-llama-runtime/runtime-evidence.json
           if-no-files-found: error
 
-  # Model-bearing tests independently check Linux and the Intel Mac alternate
+  # Model-bearing tests independently check Linux and Apple-silicon macOS
   # CPU backend. They must never qualify source acceptance or GPU throughput.
   minicpm-model-smoke:
     needs: [resolve-lock, ocr-cpu-smoke]
@@ -305,8 +290,8 @@ jobs:
         include:
           - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:

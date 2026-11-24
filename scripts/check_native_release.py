@@ -11,7 +11,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT.joinpath("native", "migration-status.json")
-TARGETS = frozenset(["x86_64-pc-windows-msvc","aarch64-pc-windows-msvc","x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu","x86_64-apple-darwin","aarch64-apple-darwin"])
+TARGETS = frozenset(["x86_64-pc-windows-msvc","aarch64-pc-windows-msvc","x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu","aarch64-apple-darwin"])
 CAPABILITIES = frozenset(["all_original_runtime_operations","pdf_source_geometry_and_image_evidence","docx_source_qualification","source_delivery_mapping_and_review_ledger","translation_review_lifecycle","native_complete_workflow","native_installation_and_external_integration","twelve_skill_production_entrypoints","all_reference_regressions_and_frozen_examples","platform_installation_and_release_artifacts","locked_dependencies_and_license_review"])
 
 
@@ -80,8 +80,9 @@ def evaluate(manifest, description, reference, version, crate_version, lock_comm
         cap = capabilities.get(name, {})
         if cap.get("qualified") is not True:
             blockers.append(cap.get("blocker") or f"Unqualified capability: {name}")
-    if set(manifest.get("required_targets", [])) != TARGETS:
-        errors.append("All six native targets are mandatory.")
+    required_targets = manifest.get("required_targets")
+    if not isinstance(required_targets, list) or sorted(required_targets, key=str) != sorted(TARGETS):
+        errors.append("Release must require exactly the five supported native targets, with no duplicates.")
     if not lock_committed:
         blockers.append("Cargo.lock is not committed.")
     if version != "2.0.0" or crate_version != "2.0.0":
@@ -99,7 +100,7 @@ def evaluate(manifest, description, reference, version, crate_version, lock_comm
             "required_targets": sorted(TARGETS), "modules": coverage,
             "ready_for_release": not errors and not blockers, "configuration_errors": errors,
             "release_blockers": blockers,
-            "boundary": "Registry coverage is not behavioral parity. Full reference tests, six native runtimes, and clean installations remain mandatory."}
+            "boundary": "Registry coverage is not behavioral parity. Full reference tests, five supported native runtimes, and clean installations remain mandatory."}
 
 
 def main():

@@ -47,9 +47,9 @@
 |---|---|---|
 | Windows | x86_64-pc-windows-msvc | aarch64-pc-windows-msvc |
 | Linux | x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu |
-| macOS | x86_64-apple-darwin | aarch64-apple-darwin |
+| macOS | 不支持 Intel Mac | aarch64-apple-darwin |
 
-使用 GitHub 原生对应 runner 运行测试和 release 构建；不是仅靠 cross compile 推断可运行。Linux 以 Ubuntu 22.04 runner 为本轮构建基线，其他发行版/glibc 兼容性需单独验证；Windows 长路径、NTFS junction、大小写及保留名，macOS APFS 大小写和 NFC/NFD 差异需保留实机测试。正式发布还需精确提交 Cargo.lock、审查第三方许可证、签名/公证和安装包哈希。
+原生 2.0.0 以这五个目标为准；不构建、不分发、不验收 Intel macOS 包。使用 GitHub 原生对应 runner 运行测试和 release 构建；不是仅靠 cross compile 推断可运行。Linux 以 Ubuntu 22.04 runner 为本轮构建基线，其他发行版/glibc 兼容性需单独验证；Windows 长路径、NTFS junction、大小写及保留名，macOS APFS 大小写和 NFC/NFD 差异需保留实机测试。正式发布还需精确提交 Cargo.lock、审查第三方许可证、签名/公证和安装包哈希。
 
 ## 剩余迁移及不可跳过的发布门槛
 
@@ -57,7 +57,7 @@
 2. 完整原子台账、来源/交付映射、图件库存、断点恢复、独占提交与真实写后回读。复用当前参考样例做每条规则差分，而不是只比较 pass。
 3. DOCX：zip/quick-xml，保留原 XML 路径、关系、图片与表格顺序；PDF：评估 pdfium-render + 明确版本的 PDFium，保留页文本、坐标、变换、对象、SMask、裁剪及其来源证据，不把单纯提取字符串等同于原有 PDF 处理。
 4. 翻译审计、术语表、Zotero API、Obsidian 文件写入与原生安装器；替换两套外部技能的 Python 调用，用户无需 Python 或 Rust 编译器。
-5. Windows/Linux/macOS × x86-64/ARM64 实际运行，所有历史回归、冻结模型样例、负面与并发测试、原子验收覆盖核对。不能迁移的语义判断仍为待核，不允许以更宽松规则通过。
+5. 上述五个原生目标实际运行，所有历史回归、冻结模型样例、负面与并发测试、原子验收覆盖核对。不能迁移的语义判断仍为待核，不允许以更宽松规则通过。
 6. 仅当以上验收均完成，才切换全部 12 个技能的生产调用、移除用户安装链上的 Python 并构建原生发布包。未迁移的操作在 describe 中必须明确反映；禁止把部分实现发布为完整工具。
 
 开发测试由 .github/workflows/native.yml 执行。scripts/compare_native_reference.py 在参考环境中以独立进程比较实际文件产物、完整命名计划和每项验收状态；Python 是测试预言机，不是二进制依赖。现有 validate.yml 继续保留参考实现的完整回归。
@@ -68,7 +68,7 @@
 
 ### 规范化迁移验收
 
-Rust 规范化器使用独立词法扫描与原始字节区间，处理 CRLF/LF、转义、嵌套 Markdown 链接、代码、公式、引用定义和 Rich Table。量值、空格、横线与图块间距的修改形成 Unicode 码点坐标的可重放记录。固定点验证不等于来源语义通过；输出路径采用不覆盖的同目录临时文件发布与真实回读。差分测试直接复用现有 Python 的全部规范化样例，并比较实际全文、逐次修改、行列、待核问题和哈希，而不仅比较状态。新增代码待六平台运行及差分验证，不能视作已验收。
+Rust 规范化器使用独立词法扫描与原始字节区间，处理 CRLF/LF、转义、嵌套 Markdown 链接、代码、公式、引用定义和 Rich Table。量值、空格、横线与图块间距的修改形成 Unicode 码点坐标的可重放记录。固定点验证不等于来源语义通过；输出路径采用不覆盖的同目录临时文件发布与真实回读。差分测试直接复用现有 Python 的全部规范化样例，并比较实际全文、逐次修改、行列、待核问题和哈希，而不仅比较状态。新增代码待五个支持平台运行及差分验证，不能视作已验收。
 
 ### 静态验收迁移
 
@@ -76,7 +76,7 @@ Rust 规范化器使用独立词法扫描与原始字节区间，处理 CRLF/LF�
 
 ### 2.0.0 发布门槛
 
-native/migration-status.json 登记实际存在的 23 个参考模块和 11 项必要发布能力。scripts/check_native_release.py 使用 AST 枚举参考公开函数和公开类方法，核对实际二进制 describe、缺失接口、资格状态、版本及已提交 Cargo.lock。开发分支报告缺项；VERSION 或 tag 进入 2.x 或明确请求发布检查时，存在缺项便返回非零。模块状态只有经过行为差分、六平台实机运行及完整工作流验收后才能改为 qualified。此门槛不以操作注册数量代替等价性，也不自动创建 tag/Release。
+native/migration-status.json 登记实际存在的 23 个参考模块和 11 项必要发布能力。scripts/check_native_release.py 使用 AST 枚举参考公开函数和公开类方法，核对实际二进制 describe、缺失接口、资格状态、版本及已提交 Cargo.lock。开发分支报告缺项；VERSION 或 tag 进入 2.x 或明确请求发布检查时，存在缺项便返回非零。模块状态只有经过行为差分、五个支持平台实机运行及完整工作流验收后才能改为 qualified。此门槛不以操作注册数量代替等价性，也不自动创建 tag/Release。
 
 ### 来源准备与翻译审计初始化
 
@@ -132,7 +132,7 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 
 新增原生 `pdf_image_objects.render_pdfcraft_page`、`render_pdfcraft_region`、`extract_pdfcraft_text` 及 `prepare_source_inventory.prepare_pdfcraft_evidence`，对同一份原始字节实施真实页面渲染、区域裁剪、字形坐标与结构 XRef 证据的绑定。坐标采用未旋转 PDF 点；核对 PdfCraft 与既有结构解析器的页数、页尺寸及旋转，再建立变换。拒绝越界、错误 DPI、静默降分辨率、哈希变化及冲突输出。现阶段不把 PdfCraft 字形/行分组伪造为原 PyMuPDF 文本块 ID，不把页面像素或文本结果当作语义和图件验收。PdfCraft renderer 的部分解码/字体诊断可能不会出现在返回 warnings 中，必须通过独立历史差分和视觉回归检查。保留现有 lopdf 0.36 结构定位，后续核对 COS 替换。
 
-此次引入新的 git 依赖，原 Cargo.lock 不再代表完整图谱。候选 CI 单次实际 Cargo 解析生成锁文件，保存日志及 artifact，六平台使用同一份生成的锁文件做 --locked 构建。发布门禁拒绝未提交或与 HEAD 不同的锁文件，版本/tag 发布不允许自动重解析。待真实 lockfile 回收提交后恢复直接 locked 构建。当前不能声明 PdfCraft 的编译、字体覆盖、像素等价和分发许可证审查已通过。
+此次引入新的 git 依赖，原 Cargo.lock 不再代表完整图谱。候选 CI 单次实际 Cargo 解析生成锁文件，保存日志及 artifact，五个支持平台使用同一份生成的锁文件做 --locked 构建。发布门禁拒绝未提交或与 HEAD 不同的锁文件，版本/tag 发布不允许自动重解析。待真实 lockfile 回收提交后恢复直接 locked 构建。当前不能声明 PdfCraft 的编译、字体覆盖、像素等价和分发许可证审查已通过。
 
 ### CPU-first OCR 后端（候选）
 
@@ -140,7 +140,7 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 
 新增 `prepare_source_inventory.ocr_hardware_plan`、`inspect_ocr_package`、`recognize_ocr_png`。按总内存和可用内存选择已安装 tiny/small/medium 模型，限制 det/rec 线程、检测输入尺寸和单页像素；layout 按需加载，orientation 单独记录原始方向和逆变换。辅助模型的线程限制、低端 CPU 兼容及内存峰值仍需实测。模型包 schema 1 为 `{"engine":"ppocr-v6","runtime":{"platform":"linux","architecture":"x86_64","version":"1.28.2","file":{"path":"runtime/libonnxruntime.so","sha256":"<actual>"}}, "profiles":{"tiny":{"detector":{...},"recognizer":{...},"dictionary":{...}}},"auxiliary":{"orientation":{...},"layout":{...}},"schema_version":1}`。所有资源记录均为包根目录相对路径+真实 SHA-256，manifest SHA-256 须来自独立可信安装配置。拒绝不匹配平台、目录穿越、链接及修改后的资产；不自动下载、执行或信任未经批准的远程模型。识别字典必须从对应模型的 inference.yml 提取，保留空行和 token 顺序，不可混用通用训练字典。包内 ONNX 应为自包含权重，安装器需验证发行来源和外部数据引用。
 
-输出保留逐行、逐词检测/识别分数、原始图像坐标、方向校正后的坐标、可选版面区域及全部 OCR 候选；未知/越界框和低分候选只能触发复核。分数不是正确概率；不得自动通过验收。MiniCPM-OCR/Jev、表格结构重建、可信资源分发、实际 CPU 推理六平台测试及完整扫描 PDF 工作流均待继续实现/验证。现已回收上轮 PdfCraft 实际依赖锁文件，加入 OCR 后须由 CI 重新解析并提交最终 lockfile。
+输出保留逐行、逐词检测/识别分数、原始图像坐标、方向校正后的坐标、可选版面区域及全部 OCR 候选；未知/越界框和低分候选只能触发复核。分数不是正确概率；不得自动通过验收。MiniCPM-OCR/Jev、表格结构重建、可信资源分发、实际 CPU 推理五个支持平台测试及完整扫描 PDF 工作流均待继续实现/验证。现已回收上轮 PdfCraft 实际依赖锁文件，加入 OCR 后须由 CI 重新解析并提交最终 lockfile。
 
 ### PDF 逐页 OCR 证据与恢复
 
@@ -202,7 +202,7 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 
 修复 5322d80 在 CI 中的两个真实 E0599 编译错误（render_note.keys 缺少错误传播）。剩余报告对象、进度与脚本入口共 27 个公开符号新增真实 native 调用；报告方法根据当前实际文件重新执行相应校验器并投影，不接受调用方伪造的通过报告。旧 main 的可编辑脚本全局变量改为显式 JSON 参数，退出语义作为 exit_code 字段返回；不运行 Python。进度条输出 stderr，保持 stdout JSON 协议。此轮针对上次 AST 报告列出的全部缺口，最终以新编译二进制的门禁结果为准。
 
-新增 native_runtime.package / inspect_bundle / install 及 z2o package、z2o install 原生入口。从实际仓库 12 个技能目录与当前预编译程序构建独立候选目录，包清单逐文件 SHA-256、大小及 Unix 可执行位，绑定 OS/CPU 架构、当前运行器哈希及独立可信清单哈希。拒绝链接/特殊文件、路径穿越、大小写/Unicode 冲突、额外或缺失文件；先完整暂存、复核，再提交目录，保留本地旧技能的原始备份和事务记录；重复同一包跳过。安装后的每个 SKILL.md 在 YAML 题头后插入明确 native-only 守则；旧 .py 仅在开发仓库和既有安装的事务备份中保留，不再复制到原生候选技能包；不能作为执行路径。实际外部 Zotero/Obsidian、OCR 资源自动分发、第三方许可证和正式发布仍待验收，不宣称已替代外部技能。CI 六个平台新增预编译实际仓库候选包、空 PATH 安装、安装后 describe，以及合成夹具的升级备份、重复安装、篡改拒绝和实际 invoke。避免同一 PR push/PR 双跑，并不取消已开始的六平台验收。当前仅保存安装回执，不发布二进制安装包或 2.0.0。
+新增 native_runtime.package / inspect_bundle / install 及 z2o package、z2o install 原生入口。从实际仓库 12 个技能目录与当前预编译程序构建独立候选目录，包清单逐文件 SHA-256、大小及 Unix 可执行位，绑定 OS/CPU 架构、当前运行器哈希及独立可信清单哈希。拒绝链接/特殊文件、路径穿越、大小写/Unicode 冲突、额外或缺失文件；先完整暂存、复核，再提交目录，保留本地旧技能的原始备份和事务记录；重复同一包跳过。安装后的每个 SKILL.md 在 YAML 题头后插入明确 native-only 守则；旧 .py 仅在开发仓库和既有安装的事务备份中保留，不再复制到原生候选技能包；不能作为执行路径。实际外部 Zotero/Obsidian、OCR 资源自动分发、第三方许可证和正式发布仍待验收，不宣称已替代外部技能。CI 五个支持平台新增预编译实际仓库候选包、空 PATH 安装、安装后 describe，以及合成夹具的升级备份、重复安装、篡改拒绝和实际 invoke。避免同一 PR push/PR 双跑，并不取消已开始的五个支持平台验收。当前仅保存安装回执，不发布二进制安装包或 2.0.0。
 
 ### 原生 Zotero 读取、库内身份索引与交付缺口
 
@@ -214,7 +214,7 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 
 ### 实际 CPU OCR 平台资源门禁
 
-`native/ocr-cpu-assets.json` 固定 Microsoft 官方 PyPI 1.32.0 CPU wheel 发布页的实际文件名和 SHA-256：Linux x86-64/ARM64、Windows x86-64/ARM64、macOS ARM64。仅提取明确定名的独立原生库及依赖，若 wheel 缺少独立库则测试失败，不安装或导入 wheel。新增四个真实目标的 CPU inference CI，复用成功的 Linux x86-64 扫描版 PDF、PNG、原始模型 revision 与完整资源哈希，使用同一个中英文验收测试及空 PATH、禁用 GPU 的真实程序。PyPI 1.32.0 发布文件没有 Intel macOS wheel；该目标显式记录上游 API-28 CPU artifact blocker，不用 Rosetta/ARM 包冒充 x86-64 推理验收。现有六平台普通二进制/安装任务不变。所有额外 OCR 平台是待验收候选，实际完整模型包、生产分发与许可证尚未资格确认。来源：https://pypi.org/project/onnxruntime/1.32.0/#files 。
+`native/ocr-cpu-assets.json` 固定 Microsoft 官方 PyPI 1.32.0 CPU wheel 发布页的实际文件名和 SHA-256：Linux x86-64/ARM64、Windows x86-64/ARM64、macOS ARM64。仅提取明确定名的独立原生库及依赖，若 wheel 缺少独立库则测试失败，不安装或导入 wheel。新增四个真实目标的 CPU inference CI，复用成功的 Linux x86-64 扫描版 PDF、PNG、原始模型 revision 与完整资源哈希，使用同一个中英文验收测试及空 PATH、禁用 GPU 的真实程序。该资源目录与五个支持目标完全一致，不包含 Intel macOS 或 Rosetta 变体。所有额外 OCR 平台是待验收候选，实际完整模型包、生产分发与许可证尚未资格确认。来源：https://pypi.org/project/onnxruntime/1.32.0/#files 。
 
 ### 原生写库预检与逐模块验收报告
 
@@ -228,7 +228,7 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 
 固定上游 OpenBMB/MiniCPM-OCR c21a3ca524263ef8166cb6d350864b10c3056b61 和 llama.cpp b11901。`prepare_source_inventory.recognize_minicpm_region` / `recognize_minicpm_pdf_region` 直接使用官方 GGUF（main + mmproj；Q8 可选匹配 DSpark draft），由 Rust 启动哈希绑定的本机 llama-server，使用 loopback `/v1/chat/completions` 的实际 Text/Table/Formula Recognition prompt。`score_jev_region` 使用同一原图、实际候选文本文件及单独绑定的候选渲染图，直接调用 `/v1/systemone`，按类别名读取 0/1 概率，不再 softmax。不需要官方 Python SDK；Jev 候选内容渲染需要独立实际图，当前不内置公式/表格渲染器。`inspect_minicpm_package` 核对 manifest 和全部运行库/模型，不启动推理。MiniCPM package schema 1 包含 engine=llama.cpp, release=b11901, model_kind=minicpm-ocr/jev, platform, architecture, cpu/gpu={directory,executable,variant,files:[{path,sha256}]}, model/projector/draft={path,sha256}，cpu 必需、gpu 可选。GPU 尝试独立进程，要求实际启动日志中正数层 offload，失败/缺资源回到同权重 CPU；CPU 显式禁 GPU/投影 offload。GPU node placement/实际提速不由报告自证。
 
-PP-OCRv6 `recognize_ocr_png_accelerated` 使用独立 z2o worker；CPU 与可选 GPU package 明确绑定同一 detector/recognizer/dictionary/aux hashes 和 profile，GPU manifest runtime.execution_provider 可为 Linux CUDAExecutionProvider、Windows DmlExecutionProvider、macOS CoreMLExecutionProvider。实际 EP availability / registration error-on-failure；GPU worker 失败/崩溃/超时重新启动 CPU worker，不伪造节点放置。CI 真双语 OCR 增加故意无效动态库的 GPU worker 实际失败再走同权重 CPU 识别测试。已有默认 PDF/OCR 路由仍为 CPU；显式区域增强接口待完整工作流集成。新增官方 b11901 六平台 CPU 及 Vulkan/Metal archive SHA-256 目录和实际 native server 启动矩阵。Windows 原生编译成功后的安装失败为哈希参数异常，改用 stdin SHA-256 并校验格式。macOS Intel llama.cpp CPU 路径有官方包，但不能等同于 PP-OCR ORT API-28 实际可用。真实 MiniCPM/Jev 权重推理和真实 GPU 加速仍需单独验收。用户资源自动下载未完成。
+PP-OCRv6 `recognize_ocr_png_accelerated` 使用独立 z2o worker；CPU 与可选 GPU package 明确绑定同一 detector/recognizer/dictionary/aux hashes 和 profile，GPU manifest runtime.execution_provider 可为 Linux CUDAExecutionProvider、Windows DmlExecutionProvider、macOS CoreMLExecutionProvider。实际 EP availability / registration error-on-failure；GPU worker 失败/崩溃/超时重新启动 CPU worker，不伪造节点放置。CI 真双语 OCR 增加故意无效动态库的 GPU worker 实际失败再走同权重 CPU 识别测试。已有默认 PDF/OCR 路由仍为 CPU；显式区域增强接口待完整工作流集成。新增官方 b11901 五个支持平台 CPU 及 Vulkan/Metal archive SHA-256 目录和实际 native server 启动矩阵。Windows 原生编译成功后的安装失败为哈希参数异常，改用 stdin SHA-256 并校验格式。MiniCPM/Jev 的实际模型测试仍分别在 Linux x86-64 和 Apple Silicon macOS 上运行。真实 MiniCPM/Jev 权重推理和真实 GPU 加速仍需单独验收。用户资源自动下载未完成。
 
 ### 原生候选包排除旧 Python 文件
 
@@ -242,4 +242,4 @@ PDF extraction additionally handles packed 1/2/4-bit grayscale/RGB sample rows a
 
 Delivery and workflow verification bind the same manifest/map target and worksheet selectors, retain the original resource root, reject escaped or stale assets, and recheck evidence across stages. Translation decision drafts may be restored with an explicit `expected_draft_sha256`; input bytes and review publication are checked again before returning validation results.
 
-These changes cover all seven previously partial module areas, but are implementation increments, not evidence of complete historical behavior parity. Keep the existing release gates and module qualification states until native compilation, reference comparisons, mixed-source acceptance and the required six-platform execution results establish them. Unsupported PDF display/codec cases remain explicit, rather than silently falling back to Python or certifying semantic correctness.
+These changes cover all seven previously partial module areas, but are implementation increments, not evidence of complete historical behavior parity. Keep the existing release gates and module qualification states until native compilation, reference comparisons, mixed-source acceptance and the required five-platform execution results establish them. Unsupported PDF display/codec cases remain explicit, rather than silently falling back to Python or certifying semantic correctness.

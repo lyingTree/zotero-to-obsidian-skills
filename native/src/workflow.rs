@@ -408,7 +408,9 @@ fn matching_delivery_selectors(manifest:&Value,maps:&[&Value])->Result<()>{
         ensure!(expected.insert(id.into(),json!({"target":d["target"],"sheet":d["sheet"]})).is_none(),"Duplicate manifest unit {id}");
     }
     let mut actual=BTreeMap::<String,Value>::new();
+    let mut compact=false;
     for map in maps{
+        if map.get("units").is_none(){compact=true;continue;}
         let units=&map["units"];
         let rows:Vec<&Value>=if let Some(a)=units.as_array(){a.iter().collect()}else if let Some(m)=units.as_object(){m.values().collect()}else{anyhow::bail!("Source map units are required")};
         for row in rows{
@@ -418,7 +420,11 @@ fn matching_delivery_selectors(manifest:&Value,maps:&[&Value])->Result<()>{
             ensure!(actual.insert(id.into(),json!({"target":d["target"],"sheet":d["sheet"]})).is_none(),"Duplicate mapped unit {id}");
         }
     }
-    ensure!(expected==actual,"Manifest and saved source maps must cover identical units, target selectors and worksheet selectors");
+    // Only present rows are checked here when a historical map omits the
+    // derived unit view. Handoff validation must still independently account
+    // for every omitted unit from this exact manifest and saved block records.
+    ensure!(if compact{actual.iter().all(|(id,v)|expected.get(id)==Some(v))}else{expected==actual},
+        "Manifest and saved source maps must cover identical units, target selectors and worksheet selectors");
     Ok(())
 }
 pub fn inspect(run_path:&Path,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
@@ -546,7 +552,8 @@ pub fn inspect(run_path:&Path,mut progress:impl FnMut(usize,usize,&str))->Result
             for name in ["source_map","si_map","link_map"]{
                 if let Some((p,_))=loaded.get(name){paths.insert(name.into(),json!(path_text(p)?));}
             }
-            let report=crate::handoff_native::validate(ip,cp,&Value::Object(paths),&expected,&mut progress)?;
+            let manifest=loaded.get("delivery_manifest").map(|(p,_)|(p.as_path(),&a.checked["delivery_manifest"]));
+            let report=crate::handoff_native::validate_with_manifest(ip,cp,&Value::Object(paths),&expected,manifest,&mut progress)?;
             if let Some(rows)=report["evidence_files"].as_array(){
                 for b in rows{let r=a.files.recorded(b,base).map(|_|());a.issue("WORKFLOW_MAP_EVIDENCE","handoff_maps",r);}
             }

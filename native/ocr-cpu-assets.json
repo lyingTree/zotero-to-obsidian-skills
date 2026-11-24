@@ -64,12 +64,6 @@
       "dependencies": [
         "libonnxruntime_providers_shared.dylib"
       ]
-    },
-    "x86_64-apple-darwin": {
-      "platform": "macos",
-      "architecture": "x86_64",
-      "status": "blocked",
-      "reason": "No macOS Intel wheel in the pinned official 1.32.0 PyPI release; no verified standalone API-28-compatible CPU runtime supplied."
     }
   }
 }

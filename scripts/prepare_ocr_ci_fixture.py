@@ -24,7 +24,9 @@ ORT_VERSION = "1.32.0"
 # Exact published PyPI file digests for the supported architecture candidates.
 ASSET_CATALOG = Path(__file__).resolve().parents[1].joinpath("native", "ocr-cpu-assets.json")
 TARGET = os.environ.get("Z2O_OCR_TARGET", "x86_64-unknown-linux-gnu")
-RUNTIME_SPEC = json.loads(ASSET_CATALOG.read_text(encoding="utf-8"))["targets"][TARGET]
+RUNTIME_SPEC = json.loads(ASSET_CATALOG.read_text(encoding="utf-8"))["targets"].get(TARGET)
+if RUNTIME_SPEC is None:
+    raise ValueError(f"Unsupported native CPU OCR target: {TARGET}")
 if RUNTIME_SPEC.get("status") == "blocked":
     raise RuntimeError(RUNTIME_SPEC["reason"])
 ORT_WHEEL_NAME = RUNTIME_SPEC["wheel"]

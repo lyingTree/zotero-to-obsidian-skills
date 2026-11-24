@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "PP-OCR CPU real qualification; optional isolated GPU/CPU fallback integrated into PDF OCR preparation and inventory, with same-profile model bindings; local MiniCPM-OCR/Jev model-bearing Linux/Intel Mac CI tests added; actual new results, accelerator hardware and full PDF/platform qualification remain; packed 1/2/4-bit samples, explicit Decode inversion and independently bound indirect mask replay added; complete codec/color-space coverage and independent render comparison remain unverified"
+      "blocker": "PP-OCR CPU real qualification; optional isolated GPU/CPU fallback integrated into PDF OCR preparation and inventory, with same-profile model bindings; local MiniCPM-OCR/Jev model-bearing Linux/Apple-silicon macOS CI targeted; actual new results, accelerator hardware and full PDF/platform qualification remain; packed 1/2/4-bit samples, explicit Decode inversion and independently bound indirect mask replay added; complete codec/color-space coverage and independent render comparison remain unverified"
     },
     "docx_source_qualification": {
       "qualified": false,
@@ -66,11 +66,11 @@
     },
     "platform_installation_and_release_artifacts": {
       "qualified": false,
-      "blocker": "Earlier Windows x64/ARM64 compilation and native tests passed, Git Bash installer digest handling fixed; official llama.cpp b11901 CPU and optional GPU asset catalog for all six targets and native runtime launch matrix added; actual tests pending"
+      "blocker": "Earlier Windows x64/ARM64 compilation and native tests passed, Git Bash installer digest handling fixed; official llama.cpp b11901 CPU and optional GPU asset catalog for all five supported targets and native runtime launch matrix added; actual tests pending"
     },
     "locked_dependencies_and_license_review": {
       "qualified": false,
-      "blocker": "Committed actual Cargo.lock and official pinned 1.32.0 CPU wheel identities for five target candidates; standalone library compatibility, license/distribution audit and missing Intel macOS artifact remain"
+      "blocker": "Committed actual Cargo.lock and official pinned 1.32.0 CPU wheel identities for five target candidates; standalone library compatibility, license/distribution audit and actual qualification of the supported targets remain"
     }
   },
   "required_targets": [
@@ -78,7 +78,6 @@
     "aarch64-pc-windows-msvc",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
     "aarch64-apple-darwin"
   ],
   "nonruntime_api_exclusions": {},

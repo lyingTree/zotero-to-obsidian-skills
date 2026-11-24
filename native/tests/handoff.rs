@@ -318,3 +318,80 @@ fn writes_validates_and_reruns_multiline_reference_links(){
     let path=mapping_compare::record_mapping_rerun(&f.run,&deliver,&f.root.path().join("reference-rerun"),|_,_,_|{}).unwrap();
     assert_eq!(pipeline::read_json(&path).unwrap()["mapping_equal"],true);
 }
+
+#[test]
+fn complete_workflow_cli_replays_compact_maps_using_only_actual_manifest_and_covered_units() {
+    let f=Fixture::new();
+    assert_eq!(f.write()["records_ready"],true);
+    let mut run=pipeline::read_json(&f.run).unwrap();
+    let root=f.root.path();
+    let manifest=root.join("manifest.json");
+    run["workflow_profile"]=json!("complete_pdf_candidate_v1");
+    run["scope"]["source_ids"]=json!(["main","si"]);
+    run["scope"]["translation_required"]=json!(false);
+    run["config"]["skills_root"]=json!(root);
+    run["config"]["resource_root"]=json!(root);
+    run["records"]["delivery_manifest"]=json!(manifest);
+    save(&f.run,&run);
+    let original_manifest=json!({"schema_version":1,"candidate":binding(&f.candidate),
+        "inventory":binding(&f.inventory),"resource_root":root,"figure_edge_reviews_required":true,
+        "deliveries":f.deliveries});
+    save(&manifest,&original_manifest);
+    for p in [f.map("source_map"),f.map("si_map")]{
+        let mut doc=pipeline::read_json(&p).unwrap();
+        let fields=doc.as_object_mut().unwrap();
+        for k in ["units","status","review_status","source_fidelity","metadata"]{fields.remove(k);}
+        for block in doc["blocks"].as_array_mut().unwrap(){block.as_object_mut().unwrap().remove("status");}
+        save(&p,&doc);
+    }
+    let main_path=f.map("source_map");
+    let link_path=f.map("link_map");
+    let mut main=pipeline::read_json(&main_path).unwrap();
+    main.as_object_mut().unwrap().remove("sources");
+    save(&main_path,&main);
+    let mut links=pipeline::read_json(&link_path).unwrap();
+    for anchor in links["anchors"].as_array_mut().unwrap(){
+        let a=anchor.as_object_mut().unwrap();
+        for k in ["target_unit","candidate_locator","review_status"]{a.remove(k);}
+    }
+    for k in ["status","review_status","source_fidelity"]{links.as_object_mut().unwrap().remove(k);}
+    save(&link_path,&links);
+    assert_eq!(f.validate()["records_ready"],false,"standalone validation has no separately bound manifest");
+
+    let request=root.join("inspect-request.json");
+    save(&request,&json!({"schema_version":1,"operation":"complete_workflow.inspect_workflow","args":[f.run]}));
+    let inspect=|| {
+        let output=std::process::Command::new(env!("CARGO_BIN_EXE_z2o")).arg("invoke").arg(&request)
+            .env("PATH","").env_remove("PYTHONPATH").output().unwrap();
+        assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["result"].clone()
+    };
+    let before=[f.run.clone(),f.inventory.clone(),f.candidate.clone(),manifest.clone(),
+        main_path.clone(),f.map("si_map"),link_path.clone()]
+        .into_iter().map(|p|{let bytes=fs::read(&p).unwrap();(p,bytes)}).collect::<Vec<_>>();
+    let r=inspect();
+    assert_eq!(r["stage_reports"]["handoff"]["records_ready"],true,"{}",r["stage_reports"]["handoff"]);
+    assert_eq!(r["records_ready"],false);
+    assert_eq!(r["source_fidelity"],"not_assessed");
+    for (path,bytes) in before{assert_eq!(fs::read(path).unwrap(),bytes);}
+    let unfinished=|code:&str|{
+        let r=inspect();let h=&r["stage_reports"]["handoff"];
+        assert_eq!(h["records_ready"],false,"{h}");
+        assert!(h["findings"][0]["message"].as_str().unwrap().contains(code),"{h}");
+    };
+    let mut absent=main.clone();
+    absent["blocks"].as_array_mut().unwrap().pop();
+    save(&main_path,&absent);unfinished("MAP_BLOCK_MISSING");save(&main_path,&main);
+    let mut forgery=links.clone();
+    forgery["anchors"][0]["source_id"]=json!("nonexistent-source");
+    save(&link_path,&forgery);unfinished("MAP_ANCHOR_SOURCE_OR_TARGET");save(&link_path,&links);
+    let mut weakened=original_manifest.clone();
+    weakened["candidate"]["sha256"]=json!("0".repeat(64));
+    save(&manifest,&weakened);unfinished("MAP_LEGACY_MANIFEST_BINDING");
+    let mut incomplete=original_manifest.clone();
+    incomplete["deliveries"].as_array_mut().unwrap().pop();
+    save(&manifest,&incomplete);unfinished("MAP_DELIVERY_SET");
+    save(&manifest,&original_manifest);
+    let mut explicit_null=main.clone();explicit_null["units"]=Value::Null;
+    save(&main_path,&explicit_null);unfinished("MAP_COLLECTION");
+}

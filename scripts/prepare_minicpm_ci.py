@@ -106,8 +106,11 @@ def extract(spec: dict, dest: Path) -> dict:
     return {"directory": dest.name, "executable": matches[0], "variant": "cpu", "files": rows}
 
 def main() -> None:
+    target = CATALOG["targets"].get(TARGET)
+    if target is None:
+        raise ValueError(f"Unsupported native MiniCPM target: {TARGET}")
+    spec = target["cpu"]
     DEST.mkdir(parents=True, exist_ok=False)
-    spec = CATALOG["targets"][TARGET]["cpu"]
     record = extract(spec, DEST.joinpath("cpu"))
     exe = DEST.joinpath("cpu", *PurePosixPath(record["executable"]).parts)
     env = dict(os.environ)
