@@ -10,6 +10,8 @@ pub mod yaml_emit;
 pub mod render;
 pub mod syntax;
 pub mod normalize;
+pub mod yaml_nodes;
+pub mod validate;
 pub mod source_urls;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
@@ -51,6 +53,9 @@ pub const OPERATIONS: &[&str] = &[
     "format_helpers.build_rich_table_block",
     "normalize_note.normalize_note",
     "normalize_note.normalize_file",
+    "validate_note.validate_note",
+    "validate_note.validate_file",
+    "validate_note.inspect_note",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -320,6 +325,17 @@ pub fn invoke(request: Value) -> Result<Value> {
             let source = path(&c.positional("source")?)?;
             let destination = path(&c.positional("destination")?)?;
             c.finish()?; normalize::normalize_file(&source,&destination)?
+        }
+        "validate_note.validate_note" | "validate_note.inspect_note" => {
+            let text = c.positional("text")?;
+            let text = text.as_str().ok_or_else(||anyhow!("text must be a UTF-8 string"))?;
+            c.finish()?;
+            if op.ends_with("inspect_note"){serde_json::to_value(validate::inspect(text))?}
+            else{serde_json::to_value(validate::validate_note(text))?}
+        }
+        "validate_note.validate_file" => {
+            let p = path(&c.positional("path")?)?;
+            c.finish()?; serde_json::to_value(validate::validate_file(&p))?
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

@@ -1,34 +1,12 @@
 //! Rich Table source checks. Only a complete recognized top-level scan can pass.
-use crate::{decision,files,properties};
+use crate::{decision,files,validate,yaml_nodes};
 use anyhow::Result;
 use serde_json::{json,Map,Value};
 use std::path::Path;
 
 const IDS:&[&str]=&["BODY-A83","BODY-A84","BODY-A85","BODY-A86","BODY-A87","BODY-A111"];
-struct Fence{marker:char,width:usize,line:usize,table:bool,payload:Vec<String>}
-fn fence(line:&str)->Option<(char,usize,&str)>{
-    let trimmed=line.trim_start_matches(' ');
-    if line.len()-trimmed.len()>3{return None;}
-    let marker=trimmed.chars().next()?;
-    if marker!='~'&&marker!='\x60'{return None;}
-    let length=trimmed.chars().take_while(|c|*c==marker).count();
-    if length<3{return None;}
-    let tail=&trimmed[length..];
-    if marker=='\x60'&&tail.contains('\x60'){return None;}
-    Some((marker,length,tail.trim()))
-}
-fn unwrap_payload(lines:&[String])->String{
-    let mut value=lines.to_vec();
-    let nonempty:Vec<_>=value.iter().enumerate().filter(|(_,s)|!s.trim().is_empty()).map(|(i,_)|i).collect();
-    if nonempty.len()>=2{
-        let first=nonempty[0];let last=*nonempty.last().unwrap();
-        let marker=|s:&str|s=="---"||s.strip_prefix("---").is_some_and(|tail|tail.starts_with(' ')&&tail.trim().starts_with('#'));
-        if marker(&value[first])&&marker(&value[last]){value[last].clear();}
-    }
-    value.join("\n")
-}
-fn record(table:Fence,outcomes:&mut [Vec<Option<bool>>],closed:bool)->Value{
-    let parsed=if closed{properties::parse_yaml(unwrap_payload(&table.payload).as_bytes()).ok()}else{None};
+fn record(table:&validate::TableRecord,outcomes:&mut [Vec<Option<bool>>])->Value{
+    let parsed=if table.closing_line.is_some(){yaml_nodes::load(&validate::rich_payload(&table.content)).ok().map(|doc|doc.value)}else{None};
     outcomes[0].push(Some(parsed.is_some()));
     let mut details=vec![];
     let Some(value)=parsed else{
@@ -61,58 +39,11 @@ fn record(table:Fence,outcomes:&mut [Vec<Option<bool>>],closed:bool)->Value{
 }
 pub fn audit(candidate:&Path)->Result<Value>{
     let (raw,binding)=files::read_bound(candidate)?;
-    let parts=properties::split(&raw)?;
-    let text=std::str::from_utf8(parts.body)?;
-    let head=String::from_utf8_lossy(parts.prefix).lines().count();
-    let offset=if parts.payload.is_none(){0}else{head};
-    let mut active:Option<Fence>=None;
-    let mut math=false;
-    let mut comment:Option<&str>=None;
-    let mut uncertain=false;
+    let text=std::str::from_utf8(&raw)?;
+    let inspection=validate::inspect(text);
+    let uncertain=inspection.findings.iter().any(|f|matches!(f.code,"FENCE_UNCLOSED"|"MATH_UNCLOSED"|"COMMENT_UNCLOSED"));
     let mut outcomes=vec![vec![];IDS.len()];
-    let mut tables=vec![];
-    for (i,line) in text.lines().enumerate(){
-        let line=line.trim_end_matches('\r');
-        let number=offset+i+1;
-        if let Some(current)=active.as_mut(){
-            let closes=fence(line).is_some_and(|(marker,width,tail)|marker==current.marker&&width>=current.width&&tail.is_empty());
-            if closes{
-                let current=active.take().unwrap();
-                if current.table{tables.push(record(current,&mut outcomes,true));}
-            }else if current.table{current.payload.push(line.to_owned());}
-            continue;
-        }
-        if math{if line.trim()=="$$"{math=false;}continue;}
-        if let Some(end)=comment{
-            if line.contains(end){comment=None;if line.trim_end().ends_with(end){continue;}uncertain=true;}
-            continue;
-        }
-        let clean=line.trim_start();
-        if clean.starts_with("<!--"){
-            if !clean.contains("-->"){comment=Some("-->");}
-            else if !clean.trim_end().ends_with("-->"){uncertain=true;}
-            continue;
-        }
-        if clean.starts_with("%%"){
-            if !clean[2..].contains("%%"){comment=Some("%%");}
-            else if !clean.trim_end().ends_with("%%"){uncertain=true;}
-            continue;
-        }
-        if clean=="$$"{math=true;continue;}
-        // Inline/mixed multiline markup can change fence visibility in
-        // Obsidian. Record uncertainty rather than certify such a scan.
-        if line.contains("<!--")||line.contains("%%")||
-            (clean.starts_with("$$")&&!clean.ends_with("$$")){uncertain=true;}
-        if line.starts_with("    ")||line.starts_with('\t'){
-            if clean.starts_with("~~~")||clean.starts_with("\x60\x60\x60"){uncertain=true;}
-            continue;
-        }
-        if let Some((marker,width,tail))=fence(line){
-            active=Some(Fence{marker,width,line:number,table:tail=="rich-table",payload:vec![]});
-        }
-    }
-    if let Some(current)=active{uncertain=true;if current.table{tables.push(record(current,&mut outcomes,false));}}
-    uncertain|=math||comment.is_some();
+    let tables:Vec<_>=inspection.table_records.iter().map(|recorded|record(recorded,&mut outcomes)).collect();
     let mut checks=Map::new();
     for (id,values) in IDS.iter().zip(outcomes){
         let status=if values.contains(&Some(false)){Some(false)}

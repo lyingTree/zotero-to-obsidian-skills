@@ -322,3 +322,35 @@ fn native_normalizer_crlf_and_exclusive_destination(){
     assert!(normalize::normalize_file(&input,&output).is_err());
     assert_eq!(fs::read_to_string(&input).unwrap(),source);
 }
+
+
+#[test]
+fn validator_uses_actual_yaml_source_style_and_anchor_positions(){
+    use z2o_native::validate;
+    let invalid="---\n年份: 2024\n年份: 2025\n---\n[x](#^missing)\n";
+    let findings=validate::validate_note(invalid);
+    assert!(findings.iter().any(|f|f.code=="FRONTMATTER_YAML"&&f.line==3),"{findings:?}");
+    assert!(findings.iter().any(|f|f.code=="MISSING_ANCHOR"&&f.line==5));
+    assert!(validate::validate_note("---\ndate: 2025-02-30\n---\n").iter().any(|f|f.code=="FRONTMATTER_YAML"));
+    assert!(validate::validate_note("---\nbase: &base\n  color: blue\nlocal:\n  <<: *base\n  color: red\n---\n").is_empty());
+    let table="\x60\x60\x60rich-table\nversion: 2\nlocked: true\ntheme: grid\ncolumns: [a]\nrows: [b]\ntitle: '[表1](#^tbl-1)'\n\x60\x60\x60\n^tbl-1\n";
+    let inspected=validate::inspect(table);
+    assert_eq!(inspected.table_records.len(),1);
+    assert_eq!(inspected.table_records[0].anchor.as_deref(),Some("tbl-1"));
+    for code in ["TABLE_COLUMNS_FLOW_STYLE","TABLE_ROWS_FLOW_STYLE","TABLE_CAPTION_SELF_LINK"]{
+        assert!(inspected.findings.iter().any(|f|f.code==code),"{:?}",inspected.findings);
+    }
+}
+#[test]
+fn validator_protects_code_comments_and_tracks_bibliography(){
+    use z2o_native::validate;
+    let text="[\u{7532}](#^ref-1)\n\n## 2 参考文献\n1. Author\n    journal. ^ref-1\n";
+    assert!(validate::validate_note(text).is_empty());
+    let text="\x60literal\n%%\nend\x60\n\n[x](#^absent)\n";
+    let findings=validate::validate_note(text);
+    assert_eq!(findings.len(),1,"{findings:?}");
+    assert_eq!(findings[0].code,"MISSING_ANCHOR");
+    let text="$$\nx=1\n$$\n\n^eq-1\n后文\n";
+    let codes:Vec<_>=validate::validate_note(text).into_iter().map(|f|f.code).collect();
+    for expected in ["ANCHOR_GAP","ANCHOR_SPACING","EQUATION_ANCHOR"]{assert!(codes.contains(&expected),"{codes:?}");}
+}

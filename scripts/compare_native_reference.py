@@ -197,5 +197,70 @@ class NativeNormalizationComparison(normalize_suite.NoteNormalization):
             self.assertEqual(source.read_bytes(), b"60 min\r\n")
 
 
+
+class NativeValidatorMixin:
+    """Run the original validation suites unchanged using native findings."""
+    validator_module = None
+
+    def setUp(self):
+        super().setUp()
+        import dataclasses
+        from unittest.mock import patch
+
+        module = self.validator_module
+        reference_note = module.validate_note
+        reference_file = module.validate_file
+        reference_inspect = reference_note
+
+        def compare(actual, expected):
+            expected_rows = [dataclasses.asdict(row) for row in expected]
+            self.assertEqual([(r["level"], r["code"], r["line"]) for r in actual],
+                             [(r["level"], r["code"], r["line"]) for r in expected_rows])
+            for a, b in zip(actual, expected_rows):
+                if a["code"] not in {"FRONTMATTER_YAML", "TABLE_YAML", "FILE_READ"}:
+                    self.assertEqual(a["message"], b["message"])
+            return [module.Finding(**row) for row in actual]
+
+        def native(operation, value):
+            with tempfile.TemporaryDirectory() as folder:
+                request = Path(folder).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version": 1, "operation": operation,
+                    "args": [value]}, ensure_ascii=False), encoding="utf-8")
+                process = subprocess.run([str(BINARY), "invoke", str(request)],
+                    capture_output=True, encoding="utf-8", check=True, timeout=45)
+                return json.loads(process.stdout)["result"]
+
+        def validate_note(text, **kwargs):
+            expected_records = []
+            expected = reference_inspect(text, table_records=expected_records)
+            actual = native("validate_note.inspect_note", text)
+            self.assertEqual(actual["table_records"], expected_records)
+            if kwargs.get("table_records") is not None:
+                kwargs["table_records"].extend(actual["table_records"])
+            return compare(actual["findings"], expected)
+
+        def validate_file(path):
+            expected = reference_file(path)
+            actual = native("validate_note.validate_file", str(path))
+            return compare(actual, expected)
+
+        for name, replacement in (("validate_note", validate_note), ("validate_file", validate_file)):
+            patcher = patch.object(module, name, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+import test_validate_note as validate_suite
+import test_rich_tables as table_suite
+
+
+class NativeStaticValidationComparison(NativeValidatorMixin, validate_suite.ValidateNoteTests):
+    validator_module = validate_suite.validator
+
+
+class NativeRichTableComparison(NativeValidatorMixin, table_suite.RichTableTests):
+    validator_module = table_suite.validator
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
