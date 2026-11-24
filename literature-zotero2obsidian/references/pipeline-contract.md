@@ -19,6 +19,8 @@ JSON 交接文件用序列化器生成并立即回读；LaTeX 反斜杠不得手
 | source.raw.jsonl | 格式解析/OCR 的原始输出及页、段或元素位置，不做通顺化覆盖 | 2 |
 | source.md | 原语言、连续段落、保留逻辑结构的完整内容；稳定块标识 | 2 |
 | source-map.json | 块、来源、图表公式、引文和参考文献之间的映射 | 2；后续只追加核验与对齐信息 |
+| source-inventory.json | PDF 逐页材料或 DOCX 原生块与媒体关系，以及已核实来源单元；字段见[来源交付索引](delivery-checks.md) | 2、11；后续增量补齐来源单元 |
+| delivery-manifest.json | 来源单元与当前最终候选的对应关系；含实际文件哈希 | 总入口 |
 | assets/ | 原图裁剪或提取结果、必要表格结构及核对材料 | 2 |
 | translated.md | 逐块对应的中文全文；中文文献跳过时不生成重复文件 | 3 |
 | terminology.json | 术语表路径与哈希、采用译法、语境、未决术语及块号 | 3 |
@@ -34,24 +36,24 @@ JSON 交接文件用序列化器生成并立即回读；LaTeX 反斜杠不得手
 | drafts/10-library.md | 库内出链完成的候选稿，作为完整流程最终输入 | 10 |
 | final.md | 本次最后候选去除工作块标记、固定最终资源路径后的待提交稿；正文其他内容不变 | 总入口 |
 | write-receipt.json | 目标、备份、写前/候选/写后哈希、资源清单、CLI 回读及失败恢复记录 | 4 |
-| report.md | 范围、内容覆盖、来源核验、结构核验、写入、界面与遗留问题的分别结论 | 总入口 |
+| report.md | 范围、内容覆盖、来源核验、结构核验、文件写入、文件回读与遗留问题的分别结论 | 总入口 |
 
 单项修复允许从用户指定 MD 直接进入对应步骤，并声明前序哪些证据复用、哪些未做。输出使用对应阶段名；提交该次实际最终候选，不要求不存在的 10-library.md。
 
 第 11 步（补充材料）在第 3 步之后、第 8 步之前执行：先把 SI 文本、图 S`N`、视频 S`N` 并入候选，再由第 8 步排版、第 9 步统一链接；SI 与主全文各用独立来源和编号命名空间，不拼接出混合版本。
 
-独立调用子 skill 时，由当前执行者承担最小交接职责：初始化必要记录；只读或仅规划任务交付对应产物。需要写库时生成 final.md，调用第 4 步提交并回读。若输入只有既有 MD，按其身份和证据工作，不为补齐可选字段启动整套流程。
+独立调用子 skill 时，由当前执行者承担最小交接职责：先按实际范围完成[项目预检](project-profile.md#运行预检)，复用仍有效的证据并初始化必要记录；只读或仅规划任务交付对应产物。需要写库时生成 final.md，调用第 4 步提交并回读。若输入只有既有 MD，按其身份和证据工作，不为补齐可选字段启动整套流程。
 
 ## 核心字段
 
 ### run.json
 
-- `scope`：明确的条目/文件列表、requested_stages、是否允许写库及是否要求 Zotero note 同步。
-- `config`：已解析的项目根、vault 标识与绝对根、文献相对根、附件资源根（图片与视频三级目录的共同父目录）、工作根、模板、术语表、集合路径策略。
-- `versions`：所用 skill/模板/术语表指纹；不以修改时间替代内容指纹。
+- `scope`：明确的条目/文件列表、requested_stages、是否允许写库及是否要求 Zotero note 同步。局部修复另记修改对象/范围、输入基线及受影响链接，范围外既有问题仅登记，不默默扩大修改。
+- `config`：已解析的项目根、vault 标识与绝对根、文献相对根、附件资源根（图片与视频三级目录的共同父目录）、工作根、模板、术语表、集合路径策略；preflight 记录本次范围所需的能力、路径检查、结果、证据与时间。
+- `versions`：所用 skill/模板/术语表指纹；仓库版本以根 VERSION 为准，安装环境保留可取得的版本来源；不以修改时间替代内容指纹。
 - `stages`：以 `01`…`11` 为键；第 4 步分别记录 plan、commit。每项保存 status、input_fingerprint、inputs、outputs、output_hashes、checks、issues、updated_at。
 - `naming`：original_title、author_token、year、filename、清洗映射、冲突判定。
-- `placement`：完整集合清单、选定集合、原因、target_relative_path、资源映射（每个图/视频的类别、年份、第一作者、title 哈希值及最终相对路径）、existing_path 及 expected_existing_hash；新建文件记录预期“不存在”。
+- `placement`：完整集合清单、选定集合、原因、target_relative_path、资源映射（每个图/视频的类别、年份、第一作者、title 哈希值、资源桶身份/版本消歧、资源归属及最终相对路径）、existing_path 及 expected_existing_hash；新建文件记录预期“不存在”。资源字节哈希与笔记规范化文本哈希分开记录。
 - `content_input`：第 3 步选择的 source.md 或 translated.md；局部任务为已核实的现有稿件。
 - `issues[]`：id、stage、severity（blocking/warning）、source_locator、说明、处理状态与证据。
 - `publish`：prepared/committed/verified/partial/failed；另记 zotero_note_status。写入失败按实际文件与哈希记录，不能靠重写全文补偿。
@@ -71,22 +73,88 @@ JSON 交接文件用序列化器生成并立即回读；LaTeX 反斜杠不得手
 ### source-map.json 与 link-map.json
 
 - 每个内容块有稳定 `block_id`、kind、source_attachment、source_locator、顺序、原文哈希、保留/排除决定及理由。定位可为 PDF 页/框、DOCX 段落、EPUB spine/元素或其他格式的可重现位置。
+
+DOCX 原生清单的 `format` 为 `docx`，`pages` 为空且 `page_count` 为 `null`。`native_blocks` 按正文 XML 顺序保留段落与表格，`locator` 使用 `part` 和零起始 `element_path`。单元 evidence 使用 `basis: native`、`native_locator` 和一个实际块 ID；跨块单元使用多条 evidence。图件另以 `media_call` 绑定同一来源内的实际图片关系调用，源媒体文件引用位于 `native_media[].file`。`write_handoff_maps()` 保留这些原生定位，不转写成虚构页码或裁框。详细字段与待核对象的处理见[原生 DOCX 证据](delivery-checks.md#原生-docx-证据)。
 - source.md 用 `<!-- lit:block b000001 -->` 标识块；译稿及候选沿用 ID，拆并段记录一对多映射。总入口生成 final.md 时仅移除这些已登记的工作标记，保留可导航锚点和其他原有注释。
-- objects 记录 figure/table/equation 的原编号、子图、题注、资源及定位；references 记录原编号/标签、原书目全文、稳定 ID；citations 记录出现位置、原显示文字及目标候选。
+- objects 记录 figure/table/equation 的 source_id、原编号、子图、题注、资源及定位；references 记录 bibliography_id、原编号/标签、列表序号、原书目全文、稳定 ID，并另记插件解析出的命名空间、数字后缀及兼容状态；citations 记录出现位置、来源与书目作用域、原显示文字及目标候选。来源/书目身份不能由插件前缀或当前列表位置替代；相同数字在不同来源或书目中不是同一对象。
 - 链接记录保存 origin_block、原显示文字、target_id/path、证据与状态。图表原号、导航序号、书目身份分开，不依赖“当前第几段”推断目标。引文显示按第9步规范，章节链接记录新旧目标。图表及公式保留原编号整串（含子图字母与面板），中文标签按第3、8步规范。跨图号范围不整体链接。
-- 补充材料用独立命名空间：块 `s000001`、图 `^fig-sN`、表 `^tbl-sN`、视频 `^mov-sN`；不占用主全文的 `^fig-N`/`^tbl-N`。
-- 图表目标另记 target_kind（image/table）、资源或数据块位置，以及原生解析的实际目标范围。原生解析范围须包含对应图片嵌入或覆盖完整表格。
+- 主文与补充材料按下方命名空间隔离；不占用彼此的图表、公式、视频、内容块和书目 ID。
+- 图表目标另记 target_kind（image/table）、资源或数据块位置，以及 Markdown 中对应的源码范围。图块记录包含图片嵌入；表块记录覆盖完整的数据围栏。
 - PDF 图像在 source-map、si-map 或局部修复记录中逐图保存[裁剪证据](../../literature-fulltext-extract/references/figure-crop.md)。写入回执以最终资源路径和哈希关联对应的视觉验收记录。
 - 无法匹配分别记录 absent（库内无候选）、ambiguous（有歧义）、unavailable（未能检索）或 source_error（原文疑点）；不能一概写成“未找到”。
 
+### 一次登记文字层与页图冲突
+
+来源单元的 `text_visual_conflicts` 是冲突决定的权威记录。盘点时可使用 [handoff_maps.py](../scripts/handoff_maps.py) 的 `record_text_visual_conflict(...)`，在建立图件库存快照及各映射之前写入一次。函数从该单元已经登记的来源页取得 PDF、原始页文本、完整页图的实际路径与哈希；两种读法、页内位置、采用值和理由必须由调用方明确给出。它不做 OCR，不推断可见读法，也不依据日期格式或常识改写来源。
+
+下面是虚构实验室名称的结构示例，变量须来自本次实际文件；不能把示例读法当成本次观察：
+
+```python
+from handoff_maps import record_text_visual_conflict
+
+record_text_visual_conflict(
+    inventory_path, "synthetic-affiliation", conflict_id="lab-name-reading",
+    page_number=actual_page_number,
+    text_locator={"kind": "characters", "unit": "unicode_code_points",
+                  "start": original_start, "end": original_end, "end_exclusive": True},
+    text_layer_text="Reed Laboratory", visible_text="Reid Laboratory",
+    bbox=observed_pdf_bbox,
+    decision={"status": "resolved", "selected_text": "Reid Laboratory",
+              "reason": actual_observation_reason, "observed": True, "reviewer": actual_reviewer},
+)
+```
+
+字符区间以原始 UTF-8 页文本解码后的 Unicode 码点为单位，零起始、右端不含；也可提供 `{"kind": "lines", "start": 9, "end": 9}`，行号从 1 开始、两端都包含，原读法必须实际出现在所定位行中。`bbox` 使用未旋转 PDF 页面点坐标，函数登记完整坐标系，并检查边界位于实际源页内。每条记录保留 `text_layer.file/locator/text`、`visible_page.file/page/bbox/coordinate_system/text`、`decision.status/selected_text/reason` 及来源 PDF 绑定。
+
+尚未查看时，显式传 `visible_text=None`，决定写成 `pending` 并说明原因。无法裁决时保留 `ambiguous` 和未决理由。写入映射的步骤允许这些记录原样流转；最终 `validate_handoff_maps(...)` 对未决决定返回 `MAP_CONFLICT_UNRESOLVED`。`resolved` 只表示调用方已给出明确读法、采用值和理由；检查器核对记录、原始文字片段及文件绑定，不认证人工观察或读法正确性。
+
+`write_handoff_maps(...)` 从来源单元自动复制完整冲突记录到 `source-map.json` 或对应 `si-map.json` 的单元视图，不要求在报告、地图或翻译核验中重新输入裁决。既有 `apply_visible_text_edits(...)` 返回的 `text_visual_conflicts` 也可直接保存到该单元，无需再次调用登记函数。已登记冲突被移除、改写或只留下块指针时会产生诊断；没有发现冲突的来源单元不需要虚构记录。重复冲突 ID 会被拒绝，需保留同一权威记录而非追加矛盾副本。
+
+### 补充材料与书目命名空间
+
+- `source_id` 标识实际来源，由已核实的库、条目及附件身份建立；同一附件内容变化另记哈希与版本，不把遍历次序当身份。每份独立书目有 `bibliography_id`：主文默认为 `main`，补充书目记录对应 `source_id` 与实际书目列表身份。不能凭“最近的一组数字”跨作用域匹配引文。
+- 为尚无映射的对象新建 ID 时，单份 SI 默认使用块 `s000001`、图 `^fig-sN`、表 `^tbl-sN`、公式 `^eq-sN`、视频 `^mov-sN`。新建书目锚点使用主文 `^ref-N`、单份 SI `^sref-N`；`N` 取该书目列表序号（1–999999999），原文显示编号/标签另外保存。已有 ID 的保留规则见下，不按新建格式统一改名。
+- 首次处理多份 SI 时，按稳定来源身份分配 `source_token`，采用该身份规范化记录的 SHA-256 十六进制前 12 位；冲突时延长并保存，不按文件名或处理次序重新分配。例如 token 为 `ab12cd34ef56` 时，块可为 `sab12cd34ef56-b000001`，图/表/公式/视频分别为 `^fig-sab12cd34ef56-N`、`^tbl-sab12cd34ef56-N`、`^eq-sab12cd34ef56-N`、`^mov-sab12cd34ef56-N`；新建书目使用 `^sref-srcab12cd34ef56-N`。书目前缀中的 `src` 固定保留，使 token 即使以数字开头也符合插件规则。同一附件含多份独立书目时，以来源身份和 bibliography_id 的组合为书目命名空间分配不冲突的稳定 token，独立登记，不改变该来源的对象 token。
+- 以上 token 仅用于内部标识、锚点和必要的资源消歧。`original_number` 原样保存来源编号；公式号与引文标签保留原文编号。补充图的显示号按 SI 规则规范化：原号已有 S 时保留，没有 S 时只在原编号前加 S；显示号与原号分别登记，既有锚点不因此重命名。
+- Citation Preview 1.3.0 按锚点本身解析书目命名空间，依据为该版本的 [referenceAnchor 实现](https://github.com/lyingTree/citation-preview/blob/165503f647590b7d9379e8b1ba72a2b9b61de049/src/bibliography.ts)。它接受 `ref-N`、`sref-N`、紧凑形式 `refN`/`srefN` 以及 `ref-appendix-N`、`sref-a-N` 等前缀；扩展前缀的每段须以 ASCII 字母开头，其余为字母或数字，数字后缀为 1–999999999。不以标题位置或 `ref`/`sref` 字样推断实际 source_id。
+- 上述命名为全新书目的默认值。给既有书目补锚时，优先复用已核实且插件支持的命名空间，先核对数字后缀占用与条目身份；不能安全分配时登记待核，不改旧 ID 腾出编号。
+- 复跑、增减 SI 或重排列表时，逐字保留已核实的既有 ID 和调用目标，包括 `^ref-s<token>-N`、`^ref-appendix-N`、`^refN` 等插件已支持的形式；数字后缀与当前列表序号不一致时只登记需核对项，不自动重排。旧 `^ref-sN` 或其他有效 Obsidian 块 ID 若不受插件识别，保留原 ID 与链接并记录插件兼容 warning，不将格式差异当成断链。新增来源使用独立 token。
+- 仅在任务范围明确要求迁移既有 ID 时，按来源与书目身份建立逐条映射，迁移全部已知调用及可枚举入链；无法安全迁移则阻断该迁移，不因格式统一删除旧 ID。真正缺锚、重复定义或目标错配仍按问题处理。
+
+## 原子规则与检查记录
+
+技能中的 `前缀-C编号` 标识一项约束，`前缀-A编号` 标识一项验收目标。每条只包含一个可独立判断的目标。条件限定同一目标的适用范围，不把其他目标并入同一条。
+
+每次运行按适用 ID 建立检查记录；新增结果不覆盖其他 ID 的结果。可在 run.json 的 checks 中使用以下记录形式：
+
+```json
+{"rule_id":"PROP-A01","status":"passed","scope":"frontmatter","evidence":"checks/frontmatter.json","reason":null}
+```
+
+| 字段 | 单项含义 |
+|---|---|
+| rule_id | 对应技能中的稳定规则 ID |
+| status | passed、failed、blocked、not_verified 或 not_applicable |
+| scope | 本次检查的对象范围 |
+| evidence | 可回读的证据位置 |
+| reason | 失败、阻断、未验或不适用的原因 |
+
+文件存在不能证明内容通过。未验证项目不得填写 passed。上游失败的目标按实际依赖传播阻断；无关目标继续执行。阶段状态与单项目标状态分开记录。
+
+拆分规则时保留旧目标的条件和例外。已有 ID 不重用到其他含义。格式检查仅验证 ID 与条目结构；目标是否单一仍须逐项进行语义复核。
+
 ## 状态、重跑与保护
+
+完整流程先用 `prepare_source_inventory.py` 保存 PDF 逐页材料或 DOCX 原生来源证据，再依[来源交付索引](delivery-checks.md)增量登记对象。提取脚本不自动认定可见内容已经核验。旧 source-map、si-map、link-map 继续保存各自详细证据；delivery-manifest 只建立最终交付索引，不代替这些记录。候选变化后重新生成索引中的哈希，重新检查受影响目标。
 
 - 阶段状态：pending、running、passed、blocked、failed、skipped。skipped 必须有适用性理由，如中文无需全文翻译；不等于完成未做的核验。
 - passed 要有相应检查证据，不能仅凭输出文件存在。某些非必需信息不可用时记录缺项，完成范围按 coverage 陈述。
+- 检查证据分为 Markdown 源码、原始文献内容、引用资源文件和写后文件回读；每类分别保存范围、结果和位置。脚本零问题只表示其实际检查范围通过，不自动把阶段或整篇状态置为 passed。
 - 输入指纹包含实际消费的来源、配置和版本。阶段输出不可被下一阶段原地覆盖；重跑同输入复用输出，不重复追加标题、序号、锚点或笔记。
 - 产物指纹一致但缺少验收证据时，仅补缺项检查。
 - 指纹变化时，从实际变化的附件、块、术语或路径定位受影响部分；下游实际消费的内容或目标改变时才重做相应部分。
 - 单纯调整说明文字时核对规则语义，记录新版本；复用仍满足现行标准的产物及证据。
+- 不同条目可有界并行，先按工具限流、资源和用户要求登记并发上限；同一条目的阶段按依赖顺序执行。各条目使用独立工作目录和 run.json，总控汇总只读状态，不让多个执行者同时覆盖同一状态文件。大批量任务持续报告完成、运行、阻断和剩余数，异常条目留证后让其他独立条目继续。
 - 不同时提交同一条目或目标。提交前重新检查预期哈希/不存在条件；变化时保留候选，停止覆盖并报告冲突。
 - 以条目身份和最终路径取得独占写入记录，其他执行者发现占用即停止提交；异常遗留记录先核实实际执行状态，不按时间自动抢占。哈希比较是修改检测，不能声称它单独消除了外部应用同时写入的风险。
 - 有关键缺页、未辨符号、遗漏段落或身份冲突的完整流程不能发布为已完成。可保留待核稿；用户明确要求保存不完整稿时另记 partial 与未决范围。

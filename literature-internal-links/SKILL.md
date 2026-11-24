@@ -12,31 +12,172 @@ description: 为文献正文中的图、表、公式和引文建立指向本篇�
 
 ## 执行步骤
 
-1. 先登记目标及源定位，再按原文逐处登记调用，重复出现逐次登记。
-2. 建立或迁移篇内链接，核对原文位置、译稿位置、目标及处理状态。
+优先使用现有 render_note、validate_note、validate_delivery 及 handoff_maps 的文件结果；按 [原子文件检查](../literature-zotero2obsidian/references/atomic-stage-checks.md) 记录具体已覆盖目标，不能将目标存在误认为来源书目身份正确。
+
+1. 先按来源登记所有目标。
+2. 按原文逐处登记调用，重复出现逐次登记。
+3. 将每处调用绑定到其实际支持的陈述。
+4. 为每处调用补建对应链接。
+5. 直接读取 Markdown，逐处解析链接目标。Rich Table 先解析数据块，再核对各字段中的调用。
+6. 对照输入基线检查既有 ID。
+
+书目锚点按 Citation Preview 1.3.0 的兼容语法作静态检查；不启动插件。新锚点采用兼容格式，既有链接按下列保留规则处理，兼容 warning 不触发自动迁移。
 
 ## 约束
 
-- 每个块 ID 唯一；旧 ID 范围错误时移动原 ID 并保留调用。
-- 图、表、公式、附录、子图分别核对原号。
-- 图、表、公式、章节和数字引文的范围连接线统一用 ASCII `-`。同一对象的多面板调用整体链接，如 `图2a-2c`、`图5e、5f`。
-- 跨对象范围按显式编号分别链接，保留原编号和链接目标。无法确定编号归属时保留原显示文字，统一范围连接线并登记。
-- 按[正文排版规范](../literature-body-format/SKILL.md#约束)隔开合并的公式块。`^eq-…` 绑定完整显示公式，放在闭合 `$$` 的下一行。保留已有 ID、调用目标、表达式和 `\tag{…}`。
-- 图表公式调用只链接正文。书目引文也核对题注、脚注文字、表格与补充材料。排除嵌入路径、非引文数值、公式及书目内容。
-- 每组数字引文统一用一对可见的 ASCII 方括号 `[]`，方括号和引文一起置于 `<sup>` 内。原刊无括号时补齐，已有括号时统一为一对方括号。保留编号和其他分隔符，各显式编号链接到对应书目。Markdown 写法如 `<sup>\[[1](<#^ref-1>)-[5](<#^ref-5>)\]</sup>`。
-- 作者—年份引文保留原形式及年份后缀，同作者多年份逐项链接。叙述式用 `[Hines (1960)](<#^ref-22>)`，括注式用 `（[Hines, 1960](<#^ref-22>)）`。
-- 作者简称和双作者连接词随引文一起链接。旧稿误译时，核对原刊后修正显示文字，保留原链接目标。引文之外的中文句子成分留在链接外。
-- 处理已有链接和字面语法字符时避免嵌套或全局误替换。
-- 章节与附录链接指向实际完整标题，保留原显示文字。迁移重命名或重编号影响的篇内链接及可枚举入链。主文书目指向完整编号标题，如 `#10 参考文献`；补充书目用含上级标题的路径，如 `#11 补充材料#11.3 参考文献`。书目条目引文继续指向对应块锚。
-- 迁移书目脚注先重连全部调用，再移除已迁移的定义；真实脚注保留。
-- 旧锚须保持兼容或修复可枚举入链；调用范围不明时阻断删除。
-- 歧义引文保留显示文字并登记源定位与原因。
-- 图块依次为图片、下方题注、独立图锚 `^fig-N` 或 `^fig-sN`，相邻行之间无空行。旧锚移到题注后时保留原 ID。
-- 表锚 `^tbl-…` 或 `^tbl-s…` 绑定完整 Rich Table 块。闭合围栏的下一行顶格独占一行写表锚，两者之间零空行。表锚后与后续内容之间留一空行。沿用已有有效 ID，禁止在围栏内或题注上定义表锚。
-- 每条书目末尾恰有一个 `^ref-N`，包括未被引用的条目。`N` 等于书目列表序号，原引文显示与原标签保留。
-- 按书目身份建立旧 ID 到新 ID 的映射，迁移所有篇内调用（含 Rich Table 表头和单元格），核查跨笔记入链。旧 ID 调用无法安全处理时阻断提交。
-- SI 调用复用第 11 步生成的 S 系列目标；仅远程资源保留远程链接并记 remote_only。
-- 主文和补充材料结束后保留分隔线 `---`，以无编号的 `## [Zotero原条目](已核实的 Zotero URI)` 作最后一行非空内容。链接写在标题内，标题下不另列。URI 按实际个人库或群组库构造；局部修复沿用已核实的 URI。
+每条约束按其 ID 单独记录执行证据。
+
+- [LINK-C01] 每个块 ID 全篇唯一。
+- [LINK-C02] 旧 ID 绑定范围错误时移动原 ID。
+- [LINK-C03] 移动旧 ID 时保留已有调用。
+- [LINK-C04] 主文和各份 SI 的块、对象及书目 ID 按[交接约定的命名空间](../literature-zotero2obsidian/references/pipeline-contract.md#补充材料与书目命名空间)登记。
+- [LINK-C05] 相同原号结合 source_id、bibliography_id 和原文调用语境解析。
+- [LINK-C06] 不得跨来源猜配目标。
+- [LINK-C07] 核对图调用的原编号。
+- [LINK-C08] 核对表调用的原编号。
+- [LINK-C09] 核对公式调用的原编号。
+- [LINK-C10] 核对附录调用的原编号。
+- [LINK-C11] 核对子图调用的原编号。
+- [LINK-C12] 图、表、公式、章节和数字引文的范围连接线统一用 ASCII `-`。
+- [LINK-C13] 同一对象的多面板调用整体链接，如 `图2a-2c`、`图5e、5f`。
+- [LINK-C14] 跨对象范围按显式编号分别建立链接。
+- [LINK-C15] 跨对象范围调用保留原编号。
+- [LINK-C16] 跨对象范围调用保留原链接目标。
+- [LINK-C17] 编号归属不明时保留原显示文字。
+- [LINK-C18] 编号归属不明时仍将范围连接线统一为 ASCII `-`。
+- [LINK-C19] 登记编号归属不明的调用。
+- [LINK-C20] 按[正文排版规范](../literature-body-format/SKILL.md#约束)隔开合并的公式块。
+- [LINK-C21] 公式锚 `^eq-…` 绑定完整显示公式。
+- [LINK-C22] 公式锚位于闭合 `$$` 的下一行。
+- [LINK-C23] 保留已有公式 ID。
+- [LINK-C24] 保留已有公式调用目标。
+- [LINK-C25] 保留公式表达式。
+- [LINK-C26] 保留公式 `\tag{…}`。
+- [LINK-C27] 图表公式调用只在正文中建立链接。
+- [LINK-C28] 书目引文核对范围包括题注。
+- [LINK-C29] 书目引文核对范围包括脚注文字。
+- [LINK-C30] 书目引文核对范围包括表格。
+- [LINK-C31] 书目引文核对范围包括补充材料。
+- [LINK-C32] 引文识别排除嵌入路径。
+- [LINK-C33] 引文识别排除非引文数值。
+- [LINK-C34] 引文识别排除公式。
+- [LINK-C35] 引文识别排除书目内容。
+- [LINK-C36] 每组数字引文恰有一对可见 ASCII 方括号 `[]`，原刊无括号时补齐。
+- [LINK-C37] 数字引文的方括号与引文一起置于 `<sup>` 内。
+- [LINK-C38] 数字引文保留原编号。
+- [LINK-C39] 数字引文保留范围连接线以外的原分隔符。
+- [LINK-C40] 数字引文中各显式编号链接到对应书目，如 `<sup>\[[1](<#^ref-1>)-[5](<#^ref-5>)\]</sup>`。
+- [LINK-C41] 作者—年份引文保留原形式。
+- [LINK-C42] 作者—年份引文保留年份后缀。
+- [LINK-C43] 同作者多年份引文逐项链接。
+- [LINK-C44] 叙述式作者—年份引文使用 `[Hines (1960)](<#^ref-22>)` 等形式。
+- [LINK-C45] 括注式作者—年份引文使用 `（[Hines, 1960](<#^ref-22>)）` 等形式。
+- [LINK-C46] 作者简称随引文一起链接。
+- [LINK-C47] 双作者连接词随引文一起链接。
+- [LINK-C48] 旧稿引文误译时依据原刊修正显示文字。
+- [LINK-C49] 修正引文显示文字时保留原链接目标。
+- [LINK-C50] 引文之外的中文句子成分留在链接外。
+- [LINK-C51] 处理已有链接时不得生成嵌套链接。
+- [LINK-C52] 处理字面语法字符时不得使用造成误改的全局替换。
+- [LINK-C53] 章节与附录链接指向实际完整标题。
+- [LINK-C54] 章节与附录链接保留原显示文字。
+- [LINK-C55] 迁移标题重命名或重编号影响的篇内链接。
+- [LINK-C56] 迁移标题重命名或重编号影响的可枚举入链。
+- [LINK-C57] 主文书目章节链接指向完整编号标题，如 `#10 参考文献`。
+- [LINK-C58] 补充书目章节链接使用含上级标题的路径，如 `#11 补充材料#11.3 参考文献`。
+- [LINK-C59] 书目条目引文指向对应块锚。
+- [LINK-C60] 迁移书目脚注时先重连全部调用。
+- [LINK-C61] 仅在调用全部重连后移除已迁移的书目脚注定义。
+- [LINK-C62] 保留真实脚注。
+- [LINK-C63] 旧锚变更须保持兼容或修复可枚举入链。
+- [LINK-C64] 调用范围不明时阻断旧锚删除。
+- [LINK-C65] 歧义引文保留显示文字。
+- [LINK-C66] 歧义引文登记源定位。
+- [LINK-C67] 歧义引文登记未决原因。
+- [LINK-C68] 图块以图片起首。
+- [LINK-C69] 图题注位于图片下方。
+- [LINK-C70] 图锚位于题注后方。
+- [LINK-C126] 图锚独占一行。
+- [LINK-C71] 图块各相邻行之间不留空行。
+- [LINK-C72] 新建主文图锚默认使用 `^fig-N`。
+- [LINK-C73] 新建单份 SI 图锚默认使用 `^fig-sN`。
+- [LINK-C74] 多份 SI 图锚按来源 token 消歧。
+- [LINK-C75] 旧图锚移到题注后时保留原 ID。
+- [LINK-C76] 表锚 `^tbl-…` 绑定完整 Rich Table 块。
+- [LINK-C77] SI 表锚遵循来源命名空间。
+- [LINK-C78] 表锚紧接闭合围栏的下一行。
+- [LINK-C79] 表锚顶格书写。
+- [LINK-C80] 表锚独占一行。
+- [LINK-C81] 表锚与后续内容之间留一空行。
+- [LINK-C82] 沿用已有有效表锚 ID。
+- [LINK-C83] 不得在围栏内定义表锚。
+- [LINK-C84] 不得在题注上定义表锚。
+- [LINK-C85] 每条书目恰有一个已登记的锚点，包括未被引用的条目。
+- [LINK-C86] 书目锚点位于该条目末尾。
+- [LINK-C87] 全新主文书目默认使用 `^ref-N`。
+- [LINK-C88] 全新单份 SI 书目默认使用 `^sref-N`。
+- [LINK-C89] 全新多份 SI 书目默认使用 `^sref-src<source_token>-N`。
+- [LINK-C90] 全新书目锚点的 N 取所在列表序号。
+- [LINK-C91] 全新书目锚点的 N 限于 1 至 999999999。
+- [LINK-C92] 保留原引文显示文字。
+- [LINK-C93] 保留原书目标签。
+- [LINK-C94] 给既有列表补锚时优先复用已核实且插件支持的命名空间。
+- [LINK-C95] 给既有列表补锚前核对编号占用。
+- [LINK-C96] 不能安全分配新锚点时登记待核。
+- [LINK-C97] 保留已核实的既有 ID，包括 `^ref-s<token>-N`、`^ref-appendix-N`、`^refN` 等插件支持形式。
+- [LINK-C98] 保留已核实的既有调用。
+- [LINK-C99] 旧 `^ref-sN` 或其他有效块 ID 不受插件识别时只记兼容 warning。
+- [LINK-C100] 既有锚点数字后缀与当前列表序号不同时只登记需核对项。
+- [LINK-C101] 不得因数字后缀与当前序号不同而自动改 ID。
+- [LINK-C102] 不得因数字后缀与当前序号不同而自动重排书目。
+- [LINK-C103] 不得因数字后缀与当前序号不同而自动重写链接。
+- [LINK-C104] 来源身份按证据登记，不由锚点前缀推断。
+- [LINK-C105] bibliography_id 按证据登记，不由锚点前缀推断。
+- [LINK-C106] 只有任务范围明确要求迁移时才改动既有 ID。
+- [LINK-C107] 迁移时按 bibliography_id 与书目身份建立旧 ID 到新 ID 的映射。
+- [LINK-C108] 迁移时处理全部篇内调用，包括 Rich Table 每张工作表的题注、表注、列名和单元格。
+- [LINK-C109] 迁移时核查跨笔记入链。
+- [LINK-C110] 无法安全处理既有 ID 时阻断该迁移。
+- [LINK-C111] 不得将 SI 的 `[1]` 直接套用主文 `^ref-1`。
+- [LINK-C112] 仅原文明确交叉引用另一书目时才使用另一书目作用域。
+- [LINK-C113] 缺锚须核对后修复。
+- [LINK-C114] 重复定义须核对后修复。
+- [LINK-C115] 目标错配须核对后修复。
+- [LINK-C116] 不得用全局改名前缀代替目标核对。
+- [LINK-C117] SI 调用复用第 11 步生成的 S 系列目标。
+- [LINK-C118] 仅远程可用的资源保留远程链接。
+- [LINK-C119] 仅远程可用的资源记为 remote_only。
+- [LINK-C120] 主文和补充材料结束后保留分隔线 `---`。
+- [LINK-C121] 最后一行非空内容使用无编号的 `## [Zotero原条目](已核实的 Zotero URI)`。
+- [LINK-C122] 原条目链接写在标题内。
+- [LINK-C123] 原条目标题下不另列链接。
+- [LINK-C124] Zotero URI 按实际个人库或群组库构造。
+- [LINK-C125] 局部修复沿用已核实的 Zotero URI。
+- [LINK-C127] 每处书目引文保留在原文所支持的具体陈述处。
+- [LINK-C128] 同一书目在原文重复调用时，逐次保留对应调用。
+- [LINK-C129] 指向 SI 具体方法的调用须定位到该方法小节。
+- [LINK-C130] 指向 SI 具体对象的调用须定位到该对象块。
+- [LINK-C131] 整份 SI 的概括性调用才可指向补充材料章首。
+- [LINK-C132] 图内数据表的独立副本须有独立表锚。
+- [LINK-C133] 全新图内数据表锚使用 `^tbl-fig-<来源token>-<图原编号token>`。
+
+### 图内表新建锚帮助
+
+[format_helpers.py](../literature-zotero2obsidian/scripts/format_helpers.py) 中的 `new_figure_table_anchor(...)` 只生成 LINK-C133 的全新锚。来源 token 和图原编号 token 均由调用方按已有来源登记提供；函数接受 ASCII 字母数字 token，不猜来源身份，不从规范化后的显示号反推原号。
+
+```python
+from format_helpers import new_figure_table_anchor
+
+table_anchor = verified_existing_anchor
+if table_anchor is None:
+    table_anchor = new_figure_table_anchor(
+        source_token=registered_source_token,
+        figure_number_token=registered_original_number_token,
+        occupied_ids=registered_block_ids,
+    )
+```
+
+返回值严格为 `^tbl-fig-<来源token>-<图原编号token>`。新 ID 已被占用时函数报错，不自动加后缀、不改动旧 ID 或调用。已有有效表锚由调用方直接复用；新建函数不承担迁移。生成后仍按 LINK-C76–C84 核对完整表块范围和锚点位置。
 
 ## 产物
 
@@ -44,17 +185,75 @@ description: 为文献正文中的图、表、公式和引文建立指向本篇�
 
 ## 验收标准
 
-- [ ] 逐组渲染和回读数字引文，确认上标内恰有一对可见的 ASCII 方括号、范围用 ASCII `-`、各显式编号链接到对应书目。覆盖单条 `[1]`、范围 `[1-7]` 和合引 `[1,4-7]`。
-- [ ] 逐处对照原刊核验作者简称和双作者连接词。同作者多年份逐项链接。原刊证据不足时记录位置待核。
-- [ ] 链接显示文字和链接之间的范围连接线均用 ASCII `-`，无 U+2013 残留。
-- [ ] 可唯一匹配的引文漏链数为零，已建链接均可达。回读确认改名或重编号后的章节链接和可枚举入链到达完整编号标题。补充书目按上级章节区分，条目引文仍落在对应块锚。
-- [ ] 原生图块从图片起，覆盖下方题注。
-- [ ] 用 Obsidian 原生缓存逐个核对公式锚点的起止位置。范围从起始 `$$` 开始，覆盖完整公式，止于闭合 `$$` 或紧随其后的锚行。范围内只含公式及其锚行。核对现有公式引用仍指向对应块。
-- [ ] 逐表检查源码，闭合围栏和顶格独占一行的表锚之间零空行，锚后有后续内容时恰一空行。每个 ID 唯一，已有调用保持可达。
-- [ ] 逐表回读 Obsidian 原生缓存，确认表锚从 `rich-table` 开围栏覆盖到闭合围栏，核对跳转指向对应表格。阅读视图可用时验证完整表格渲染，分别记录源码、缓存和界面结果。仅能解析锚点时，仍须独立验收源码间距。
-- [ ] 已迁移的旧调用与真实脚注仍可解析。
-- [ ] 最后一行非空内容是唯一的「Zotero原条目」链接标题。Obsidian 原生缓存识别为最后一个 H2，渲染后标题内的链接文字及 `href` 正确，无另列链接。
-- [ ] 未决项有定位及原因，无对应对象的检查记不适用。
-- [ ] 书目锚点验收（写前）：逐条检查列表序号与末尾 `^ref-N` 一致、全篇定义唯一、条目无旧 ID；逐处核对引文指向映射中的书目。缺失、重复、错配或旧调用未迁移均须修复后提交。
-- [ ] 书目锚点回读（写后）：用 Obsidian 原生缓存逐条核对 ID 及实际落点；插件块内的引文单独在渲染后核对。记录通过、失败或未验证。
-- [ ] 候选检查结果可供第 4 步对实际落库文件回读。
+每项验收按其 ID 单独记录判定结果。链接可达性按目标文件及其中的标题、块 ID 定义核对；对象范围按 Markdown 源码边界核对。
+
+- [ ] [LINK-A02] 数字引文的源码格式已逐组核对。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A03] 每组数字引文只有一对可见 ASCII 方括号。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A04] 每组数字引文的方括号位于上标内。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A05] 数字引文范围连接线使用 ASCII `-`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A06] 每个显式引文编号指向对应书目。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A07] 数字引文验收覆盖单条 `[1]`、范围 `[1-7]` 及合引 `[1,4-7]`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A08] 作者简称已逐处对照原刊核验。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A09] 双作者连接词已逐处对照原刊核验。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A10] 同作者多年份引文已逐项链接。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A11] 原刊证据不足的引文已记录待核位置。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A12] 链接显示文字中的范围连接线为 ASCII `-`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A13] 链接之间的范围连接线为 ASCII `-`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A14] 范围连接线没有 U+2013 残留。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A15] 可唯一匹配的引文漏链数为零。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A16] 每条篇内链接的源码目标均存在。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A17] 改名或重编号后的章节链接源码目标匹配完整编号标题。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A18] 受标题变更影响的可枚举入链源码目标匹配完整编号标题。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A19] 补充书目章节链接按上级章节区分。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A20] 书目条目引文落在对应块锚。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A24] 公式锚范围从起始 `$$` 开始。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A25] 公式锚范围覆盖完整公式。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A26] 公式锚范围止于闭合 `$$` 或紧随其后的锚行。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A27] 公式锚范围内不含公式及其锚行以外的内容。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A28] 现有公式引用仍指向对应块。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A29] 表格闭合围栏与表锚之间零空行。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A30] 表锚顶格书写。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A31] 表锚独占一行。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A32] 表锚后有内容时恰留一空行。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A33] 每个表锚 ID 唯一。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A34] 已有表格调用保持可达。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A37] 每处表格链接的目标锚归属于对应表格。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A39] 表格源码验收有独立记录。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A43] 已迁移的旧调用仍可解析。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A44] 真实脚注仍可解析。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A45] 最后一行非空内容为「Zotero原条目」链接标题。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A46] 「Zotero原条目」链接标题只出现一次。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A50] 原条目标题下没有另列链接。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A51] 每项未决问题均有定位。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A52] 每项未决问题均有原因。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A53] 无对应对象的检查记为不适用。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A54] 写前已逐条核对 bibliography_id。 <!-- check-type: execution_process -->
+- [ ] [LINK-A55] 写前已逐条核对书目实际来源。 <!-- check-type: execution_process -->
+- [ ] [LINK-A56] 写前已逐条核对书目列表序号。 <!-- check-type: execution_process -->
+- [ ] [LINK-A57] 写前已逐条核对书目稳定 ID。 <!-- check-type: execution_process -->
+- [ ] [LINK-A58] 每条书目末尾锚点唯一。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A59] 每处引文落在对应书目。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A60] 新建主文书目采用 `^ref-N`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A61] 新建单份 SI 书目采用 `^sref-N`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A62] 新建多份 SI 书目采用 `^sref-src<source_token>-N`。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A63] 既有列表补锚沿用已核实且插件支持的前缀。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A64] 既有 ID 与输入基线一致。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A65] 既有调用与输入基线一致。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A66] 既有插件支持的其他前缀未被拒绝。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A67] 旧 ID 的插件兼容性问题单列 warning。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A68] 旧 ID 的数字后缀差异单列 warning。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A69] 旧 ID 的兼容或编号 warning 未触发迁移。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A70] 范围内缺锚已修复。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A71] 范围内重复定义已修复。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A72] 范围内断链已修复。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A73] 范围内目标错配已修复。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A74] 范围外既有问题已单独报告。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A75] 本次明确迁移时已核对旧 ID 到新 ID 的映射。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A76] 本次明确迁移时已核对全部受影响调用。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A80] 书目文件核对记录标明通过、失败或未验证。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A81] 候选检查结果已供第 4 步直接核对实际落库文件使用。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A83] 每处书目引文的陈述位置与原文一致。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A84] 每条书目的实际调用次数与来源逐处登记结果一致。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A85] 每个具体 SI 方法链接均定位到对应方法小节。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A86] 每个具体 SI 对象链接均定位到对应对象块。 <!-- check-type: offline_outcome -->
+- [ ] [LINK-A87] 每个图内数据表副本均有独立表锚。 <!-- check-type: offline_outcome -->

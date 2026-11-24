@@ -1,0 +1,394 @@
+# 来源清单与交付检查
+
+## 目录
+
+- [检查边界](#检查边界)
+- [准备来源证据](#准备来源证据)
+- [原生 DOCX 证据](#原生-docx-证据)
+- [填写原子来源单元](#填写原子来源单元)
+- [记录各来源的题头](#记录各来源的题头)
+- [映射最终候选](#映射最终候选)
+- [逐段翻译核对记录](#逐段翻译核对记录)
+- [逐图视觉核对记录](#逐图视觉核对记录)
+- [合并单元格](#合并单元格)
+- [完成交付检查](#完成交付检查)
+
+## 检查边界
+
+[prepare_source_inventory.py](../scripts/prepare_source_inventory.py) 从实际 PDF 生成逐页证据，从 DOCX 保存原生 XML、内容顺序和图片关系。[validate_delivery.py](../scripts/validate_delivery.py) 将这些证据与最终候选关联起来。两者都是本地脚本，不连接 Zotero 或 Obsidian。
+
+`structurally_consistent: true` 表示已记录的证据链没有发现机器可检出的矛盾。它不表示源清单分类完整，不表示模型确实看过页面，也不表示译文、图件或科学内容正确。报告始终保留 `source_fidelity: not_assessed` 与 `independent_review_required: true`。
+
+一个清单单元对应一个来源对象，例如一名作者、一条单位、一段正文、一个公式、一张表或一次引文调用。整个文献不能压成一个“正文已完成”单元。源段落与译文的完整对应仍须独立验收。
+
+## 准备来源证据
+
+完整流程在工作目录的调用脚本中导入函数，把本次参数保存在调用脚本中。保留技能目录内源码不变。独立编辑器使用时也可先将来源准备脚本复制到工作目录，再设置其顶部参数。
+
+```python
+from pathlib import Path
+from prepare_source_inventory import prepare_sources
+
+run_root = Path("本次运行根")
+work = run_root.joinpath("work")
+input_root = run_root.joinpath("input")
+output_root = run_root.joinpath("output")
+skills_root = run_root.joinpath("skills")
+inventory_path = prepare_sources(
+    {
+        "main": input_root.joinpath("main.pdf"),
+        "si_a": input_root.joinpath("supplement.docx"),
+    },
+    work.joinpath("evidence"),
+    source_roles={"main": "main", "si_a": "supplement"},
+    glossary_path=skills_root.joinpath("template", "术语表.md"),
+)
+```
+
+该调用生成 `source-inventory.json`。每个来源包含实际 PDF 的路径、SHA-256 和页数。每页包含完整 PNG、文字层文件和非空文字块。PNG 的像素哈希与文件哈希分别保留。脚本显示逐页进度，不覆盖已有同名清单。
+
+每页 `image_index.occurrences` 记录内容流实际调用的图像 xref、完整对象 bbox 和变换矩阵。每个来源的 `image_objects` 去重保存原图文件与 SMask 的哈希。原图对象的范围不一定覆盖整幅图，页上另绘的文字、线条或其他对象仍须一并盘点。
+
+按[图件导出脚本示例](../../literature-fulltext-extract/references/figure-crop.md)调用 `export_image_object(...)`，使用实际页码、xref、来源哈希与无后缀目标路径。返回的 `asset` 可进入最终交付映射，导出记录另存为证据。遇到 `PageRenderRequired` 时，改用 `render_page_region(...)` 处理源页上确认过的完整范围；四边检查分别完成。导出记录中的 `visual_review` 与 `edge_reviews` 只针对源页和图像文件。
+
+传入 `glossary_path` 时同时创建 `terminology.json`，术语表路径与哈希由实际文件生成，其余采用记录仍待填写。按[翻译技能](../../literature-translate-zh/SKILL.md#术语记录的具体做法)逐块完成术语台账；`write_delivery_manifest()` 自动绑定台账的最终文件哈希。`TERMINOLOGY_PENDING` 表示记录尚未完成，`TERM_UNRESOLVED` 表示仍有译法未决；台账通过结构检查不等于译义已通过独立验收。
+
+生成的页面只是待查看证据。文字层与可见页面可能冲突。题头、日期、公式、表格和图件的清单证据采用 `basis: visual`；该标记只是记录所用证据类型，不会替代实际查看页面。
+
+## 原生 DOCX 证据
+
+`prepare_sources()` 与 `initialize_workflow()` 接受同一任务中的 PDF 和 DOCX；不需要先把 Word 伪装成 PDF。DOCX 来源保留原文件哈希，`format: docx`、`pages: []`、`page_count: null` 表明这份原生清单没有宣称分页结果。
+
+| 字段 | 保留的实际来源信息 |
+|---|---|
+| `native_document` | 原始 `word/document.xml` 文件路径与哈希。 |
+| `native_blocks` | 按 XML 顺序排列的段落或表格；每块有 `id`、`kind`、`order`、`text`、`locator`。 |
+| `native_blocks[].locator` | `part` 与从 XML 根节点开始的零起始子元素下标数组 `element_path`。 |
+| `native_blocks[].inline_content` | 原文段落内的文字、换行、图片调用及待核对象的位置。 |
+| `native_blocks[].rows` | 表格的原始行、单元格、段落、横向跨度及纵向合并标记。 |
+| `media_calls` | 图片在 XML 中的每一次实际调用，包含 `block_id`、`locator`、`relationship_id`、`media_id`、附近文字与解析状态。 |
+| `native_media` | 原媒体部件身份、内容类型、字节数与哈希；`file` 为保存的原图文件绑定。 |
+| `native_issues` | 公式、浮动对象、图片显示变换、外部/缺失关系、其他文档部件等尚需检查的事项。 |
+
+`media_calls` 与逻辑图不是一一对应关系。两个图片调用可以组成同一图的两个面板，同一媒体也可以在多个位置使用。依据原文题注和内容明确分组，再填写 `original_number`；`media-1`、`image2.png` 或 `rId9` 均不是源图号。
+
+文本或表格单元的原生 evidence 写法如下，变量取自已经查看的原生块：
+
+```python
+source_evidence = {
+    "basis": "native",
+    "native_locator": block["locator"],
+    "blocks": [block["id"]],
+    "quote": block["text"],
+}
+```
+
+一条原生 evidence 对应一个实际块；跨段单元写多条 evidence。保留题注为自己的文本单元。图件的每件媒体调用则各写一条 evidence：
+
+```python
+figure_evidence = {
+    "basis": "native",
+    "native_locator": image_call["locator"],
+    "blocks": [image_call["block_id"]],
+    "media_call": image_call["id"],
+}
+```
+
+原生 evidence 不填写 `page`、`bbox`、`image_xref` 或 PDF 坐标系。`validate_delivery()` 会重新读取源 DOCX，比较原始 XML、块、关系、媒体字节和来源定位。未被图单元使用的实际图片调用返回 `NATIVE_MEDIA_UNMAPPED`。确属来源范围外的装饰调用可在清单顶层的 `excluded_media_calls` 中按 `source`、`media_call`、`reason` 单独记录；理由仍需对源判断。
+
+原生提取不保证重建浮动排版、OMML 数学含义、复杂形状或 Word 的显示变换。保留 `native_issues` 的机器原始记录，在来源的 `native_issue_reviews` 中逐项追加 `{id, status, reason, evidence}`；完成状态使用 `resolved` 或有具体依据的 `not_applicable`。每条 `evidence` 包含实际 `file: {path, sha256}` 与该文件中的 `locator`。需要可见页面时先实际渲染，再引用生成文件；这不赋予原始 DOCX 固定页数。只有说明文字而没有实际核对证据时保持待核。
+
+原生图的 `prepare_figure_reviews()` 和 `record_figure_edges()` 沿用同一调用入口。生成的 `source_locations` 保存 `native_locator`、`media_call`、`relationship_id` 和 `source_media`，不含 `page_render`。逐项视觉证据用 `kind: source_location` 指向其零起始位置，同时指向 `final_asset`。PDF 继续使用 `source_page`。FIG-A19 的页码目标、FIG-A22 的 PDF 坐标系目标在纯原生材料中按实际条件单独记录不适用，不把原生块序号填成页码。所有图像内容、对应关系、最终文件和四边比较仍逐项完成。
+
+## 填写原子来源单元
+
+读取 `source-inventory.json` 的 `sources[].pages[]`。逐页查看 PNG 后填写 `units`。不修改机器生成的 `sources[].pages[].blocks`；检查器会从原 PDF 重新提取这些块进行比较。
+
+单元的基本结构如下。示例内容与坐标只解释格式，实际值取自本次来源。
+
+```json
+{
+  "id": "main-title",
+  "source": "main",
+  "kind": "metadata",
+  "field": "title",
+  "evidence": [
+    {
+      "page": 1,
+      "basis": "visual",
+      "bbox": [40, 35, 550, 90],
+      "quote": "The literal title visible on the source page",
+      "blocks": ["main-p1-b0"]
+    }
+  ]
+}
+```
+
+| 字段 | 表示的单一目标 |
+|---|---|
+| `id` | 本次清单内的唯一对象身份。 |
+| `source` | 来源 PDF 的身份。 |
+| `kind` | 对象的种类。 |
+| `evidence[].page` | 原对象所在的 PDF 实际页码。 |
+| `evidence[].basis` | 此项使用 `visual` 或 `text` 证据。 |
+| `evidence[].bbox` | 对象在该页的左上原点坐标，单位为 PDF 点。 |
+| `evidence[].coordinate_system` | 图框 bbox 所采用的明确坐标系。 |
+| `evidence[].quote` | 对象的来源原文片段。 |
+| `evidence[].blocks` | 此对象覆盖的机器提取文字块 ID。 |
+
+每个 evidence 至少给出 `bbox` 或 `quote`。跨页对象使用多个 evidence。一个原文字块可以对应多个单元，例如同一块中的作者和单位。没有文字层的图或公式可用 bbox 定位。
+
+| `kind` | 额外数据 |
+|---|---|
+| `metadata` | `field` 为 `title`、`author`、`affiliation`、`publication_date`、`doi`、`email`、`header_note` 或 `external_url`。DOI、邮箱与网址另给来源原值 `value`。 |
+| `paragraph` | 一段原文对应一个单元。 |
+| `section` | 一个来源章节标题对应一个单元。 |
+| `figure` | `original_number` 保存源编号；`contains_table` 记录图中是否有真正的行列表格。 |
+| `table` | `original_number` 保存源编号；`shape` 给数据行数和列数；`merges` 给源合并范围。嵌图表另给父图 `parent_id`。 |
+| `formula` | 一个来源公式对应一个单元；`original_number` 保存源编号。 |
+| `reference` | `number` 保存来源书目的编号或标签；`bibliography_id` 保存所属书目列表身份；`original_text` 保存该条完整原始书目。 |
+| `citation` | `references` 保存该次调用对应的书目单元 ID；`display_text` 保存源调用的实际显示文字。 |
+| `cross_reference` | `target_unit` 保存实际对象 ID；`display_text` 保存源调用的实际显示文字。 |
+
+主文与 SI 的对象都显式登记 `original_number`，有编号时保留原样字符串。来源没有编号时填 `null`，并填写 `original_number_reason`。这同样适用于未编号显示公式和图内独立表格，不能用生成的 Markdown 锚代替来源编号。
+
+在自己的盘点脚本中使用 `handoff_maps.make_source_unit()`，可提前检查合法单元类型、对象编号、图内表分类、表格形状和调用字段。图件的 `contains_table` 是明确的布尔值。表格的 `shape` 使用正整数；`merges` 即使为空也要显式提供。作者单位关系、来源角色和跨单元身份仍由全量交付检查核验，构造成功不代表来源内容已通过。下面变量均取自当前实际来源，不来自候选文字：
+
+```python
+from handoff_maps import make_source_unit
+
+source_call = make_source_unit(
+    UNIT_ID, SOURCE_ID, "citation", SOURCE_LOCATIONS,
+    references=VERIFIED_SOURCE_REFERENCE_IDS,
+    display_text=SOURCE_CALL_TEXT,
+)
+```
+
+每次文内调用单独圈定自己的来源位置。跨页段落不意味着其中每次调用也跨页；涉及多个源块时，在对应交付条目中用 `origin_block` 明确调用所在块。不能从候选脚注编号反建 source citation 清单，否则无法发现源引文漏掉或指错。
+
+每名作者的 metadata 单元另填 `affiliation_numbers` 与 `affiliation_units`。两数组同序一一对应：前者逐项保留源页可见标记，后者指向同一来源内的 affiliation 单元 ID。例如 `{"affiliation_numbers":["2","4"],"affiliation_units":["main-affiliation-2","main-affiliation-4"]}`。源页存在明确但无编号的关系时，编号位置用 `null`，另写 `affiliation_reason` 说明依据。来源不能确定关系时，两数组留空并填写该原因，不从作者姓名推断。
+
+补充材料中的 figure 与 table 单元另填 `original_number` 和 `display_number`。`original_number` 原样记录来源编号，例如 `"8"`；`display_number` 单独记录交付中的编号，例如 `"S8"`。原对象无编号时，`original_number` 为 `null`，用 `original_number_reason` 保存源页依据。这些字段不能用目标锚点前缀代替；已有笔记的链接保持原约定。
+
+引用在源文中出现两次时建立两个 citation 单元。它们可以指向同一 reference 单元。跨来源使用书目时，另用 `cross_source_reason` 保存来源依据；主文与 SI 的同号书目不是同一条。
+
+每条 `reference` 单元均填写 `bibliography_id`，如已由源页确认的 `main-references` 或 `supplement-a-references`。同一 PDF 内存在独立书目列表时分别命名。该值由列表边界和实际条目身份确定，不能根据 `ref-`、`sref-` 等目标锚点前缀反推。`BIBLIOGRAPHY_ID_MISSING` 检查漏填记录；ID 与源列表是否相符仍需逐条对照。
+
+`original_text` 从原始来源抄录完整条目，保留原刊缩写、拼写和疑点。它不同于用于定位的短 `quote`，也不能只复制已重排或格式化的候选书目。`REFERENCE_ORIGINAL_TEXT` 检查缺项；字段是否完整、是否与源书目相符由逐条对源核对确认。
+
+单位后的每条通讯说明、版权说明等独立登记为一个 `metadata` / `header_note` 单元，目标为该来源题头引用块中的对应行。作者行中的邮箱链接另属于 `email`；这条链接不能代替来源中的完整通讯说明。`HEADER_NOTE_LAYOUT` 检查已登记说明是否映射到引用块；说明有没有漏盘点仍须对照源页核验。
+
+日期按类别分别登记。发表日期使用 `publication_date`；收稿日期与接受日期各有自己的 `header_note` 单元。一个 PDF 文字块含三个日期，不代表它们是一个元信息单元。卷期页码、开放获取声明和 DOI 也分别登记，目标片段各自只覆盖对应字段。引用块的分行示例见[题头技能](../../literature-header-format/SKILL.md#元信息逐项拆分)。
+
+每处来源裸网址独立登记为 `metadata` / `external_url`，`value` 为经源页核定的完整 URL，`display_text` 为来源的原显示文字。每次调用有独立的目标片段。例如来源显示 `https://example.org/data/`，则两个字段均保留该 URL；源页原本显示命名链接时，`display_text` 保留该名称。`URL_DISPLAY_TEXT` 检查显示文字，`URL_LINK` 检查实际目标。来源中的排版断行须按源页复原，不凭网站名称替换显示文字。DOI 解析网址使用 `doi` 专用字段，按 DOI 规范化规则处理。
+
+在登记来源对象时，可调用 `source_url_inventory.scan_source_url_occurrences(inventory)` 取得文字层中的逐次网址线索。返回值保留来源 ID、页、块、块内字符位置和原始提取片段；同一网址在不同位置出现时仍分别列出。线索没有证明已经查看源页，也不会自动创建来源单元。
+
+`validate_delivery` 用 `SOURCE_URL_UNMAPPED` 指出尚无独立网址单元的具体出现位置。普通段落映射不能代替这个单元。一个单元不能覆盖两次网址出现。源页中的页眉、页脚等确属范围外的内容，仍按已有排除规则提供具体依据。
+
+文字层发生断行或字形损坏时，先查看该源页。核定完整网址后，在该次 `metadata` 单元填写 `source_url_occurrence`，值取提示中的实际出现 ID；同时保留该单元的真实来源定位。这个字段只明确哪次源出现对应哪个已登记单元，不替代网址身份和显示文字的实际比较。错误来源、错误页面或重复绑定会产生 `SOURCE_URL_BINDING`。
+
+图中存在真正表格时，图件仍完整保留。表格另建 `table` 单元。地图标签、刻度、色标或普通图例不因此变成表格。
+
+新图单元的 bbox 同时登记 `coordinate_system: {"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"}`。这些坐标采用未旋转的 PDF 页面空间，不采用渲染 PNG 的像素空间。bbox 顺序为 `[x0, y0, x1, y1]`。原图对象定位可另用该页的实际 `image_xref`；字段位置在图单元的来源 `evidence[]` 中。
+
+每个文字块须被某单元的 evidence 引用，或进入 `excluded_blocks`。排除记录只使用实际块 ID与具体原因：
+
+```json
+{"block": "main-p2-b0", "reason": "该块仅为与上一页重复的运行页眉，不含新增正文。"}
+```
+
+整页排除记录使用 `excluded_pages`，例如 `{"source":"main","page":12,"reason":"来源中的空白页。"}`。排除原因的正确性由独立评审核验；非空理由不是语义通过凭证。
+
+## 记录各来源的题头
+
+主文与每份 SI 分别填写自己的 `header_fields`。四类决策是 `title`、`authors`、`affiliations`、`publication_date`。存在该字段时引用对应单元：
+
+```json
+{
+  "title": {"status": "present", "units": ["main-title"]},
+  "authors": {"status": "present", "units": ["main-author-1", "main-author-2"]},
+  "affiliations": {"status": "present", "units": ["main-affiliation-1"]},
+  "publication_date": {"status": "present", "units": ["main-date"]}
+}
+```
+
+独立 SI 没有某字段时使用 `absent_in_source`。记录具体来源页证据，不从主文复制一个值来填空：
+
+```json
+{
+  "status": "absent_in_source",
+  "reason": "该附件题头未列作者单位。",
+  "evidence": [{"page": 1, "basis": "visual", "bbox": [0, 0, 595, 220]}]
+}
+```
+
+有字段就交付字段；没有字段就记录不存在的依据。生成器留下的 `pending` 在最终检查中会报错。
+
+## 映射最终候选
+
+正文写完后建立 `deliveries` 列表。每个 unit 都有一个最终目标。优先采用稳定块锚或包含足够上下文的唯一原样片段：
+
+```python
+deliveries = [
+    {"unit": "main-title", "target": {"quote": "The complete final title"}},
+    {"unit": "main-ref-1", "target": {"anchor": "ref-1"}},
+    {"unit": "main-equation-1", "target": {"anchor": "eq-1"}},
+    {"unit": "main-table-1", "target": {"anchor": "tbl-1"}},
+    {
+        "unit": "main-figure-1",
+        "target": {"quote": "![[文献/attachments/2020/Example/0123456789abcdef/fig1.png]]  \n**图1：** 完整中文题注。\n^fig-1"},
+        "assets": [{"path": "文献/attachments/2020/Example/0123456789abcdef/fig1.png"}],
+    },
+]
+```
+
+示例路径只解释格式，实际路径使用本次核实的年份、首作者与资源桶。`anchor` 只写 ID，不加 `^`。图件目标须覆盖实际嵌入语法；只选题注不足以检查图片路径。所有嵌入的本地资产都须有文件哈希。图件资产还须通过实际图像解码。
+
+离线候选默认以 Markdown 所在目录为资源解析根。真实笔记按已核实的 vault 根路径解析库根相对附件路径；调用 `write_delivery_manifest(..., resource_root=vault_root)` 明确记录该根。嵌套在 `vault/文献/分类/` 的候选不能用笔记所在目录去拼接 `文献/attachments/`。检查器按记录的根解析 `assets[].path` 和图片嵌入路径，不猜测目录。
+
+引文目标选中该次实际链接及必要上下文。所选范围中的书目链接须与 `references` 精确相符。不要为一次调用选择包含其他调用的整个长段。
+
+`cross_reference` 的目标映射使检查器能够区分具体方法小节与整个 SI 章。给 section 单元选择完整的 Markdown 标题行；给 cross_reference 单元选择实际链接所在片段。
+
+如需行号定位，使用 `{"lines":[起行,止行],"sha256":"该行段的真实哈希"}`。行段按 UTF-8、LF、包含原有行尾换行计算。整个候选的文件哈希同时绑定，后续编辑会使检查失败。
+
+## 逐段翻译核对记录
+
+按[逐段翻译复核](../../literature-translate-zh/references/translation-review.md)完成原文与候选的逐段对照。`prepare_translation_review(...)` 只建立待填骨架，不从术语命中、空列表或已生成候选推导语义正确。
+
+先完成 inventory 的来源单元与工具指针，再为最终候选生成翻译记录。记录的 `bindings.source_inventory`、`bindings.candidate` 和 `bindings.sources` 分别绑定实际清单、候选和来源 PDF。检查记录、图像记录仍以各自方式保存；翻译记录不新增 inventory 指针。
+
+完整核对后，通过显式参数绑定最终文件：
+
+```python
+manifest_path = write_delivery_manifest(
+    inventory_path,
+    candidate_path,
+    deliveries,
+    work.joinpath("delivery-manifest.json"),
+    resource_root=output_root,
+    translation_review_path=work.joinpath("translation-review.json"),
+)
+```
+
+检查器验证翻译记录与本次实际文件的身份和哈希。候选、来源或清单在记录之后发生变化时，旧记录不能继续充当最终证据。该绑定检查不判断译义是否正确；每段的语义结论仍由文件内容对照与逐 ID 验收支撑。
+
+## 逐图视觉核对记录
+
+新生成的完整交付流程在图单元已盘点、最终图文件已准备好后调用 `prepare_figure_reviews(...)`。旧清单没有图像台账时仍可执行原有检查；这种兼容结果不表示已经完成逐图视觉核对。
+
+以下代码从实际清单和交付映射取值，不通过图号数量猜测对象，也不生成视觉结论：
+
+```python
+import json
+from pathlib import Path
+from prepare_source_inventory import prepare_figure_reviews
+
+inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+figure_ids = {
+    unit["id"]
+    for unit in inventory["units"]
+    if unit["kind"] == "figure"
+}
+final_assets = {
+    delivery["unit"]: [Path(asset["path"]) for asset in delivery["assets"]]
+    for delivery in deliveries
+    if delivery["unit"] in figure_ids
+}
+figure_reviews_path = prepare_figure_reviews(
+    inventory_path,
+    final_assets,
+    work.joinpath("figure-review"),
+    resource_root=output_root,
+)
+```
+
+相对图片路径按 `resource_root` 解析。实际笔记使用已核实的 vault 根；本示例使用离线 `output_root`。传入的映射须恰好覆盖实际图单元。函数保留跨页定位顺序，验证所引用的实际文件，并给每幅图建立 FIG-A01 至 FIG-A28 共 28 个 `pending` 条目。函数在清单中登记 `figure_reviews_path`，不会覆盖已有台账。
+
+每幅图的数据分开保存如下：
+
+| 字段 | 单一目标 |
+|---|---|
+| `unit` | 对应实际清单中的图身份。 |
+| `source` | 对应该图自己的来源身份。 |
+| `source_file` | 绑定来源 PDF 文件。 |
+| `source_locations[]` | 定位本图在来源中的位置。 |
+| `source_locations[].page_render` | 绑定该源页的 PNG。 |
+| `final_assets[]` | 绑定最终待嵌入图像文件。 |
+| `checks[].id` | 指定一个 FIG-A 原子目标。 |
+| `checks[].goal` | 保留该 ID 对应的目标文字。 |
+| `checks[].status` | 记录该目标的核对状态。 |
+| `checks[].reason` | 记录该结果的具体理由。 |
+| `checks[].evidence` | 指向本条结果的查看证据。 |
+| `checks[].applicability_condition` | 说明不适用结果的具体条件。 |
+
+台账内的文件引用只包含 `path` 和 `sha256`。`final_assets[]` 与 `deliveries[].assets[]` 不夹带来源 bbox。页码、bbox、坐标系及原图对象位置属于 `source_locations[]`。检查器将它们与原清单逐项对应。
+
+生成器还保存不可覆盖的 `figure-inventory-snapshot.json`。台账顶层的 `inventory` 绑定该真实快照文件的哈希；`inventory_path` 单独指向当前实际库存，检查器核验这个文件身份。当前库存与快照进行严格内容比较，只忽略顶层 `terminology_path`、`figure_reviews_path`、`checks_path` 三条工具指针。这些指针由各自台账的交付绑定检查负责，因此随后新增 `checks_path` 不会使已核对的图记录失效。来源、units、嵌套字段和所有其他内容变化仍触发 `FIG_REVIEW_INVENTORY_CHANGED`。快照文件自身变化仍触发文件哈希错误。
+
+模型实际查看所列源页 PNG 与最终图片后填写结果。每条证据采用 `{"kind":"source_page","index":0,"observation":"本次实际查看的内容"}` 或 `{"kind":"final_asset","index":0,"observation":"本次实际查看的内容"}`，`index` 是相应数组的零起始位置。一个项目可以引用多页或多幅图片。视觉目标的 `pass` 记录须同时引用来源页和最终图片。
+
+不存在的对象使用 `not_applicable`。以下只演示一幅无坐标轴照片的记录格式，不是本次来源的结论：
+
+```json
+{
+  "id": "FIG-A04",
+  "goal": "轴线完整。",
+  "status": "not_applicable",
+  "reason": "源图是一幅未叠加坐标轴的照片。",
+  "applicability_condition": "这幅来源图没有坐标轴。",
+  "evidence": [
+    {"kind": "source_page", "index": 0, "observation": "源页中的完整照片未显示坐标轴。"},
+    {"kind": "final_asset", "index": 0, "observation": "最终图片对应同一照片。"}
+  ]
+}
+```
+
+全部条目填写后才执行下一步交付绑定。`write_delivery_manifest()` 会从清单读取 `figure_reviews_path`，把台账最终哈希写入 `figure_reviews`。后来编辑台账必须重新绑定；替换最终图片必须重新核对该图。
+
+检查器逐图检查原子 ID 集合、理由、证据引用及不适用条件。检查器核对最终图像与交付映射的路径和哈希。检查器拒绝缺失坐标系和像素坐标声明。`FIG_REVIEW_PENDING` 表示仍有未决项目，`FIG_REVIEW_FAILED` 表示仍有失败项目。`FIG_REVIEW_CHECK_MISSING`、`FIG_REVIEW_CHECK_UNKNOWN` 与 `ID_DUPLICATE` 分别指出缺失、未知及重复身份。无效 schema 或字段类型返回错误发现，不作为通过结果。
+
+台账存在、自填 `pass` 或结构检查通过，都不构成独立视觉核验。报告仍保留 `source_fidelity: not_assessed` 与 `independent_review_required: true`。
+
+## 合并单元格
+
+每个 table 单元记录 `shape: {"rows": 数据行数, "columns": 列数}`。源表无合并时记录 `merges: []`。存在合并时用原表网格坐标记录；数据行、列从 1 开始，表头行为 0：
+
+```json
+{
+  "shape": {"rows": 4, "columns": 3},
+  "merges": [{"row_start": 1, "row_end": 3, "column_start": 1, "column_end": 1}]
+}
+```
+
+最终 Rich Table 的真实格式是 `merges: [{anchor: "r1.c1", end: "r3.c1"}]`。这两个端点使用目标表的行 ID 和列 ID。合并区域仅左上角保存显示值，覆盖格为空或省略。`header.c1` 是表头端点形式。该结构依据 [Rich Table 的固定版本模型定义](https://github.com/SdKay/obsidian-rich-table/blob/d1717904a5d0b4f42d11671ee6129b721394d0a1/src/model.ts) 与 [官方技能说明](https://github.com/SdKay/obsidian-rich-table/blob/d1717904a5d0b4f42d11671ee6129b721394d0a1/skills/obsidian-rich-table/SKILL.md)。
+
+v2 的 `merges` 位于表模型顶层。v3 的 `merges` 位于对应工作表中。v3 每个工作表单独对应一个 table 单元，delivery 另加 `sheet: {"id":"实际工作表ID"}` 或唯一 `name`。检查器逐表比较源合并范围与目标范围；重复填入分组文字不等于保留合并。
+
+## 完成交付检查
+
+候选文件和清单实际存在后再绑定哈希：
+
+```python
+from validate_delivery import write_delivery_manifest, validate_delivery
+from prepare_source_inventory import progress_bar
+
+manifest_path = write_delivery_manifest(
+    inventory_path,
+    output_root.joinpath("candidate.md"),
+    deliveries,
+    work.joinpath("delivery-manifest.json"),
+    resource_root=output_root,
+)
+report = validate_delivery(manifest_path, progress=progress_bar)
+print(report.to_dict())
+```
+
+检查器重新计算来源 PDF 和候选的哈希。检查器重新确认 PDF 页数。检查器将每页 PNG 的 RGB 像素与该 PDF 页重新渲染的结果比较。检查器从 PDF 重新提取文字块。检查器验证源单元与交付目标的双向映射。现有 `validate_note.py` 同时检查 Rich Table 所有工作表的锁定、主题和本篇断链。交付检查还检查每张工作表是否有来源单元；未映射的后续工作表也会检查合并端点。
+
+交付目标中的公式、表格和书目锚须属于实际可见对象。代码示例里的同名对象不能代替交付。Rich Table 的引文按 YAML 解码后的可见字段检查，注释不计作调用。既有书目锚的插件兼容提示沿用只读 warning，不据此强制迁移已有链接。
+
+`SOURCE_BLOCK_UNMAPPED` 定位遗漏盘点的文字块。`HEADER_PENDING` 定位未核实的独立题头字段。`UNIT_NOT_DELIVERED` 定位尚未交付的来源对象。`TARGET_QUOTE` 定位不唯一或已变化的目标片段。`EMBEDDED_TABLE_MISSING` 定位图内表格的独立结构缺口。`TABLE_MERGES_MISMATCH` 定位合并范围差异。`OUTPUT_CITATION_UNMAPPED` 定位没有来源调用记录的书目链接。
+
+按发现逐项修复后重新绑定最终候选哈希。保留完整机器发现清单。最后对照原页核验译文、数字、公式、书目身份、引文语境和图像完整性；本次验收对象始终是 Markdown 及其引用资源。

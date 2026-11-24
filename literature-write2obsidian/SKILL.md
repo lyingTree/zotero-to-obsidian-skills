@@ -1,9 +1,11 @@
 ---
 name: literature-write2obsidian
-description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已完成的候选稿、资源和命名变更，备份后回读验证。支持仅规划或只提交，不负责提取、翻译和内容重写。
+description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已完成的候选稿、资源和命名变更，备份后直接读取文件验证。支持仅规划或只提交，不负责提取、翻译和内容重写。
 ---
 
 # 规划目录与提交笔记
+
+每条规则的 ID 用于定位对应证据。
 
 ## 必要输入
 
@@ -12,32 +14,72 @@ description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已�
 
 ## 执行步骤
 
-1. plan 核实 vault、CLI 身份、文献根与附件根。
+WRITE-A04 与 WRITE-A05 直接运行 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 audit_write_readback，针对独立待提交文件与实际回读文件；实际资源路径与可读字节可由 inspect_relative_files 核对。未列出的资源及版本身份不由该函数认证。
+
+1. plan 先完成[运行预检](../literature-zotero2obsidian/references/project-profile.md#运行预检)，核实目标库目录、文献根、附件根及库外工作/备份根。
 2. plan 按集合层级和命名计划列出本次涉及的文件、资源、入链及目标预期哈希或“不存在”。
 3. commit 核对授权、候选验收记录、源与目标的写前条件。解析 `final.md` 起始 YAML；若存在 `库内参考文献` 键，先交[属性技能](../literature-note-properties/SKILL.md)修正并重验候选。新增笔记或本次涉及书目时，写前按[第 8 步](../literature-body-format/SKILL.md#验收标准)核对 `final.md` 的书目标题与节序号。新增笔记或本次涉及书目、书目锚点或引文时，写前须通过[第 9 步书目锚点验收](../literature-internal-links/SKILL.md#验收标准)。
 4. commit 将已有 MD、受影响文件及操作计划备份到库外。
-5. 先写必要资源，再写引用它们的笔记。
-6. 逐项通过文件和 [obsidian-cli](../obsidian-cli/SKILL.md) 回读，记录实际状态。
+5. 持有条目及目标路径独占写入权时，先写必要资源，再写引用它们的笔记。资源归属与字节哈希均一致才复用，不同哈希改用已规划的新路径，不覆盖旧资源。
+6. 直接读取实际写入的 Markdown 和资源文件，按候选验收范围核对内容，记录实际状态。
 
 ## 约束
 
-- plan 解析别名与链接，拒绝绝对集合名、`..` 与越界路径。
-- 集合层级、多集合选择、目录消歧与附件布局按项目配置执行。
-- plan 只确定路径，不在库内创建文件。
-- 多个副本保留差异，不任意覆盖。
-- 写前目标被占用、身份冲突或人工修改时保留候选并报告差异。
-- 相同提交已有回执且实际内容一致时只回读。
-- 新文件使用目标存在即失败的创建方式。
-- 已有文件在同一文件系统可行时用临时文件原子替换；逐项记录整组操作。
-- 重命名或移动使用 CLI 并检查受影响入链。
-- Windows 调用先解析实际 CLI 控制台入口。
-- 长全文和 LaTeX 走文件写入，避免 shell 插值和 `content=`。
-- 文件以 UTF-8、LF 保存；回执哈希按 LF 规范化。
-- 重存后哈希变化先逐行确认，只有换行差异才更新回执。
-- CLI 超时先检查实际写入状态，再决定是否重试。
-- 部分失败仅恢复本次写入且之后未变的文件。
-- 保留用户新修改与未知或共享资源；记录备份、剩余文件及恢复说明。
-- 只有明确要求时才单独同步 Zotero note 并回读。
+- [WRITE-C01] plan 解析路径别名。
+- [WRITE-C02] plan 解析路径链接的实际目标。
+- [WRITE-C03] plan 拒绝绝对集合名。
+- [WRITE-C04] plan 拒绝含 `..` 的集合路径。
+- [WRITE-C05] plan 拒绝越出确认根目录的路径。
+- [WRITE-C06] 集合层级按[项目配置](../literature-zotero2obsidian/references/project-profile.md)处理。
+- [WRITE-C07] 多集合选择按项目配置处理。
+- [WRITE-C08] 目录消歧按项目配置处理。
+- [WRITE-C09] 附件布局按项目配置处理。
+- [WRITE-C10] plan 只确定路径。
+- [WRITE-C11] plan 不在库内创建文件。
+- [WRITE-C12] 提取翻译前完成预检。
+- [WRITE-C13] 提取翻译前完成命名。
+- [WRITE-C14] 提取翻译前完成目录初步规划。
+- [WRITE-C15] 资源产生后在 plan 中补齐实际路径。
+- [WRITE-C16] 资源产生后在 plan 中补齐资源归属。
+- [WRITE-C17] 资源产生后在 plan 中补齐资源哈希。
+- [WRITE-C18] 不把规划占位值记为已验证资源。
+- [WRITE-C19] 保留多个副本之间的差异。
+- [WRITE-C20] 不任意覆盖已有副本。
+- [WRITE-C21] 写前发现目标占用、身份冲突或人工修改时保留候选稿。
+- [WRITE-C22] 写前发现目标占用、身份冲突或人工修改时报告差异。
+- [WRITE-C23] 相同提交已有回执且实际内容一致时只回读。
+- [WRITE-C24] 新文件采用目标已存在即失败的创建方式。
+- [WRITE-C25] 已有文件在同一文件系统可行时采用临时文件原子替换。
+- [WRITE-C26] 逐项记录整组文件操作。
+- [WRITE-C28] 重命名或移动后检查受影响入链。
+- [WRITE-C30] 长全文通过文件写入。
+- [WRITE-C31] LaTeX 内容通过文件写入。
+- [WRITE-C32] 不对长全文或 LaTeX 使用 shell 插值。
+- [WRITE-C33] 不对长全文或 LaTeX 使用 `content=` 传参。
+- [WRITE-C34] 文件以 UTF-8 编码保存。
+- [WRITE-C35] 文件以 LF 换行保存。
+- [WRITE-C36] 回执哈希按 LF 规范化后计算。
+- [WRITE-C37] 重存后哈希变化时逐行确认差异。
+- [WRITE-C38] 仅有换行差异时才按重存结果更新回执哈希。
+- [WRITE-C39] 写入超时后重试前核对目标文件状态。
+- [WRITE-C40] 部分失败时仅恢复本次写入且之后未变化的文件。
+- [WRITE-C41] 恢复时保留用户新修改。
+- [WRITE-C42] 恢复时保留未知资源。
+- [WRITE-C43] 恢复时保留共享资源。
+- [WRITE-C44] 恢复记录包含备份位置。
+- [WRITE-C45] 恢复记录包含剩余文件。
+- [WRITE-C46] 恢复记录包含恢复说明。
+- [WRITE-C47] 仅在用户明确要求时单独同步 Zotero note。
+- [WRITE-C48] Zotero note 同步后回读。
+- [WRITE-C49] 单项提交按 scope 核验。
+- [WRITE-C50] 单项提交对照输入基线核验。
+- [WRITE-C51] 登记范围外的既有问题。
+- [WRITE-C52] 在候选差异中明确标出必需的依赖修复。
+- [WRITE-C53] 在报告中明确说明必需的依赖修复。
+- [WRITE-C54] 不静默重写范围外内容。
+- [WRITE-C55] 新建笔记以全部候选为验收范围。
+- [WRITE-C56] 单独记录文件哈希核对结果。
+- [WRITE-C57] 单独记录静态源码检查结果。
 
 ## 产物
 
@@ -45,10 +87,23 @@ description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已�
 
 ## 验收标准
 
-- [ ] plan 的最终路径均位于确认的根目录内。
-- [ ] commit 有备份位置和写前比较证据。
-- [ ] 写后文件与待提交内容哈希一致，回读的 YAML 顶层没有 `库内参考文献` 键。
-- [ ] 嵌入指向实际资源；SI 视频存在且可读取。范围内的 PDF 图像写前逐幅通过[裁剪视觉验收](../literature-fulltext-extract/references/figure-crop.md)，写后回读最终资源路径和哈希并与验收记录核对。
-- [ ] 实际文件的锚点、入链及原条目链接经原生回读核对。适用时回读书目标题的实际层级与节序号，并执行第 9 步书目锚点回读，结果写入回执。
-- [ ] 回执分别记录写入、回读及适用的 Zotero 同步结果。
-- [ ] 发生部分失败时回执标 partial/failed，并可定位恢复记录。
+- [ ] [WRITE-A01] plan 的最终路径均位于确认的根目录内。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A02] commit 记录备份位置。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A03] commit 保存写前比较证据。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A04] 写后文件与待提交内容的哈希一致。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A05] 回读的 YAML 顶层不存在 `库内参考文献` 键。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A06] 每个嵌入目标均为实际存在的资源。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A07] 每个 SI 视频均存在。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A08] 每个 SI 视频均可读取。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A09] 范围内的 PDF 图像写前逐幅通过[裁剪视觉验收](../literature-fulltext-extract/references/figure-crop.md)。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A10] 写后资源路径与裁剪验收记录一致。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A11] 写后资源哈希与裁剪验收记录一致。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A15] 实际文件中的书目标题源码层级与候选一致。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A16] 实际文件中的书目节序号与候选一致。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A17] 实际文件中的书目锚点已通过[第 9 步文件核对](../literature-internal-links/SKILL.md#验收标准)。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A18] 回执保存书目锚点文件核对结果。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A19] 回执记录写入结果。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A20] 回执记录写后文件核对结果。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A21] 适用时回执记录 Zotero 同步结果。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A22] 发生部分失败时，回执状态为 partial 或 failed。 <!-- check-type: offline_outcome -->
+- [ ] [WRITE-A23] 发生部分失败时，回执可定位到恢复记录。 <!-- check-type: offline_outcome -->
