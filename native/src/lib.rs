@@ -15,6 +15,7 @@ pub mod validate;
 pub mod source_urls;
 pub mod glossary;
 pub mod pipeline;
+pub mod presentation;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -66,6 +67,8 @@ pub const OPERATIONS: &[&str] = &[
     "note_pipeline.prepare_content_job",
     "note_pipeline.replay_changes",
     "note_pipeline.rebase_rendering",
+    "lint_presentation.lint_presentation",
+    "lint_presentation.lint_file",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -380,6 +383,14 @@ pub fn invoke(request: Value) -> Result<Value> {
         "note_pipeline.rebase_rendering" => {
             let rendering=c.positional("rendering")?;let normalized=c.positional("normalized")?;c.finish()?;
             pipeline::rebase(&rendering,&normalized)?
+        }
+        "lint_presentation.lint_presentation" => {
+            let text=c.positional("text")?;c.finish()?;
+            serde_json::to_value(presentation::lint(text.as_str().context("text must be UTF-8")?)?)?
+        }
+        "lint_presentation.lint_file" => {
+            let p=path(&c.positional("path")?)?;c.finish()?;
+            serde_json::to_value(presentation::lint_file(&p)?)?
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

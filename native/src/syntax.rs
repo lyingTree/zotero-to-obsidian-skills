@@ -35,7 +35,7 @@ pub fn balanced(text:&str,pos:usize,open:char,close:char)->Option<usize>{
 }
 fn skip_space(text:&str,mut p:usize)->usize{while let Some(c)=ch_at(text,p){if !c.is_whitespace(){break;}p+=c.len_utf8();}p}
 fn skip_escape(text:&str,p:usize)->usize{let next=p+1;next+ch_at(text,next).map(char::len_utf8).unwrap_or(0)}
-pub struct Link{pub start:usize,pub end:usize,pub label_start:usize,pub label_end:usize,pub image:bool}
+pub struct Link{pub start:usize,pub end:usize,pub label_start:usize,pub label_end:usize,pub image:bool,pub href:String}
 pub fn scan_links(text:&str)->Vec<Link>{
     let mut stack=Vec::new();let mut pairs=BTreeMap::new();let mut p=0;
     while let Some(c)=ch_at(text,p){
@@ -50,6 +50,7 @@ pub fn scan_links(text:&str)->Vec<Link>{
         let mut cursor=skip_space(text,close+2);
         let angle=ch_at(text,cursor)==Some('<');
         cursor+=usize::from(angle);
+        let destination_start=cursor;
         let mut depth=0usize;
         while let Some(c)=ch_at(text,cursor){
             if c=='\\'&&cursor+1<text.len(){cursor=skip_escape(text,cursor);continue;}
@@ -62,6 +63,7 @@ pub fn scan_links(text:&str)->Vec<Link>{
             cursor+=c.len_utf8();
         }
         if cursor>=text.len()||(angle&&ch_at(text,cursor)!=Some('>'))||depth!=0{continue;}
+        let href=decode_destination(&text[destination_start..cursor]);
         cursor+=usize::from(angle);let whitespace=cursor;cursor=skip_space(text,cursor);
         if cursor<text.len()&&ch_at(text,cursor)!=Some(')'){
             let Some(c)=ch_at(text,cursor)else{continue;};
@@ -74,7 +76,7 @@ pub fn scan_links(text:&str)->Vec<Link>{
         if ch_at(text,cursor)!=Some(')'){continue;}
         let image=open>0&&text.as_bytes()[open-1]==b'!'&&!escaped(text,open-1);
         let start=open-usize::from(image);consumed=cursor+1;
-        result.push(Link{start,end:consumed,label_start:open+1,label_end:close,image});
+        result.push(Link{start,end:consumed,label_start:open+1,label_end:close,image,href});
     }result
 }
 pub fn reference_definition_end(text:&str,rows:&[Line],start:usize)->Option<usize>{
@@ -122,4 +124,15 @@ impl Offsets{
     pub fn index(&self,byte:usize)->usize{self.points.binary_search(&byte).expect("UTF-8 boundary")}
     pub fn previous(&self,byte:usize,count:usize)->usize{self.points[self.index(byte).saturating_sub(count)]}
     pub fn next(&self,byte:usize,count:usize)->usize{self.points[(self.index(byte)+count).min(self.points.len()-1)]}
+}
+
+pub fn decode_destination(text:&str)->String{
+    let mut unescaped=String::with_capacity(text.len());
+    let mut chars=text.chars().peekable();
+    while let Some(c)=chars.next(){
+        if c=='\\'&&chars.peek().is_some_and(|x|x.is_ascii_punctuation()){
+            unescaped.push(chars.next().unwrap());
+        }else{unescaped.push(c);}
+    }
+    html_escape::decode_html_entities(&unescaped).into_owned()
 }

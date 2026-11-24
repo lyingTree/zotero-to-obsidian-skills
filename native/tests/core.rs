@@ -429,3 +429,20 @@ fn native_contract_job_and_replay_preserve_evidence(){
     let broken=json!({"text":"🌊新第二行","changes":[{"start":1,"end":4,"before":"旧文\n","after":"新"}],"input_sha256":files::digest(original.as_bytes())});
     assert!(pipeline::rebase(&raw,&broken).is_err());
 }
+
+#[test]
+fn presentation_visible_prose_excludes_opaque_destinations(){
+    use z2o_native::presentation::lint;
+    let body=r#"## 1 方法
+正文 A定义，过去4-5年，30%，裸 DOI 10.1234/xyz。
+[图2a](#^fig-2)、[2b](#^fig-2)
+[可见标签](<hidden 60 min—9%> "hidden 2 m")
+"#;
+    let p=lint(body).unwrap();
+    for code in ["CJK_SPACE","QUANTITY_OUTSIDE_MATH","PERCENT_OUTSIDE_MATH","NAKED_DOI","SPLIT_PANEL_CALL"]{
+        assert!(p.iter().any(|x|x.code==code),"missing {code}: {p:?}");
+    }
+    assert!(p.iter().all(|x|!x.excerpt.contains("hidden")));
+    let body="<!-- hidden 60 min -->\n".to_owned()+ "\x60\x60\x60markdown\n30%\n\x60\x60\x60\n"+r"$30\%$";
+    assert!(lint(&body).unwrap().is_empty());
+}

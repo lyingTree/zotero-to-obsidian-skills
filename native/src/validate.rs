@@ -16,33 +16,33 @@ fn finding(out:&mut Vec<Finding>,level:&'static str,code:&'static str,line:usize
 pub struct TableRecord{pub line:usize,pub closing_line:Option<usize>,pub content:Vec<String>,pub anchor:Option<String>,pub anchor_line:Option<usize>}
 #[derive(Debug,Serialize)]
 pub struct Inspection{pub findings:Vec<Finding>,pub table_records:Vec<TableRecord>}
-fn anchor(line:&str)->Option<&str>{
+pub(crate) fn anchor(line:&str)->Option<&str>{
     rx!(r"(?:^|\s)\^([A-Za-z0-9-]+)[ \t]*$").captures(line)?.get(1).map(|m|m.as_str())
 }
-fn whole_anchor(line:&str)->Option<&str>{
+pub(crate) fn whole_anchor(line:&str)->Option<&str>{
     rx!(r"^\^([A-Za-z0-9-]+)[ \t]*$").captures(line)?.get(1).map(|m|m.as_str())
 }
-fn heading(line:&str)->Option<(usize,&str)>{
+pub(crate) fn heading(line:&str)->Option<(usize,&str)>{
     let c=rx!(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$").captures(line)?;
     Some((c.get(1)?.as_str().len(),c.get(2)?.as_str()))
 }
-fn entry(line:&str)->Option<(&str,usize)>{
+pub(crate) fn entry(line:&str)->Option<(&str,usize)>{
     let c=rx!(r"^ {0,3}([1-9][0-9]*)\.[ \t]+").captures(line)?;
     Some((c.get(1)?.as_str(),c.get(0)?.end()))
 }
-fn fence(line:&str)->Option<(u8,usize,&str)>{
+pub(crate) fn fence(line:&str)->Option<(u8,usize,&str)>{
     let c=rx!(r"^ {0,3}(\x60{3,}|~{3,})(.*)$").captures(line)?;
     let mark=c.get(1)?.as_str();let info=c.get(2)?.as_str();
     if mark.starts_with('\x60')&&info.contains('\x60'){return None;}
     Some((mark.as_bytes()[0],mark.len(),info.trim()))
 }
-fn closing(line:&str,mark:u8,width:usize)->bool{
+pub(crate) fn closing(line:&str,mark:u8,width:usize)->bool{
     let trimmed=line.trim_start_matches(' ');
     let count=trimmed.bytes().take_while(|b|*b==mark).count();
     line.len()-trimmed.len()<=3&&count>=width&&trimmed[count..].bytes().all(|b|matches!(b,b' '|b'\t'))
 }
-fn blank(text:&str)->String{text.chars().map(|c|if c=='\n'{'\n'}else{' '}).collect()}
-fn mask_delimited(text:&str,character:char)->String{
+pub(crate) fn blank(text:&str)->String{text.chars().map(|c|if c=='\n'{'\n'}else{' '}).collect()}
+pub(crate) fn mask_delimited(text:&str,character:char)->String{
     let runs:Vec<_>=(if character=='$'{rx!(r"\$+")}else{rx!(r"\x60+")}).find_iter(text).filter(|m|!syntax::escaped(text,m.start())).collect();
     let mut next=HashMap::new();let mut pairs=HashMap::new();
     for i in (0..runs.len()).rev(){
@@ -57,7 +57,7 @@ fn mask_delimited(text:&str,character:char)->String{
     }
     out.push_str(&text[cursor..]);out
 }
-fn mask_paragraph_code(text:&str,mut active:Option<&'static str>)->String{
+pub(crate) fn mask_paragraph_code(text:&str,mut active:Option<&'static str>)->String{
     let tokens:Vec<_>=rx!(r"<!--|%%|\x60+").find_iter(text).collect();
     let mut next=HashMap::new();let mut pairs=HashMap::new();
     for i in (0..tokens.len()).rev(){
@@ -84,7 +84,7 @@ fn mask_paragraph_code(text:&str,mut active:Option<&'static str>)->String{
     }
     out.push_str(&text[cursor..]);out
 }
-fn mask_comments(line:&str,mut active:Option<&'static str>)->(String,Option<&'static str>){
+pub(crate) fn mask_comments(line:&str,mut active:Option<&'static str>)->(String,Option<&'static str>){
     let mut out=String::with_capacity(line.len());let mut pos=0;
     while pos<line.len(){
         if let Some(comment)=active{
@@ -104,7 +104,7 @@ fn mask_comments(line:&str,mut active:Option<&'static str>)->(String,Option<&'st
 }
 fn markdown_local()->&'static Regex{rx!(r#"\[(?:\\.|[^\[\]\\\n])*\]\([ \t]*(?:<#\^(?P<angle>[A-Za-z0-9-]+)>|#\^(?P<bare>[A-Za-z0-9-]+))(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^\n)]*\)))?[ \t]*\)"#)}
 fn wiki_local()->&'static Regex{rx!(r"\[\[#\^(?P<id>[A-Za-z0-9-]+)(?:\|[^\]\n]*)?\]\]")}
-fn links(text:&str,line:usize)->Vec<(String,usize)>{
+pub(crate) fn links(text:&str,line:usize)->Vec<(String,usize)>{
     let visible=mask_delimited(&mask_delimited(text,'\x60'),'$');let mut result=Vec::new();
     for pattern in [markdown_local(),wiki_local()]{
         for c in pattern.captures_iter(&visible){
@@ -282,7 +282,7 @@ fn bibliography(lines:&[String],out:&mut Vec<Finding>){
     }finish(current,&rows,out);
 }
 
-fn indentation(line:&str)->usize{
+pub(crate) fn indentation(line:&str)->usize{
     let mut n=0;
     for c in line.chars(){match c{' '=>n+=1,'\t'=>n+=4-n%4,_=>break,}}n
 }

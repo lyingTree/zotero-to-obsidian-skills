@@ -25,6 +25,8 @@ unicode-normalization = "0.1"
 unicode-casefold = "0.2"
 
 tempfile = "3"
+html-escape = "0.2"
+percent-encoding = "2"
 
 [profile.release]
 lto = "thin"

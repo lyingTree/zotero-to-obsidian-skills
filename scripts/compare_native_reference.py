@@ -333,5 +333,33 @@ class NativePipelineComparison(unittest.TestCase):
                          "rust-native")
 
 
+import test_delivery_presentation as presentation_suite
+
+class NativePresentationComparison(presentation_suite.PresentationTests):
+    def setUp(self):
+        super().setUp()
+        from dataclasses import asdict
+        from unittest.mock import patch
+        reference_lint = presentation_suite.lint_presentation
+
+        def native(text):
+            expected = reference_lint(text)
+            with tempfile.TemporaryDirectory() as folder:
+                request = Path(folder).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version": 1,
+                    "operation": "lint_presentation.lint_presentation", "args": [text]},
+                    ensure_ascii=False), encoding="utf-8")
+                completed = subprocess.run([str(BINARY), "invoke", str(request)], check=True,
+                    capture_output=True, encoding="utf-8", timeout=45)
+                actual = json.loads(completed.stdout)["result"]
+            # Preserve each original prompt, not just pass/fail or code sets.
+            self.assertEqual(actual, [asdict(row) for row in expected])
+            return expected
+
+        patcher = patch.object(presentation_suite, "lint_presentation", native)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
