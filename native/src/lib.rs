@@ -46,6 +46,7 @@ pub mod pdf_structure;
 pub mod pdf_boundary;
 pub mod pdfcraft_backend;
 pub mod pdf_inventory;
+pub mod pdf_legacy_text;
 pub mod ocr_backend;
 pub mod ocr_acceleration;
 pub mod minicpm;
@@ -161,6 +162,7 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_source_inventory.prepare_pdf_ocr_evidence",
     "prepare_source_inventory.prepare_pdfcraft_evidence",
     "validate_delivery.replay_native_pdf_inventory",
+    "validate_delivery.crosswalk_legacy_pdf_text",
     "prepare_source_inventory.prepare_pdf_structure_evidence",
     "prepare_source_inventory.record_figure_edges",
     "prepare_source_inventory.prepare_figure_reviews",
@@ -943,6 +945,14 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             handoff_conflicts::record(&p,&unit,handoff_conflicts::Conflict{conflict_id:&id,page_number:page,
                 text_locator:&locator,text_layer_text:&layer,visible_text:&visible,bbox:&bbox,decision:&decision})?
+        }
+        "validate_delivery.crosswalk_legacy_pdf_text" => {
+            let old=path(&c.positional("legacy_inventory_path")?)?;
+            let new=path(&c.positional("native_inventory_path")?)?;
+            let old_sha=string(&c.required("expected_legacy_inventory_sha256")?,"expected_legacy_inventory_sha256")?;
+            let new_sha=string(&c.required("expected_native_inventory_sha256")?,"expected_native_inventory_sha256")?;
+            let id=string(&c.required("source_id")?,"source_id")?;
+            c.finish()?;pdf_legacy_text::crosswalk(&old,&old_sha,&new,&new_sha,&id,|i,n,label|eprintln!("[{i}/{n}] {label}"))?
         }
         "validate_delivery.replay_native_pdf_inventory" => {
             let inventory=path(&c.positional("inventory_path")?)?;

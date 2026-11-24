@@ -327,3 +327,58 @@ fn cooperative_source_inventory_writers_do_not_share_an_incomplete_work_tree(){
     }).unwrap();
     assert!(checked&&inventory.is_file());
 }
+
+#[test]
+fn legacy_pdf_selector_crosswalk_replays_actual_source_without_importing_review() {
+    use z2o_native::{invoke,pipeline,source_prepare};
+    let tmp=tempfile::tempdir().unwrap();
+    let root=tmp.path();
+    let pdf=root.join("source.pdf");
+    fixture(&pdf);
+    let native=source_prepare::prepare_sources(
+        &json!({"main":pdf}),&root.join("native"),
+        &json!({"main":"main"}),None,72,None,|_,_,_|{}).unwrap();
+    let ni=pipeline::read_json(&native).unwrap();
+    let local=&ni["sources"][0];
+    let legacy=root.join("historical-inventory.json");
+    // Construct old-format selectors from known fixture text, not an
+    // assertion that native grouping equals a real legacy export.
+    let mut old=json!({"schema_version":1,"sources":[{
+        "id":"main","role":"main","sha256":local["sha256"],"page_count":2,"pages":[
+            {"page":1,"image_index":local["pages"][0]["image_index"],"blocks":[
+                {"id":"main-p1-b0","text":"Native PDF\n","bbox":[8,0,150,35]},
+                {"id":"main-p1-b1","text":"evidence","bbox":[8,0,150,35]}]},
+            {"page":2,"image_index":local["pages"][1]["image_index"],"blocks":[
+                {"id":"main-p2-b0","text":"Native PDF evidence altered","bbox":[8,0,150,35]}]}]
+    }],"human_review":{"status":"passed","reason":"historic record must not be transferred"}});
+    fs::write(&legacy,serde_json::to_vec(&old).unwrap()).unwrap();
+    let initial=fs::read(&legacy).unwrap();
+    let new_before=fs::read(&native).unwrap();
+    let mut request=json!({"schema_version":1,"operation":"validate_delivery.crosswalk_legacy_pdf_text",
+        "args":[legacy,native],"kwargs":{"source_id":"main",
+            "expected_legacy_inventory_sha256":files::digest(&initial),
+            "expected_native_inventory_sha256":files::digest(&new_before)}});
+    let result=invoke(request.clone()).unwrap();
+    let result=&result["result"];
+    assert_eq!(result["kind"],"pdf-legacy-text-crosswalk/v1");
+    assert_eq!(result["pages"][0]["text_status"],"mechanical_text_correspondence");
+    assert_eq!(result["pages"][0]["groups"][0]["old_block_ids"],json!(["main-p1-b0","main-p1-b1"]));
+    assert_eq!(result["pages"][0]["groups"][0]["page_token_range"],json!([0,3]));
+    assert_eq!(result["pages"][1]["text_status"],"pending");
+    assert_eq!(result["pages"][0]["human_review"],"not_transferred");
+    assert_eq!(result["pages"][0]["visual"],"pending");
+    assert_eq!(result["delivery_ready"],false);
+    assert_eq!(fs::read(&legacy).unwrap(),initial);
+    assert_eq!(fs::read(&native).unwrap(),new_before);
+    old["sources"][0]["pages"][0]["blocks"][1]["text"]=json!("evidence!");
+    let changed=serde_json::to_vec(&old).unwrap();
+    fs::write(&legacy,&changed).unwrap();
+    assert!(invoke(request.clone()).unwrap_err().to_string().contains("inventory hash mismatch"));
+    request["kwargs"]["expected_legacy_inventory_sha256"]=json!(files::digest(&changed));
+    assert_eq!(invoke(request.clone()).unwrap()["result"]["pages"][0]["text_status"],"pending");
+    old["sources"][0]["sha256"]=json!("0".repeat(64));
+    let changed=serde_json::to_vec(&old).unwrap();
+    fs::write(&legacy,&changed).unwrap();
+    request["kwargs"]["expected_legacy_inventory_sha256"]=json!(files::digest(&changed));
+    assert!(invoke(request).unwrap_err().to_string().contains("source hash or role differs"));
+}
