@@ -87,6 +87,8 @@ Python 依赖在发布技能目录前安装。pip 失败会返回失败，不显
 
 [PDF + DOCX 九配置协议](evals/2026-11-24-hu2024-protocol.md)固定比较 `gpt-6-luna`、`gpt-6.1-terra`、`gpt-6.2-sol` 的 low、medium、high。[准备脚本](evals/model_matrix.py)从指定 Git 提交建立独立输入并绑定哈希；[文件检查工具](evals/inspect_markdown.py)保存可复查的结构与资源证据。两个脚本均不代替真实模型调用或对源验收。
 
+[Hu 2024 九组实际结果](evals/2026-11-24-hu2024-model-matrix.md)已完成：冻结版本 `f410b04` 下没有完整通过配置。Sol三档均交齐主要图表书目，但存在明确的源码格式、前置材料位置或题注自链问题；Luna、Terra另有正文或来源保真缺项。两组中断后续接的条件单独保留，过程台账和文件质量分别报告。
+
 ## 说明
 
 - 项目根、vault 与文献根在运行时确认后写入 `run.json`。
