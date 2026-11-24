@@ -175,6 +175,30 @@ class TestAccept(unittest.TestCase):
         self.path.write_text(HEAD + "![[panel%20name?.png|preview]]", encoding="utf-8")
         self.assertFalse(self.failures(self.audit(None)))
 
+    def test_canonical_format_original_and_normalized(self):
+        original = HEAD + "# Original title\n\n中文标题\n作者：甲\n\n" + r"持续60min，占31.$2\%$。" + "\n"
+        self.path.write_text(original, encoding="utf-8")
+        result = self.audit(None)
+        failures = [c for c in result["checks"] if c["code"] == "CANONICAL_FORMAT" and c["status"] == "fail"]
+        self.assertTrue({"60min", r"31.$2\%$", ""} <= {c["actual"] for c in failures})
+        self.assertTrue(all(c["line"] and c["rule"] and c["stage"] for c in failures))
+        self.assertEqual(self.path.read_text(encoding="utf-8"), original)
+        canonical = acceptance.normalizer.normalize_note(original)["text"]
+        self.path.write_text(canonical, encoding="utf-8")
+        self.assertFalse(self.failures(self.audit(None)))
+
+    def test_canonical_format_preserves_unclosed_and_ambiguous(self):
+        text = HEAD + "正文中未闭合的$2"
+        self.path.write_text(text, encoding="utf-8")
+        result = self.audit(None)
+        self.assertIn("CANONICAL_FORMAT", self.failures(result))
+        self.assertTrue(any(code.startswith("UNCLOSED_") for code in self.failures(result)))
+        self.assertEqual(self.path.read_text(encoding="utf-8"), text)
+        self.path.write_text(HEAD + "# Heading\n\nUnclassified subline\n", encoding="utf-8")
+        result = self.audit(None)
+        self.assertFalse(self.failures(result))
+        self.assertIn("AMBIGUOUS_HEADER", {p["code"] for p in result["review_prompts"]})
+
     def test_malformed_evidence_reports_failed_check(self):
         for bad in ({"sources": None}, {"counts": {"paragraphs": 10}}, {"required_units": [None]},
                     {"required_units": [{"unit_id": "P", "kind": "body", "source": {"source_id": [], "locator": "p"}}]},

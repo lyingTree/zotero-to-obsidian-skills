@@ -38,6 +38,7 @@ def _module(name):
 delivery = _module("validate_delivery")
 note = delivery.note_checks
 lint = _module("lint_presentation")
+normalizer = _module("normalize_note")
 HASH = re.compile("[a-f0-9]{64}")
 ANCHOR = re.compile("[A-Za-z0-9-]+")
 UNIT_KINDS = {"header", "heading", "list", "metadata", "paragraph", "translator_note", "figure",
@@ -228,6 +229,28 @@ class _Audit:
             self.check("SCHEMA", location, expected, "missing or invalid", False)
         return ok
 
+    def canonical_format(self, text):
+        result = normalizer.normalize_note(text)
+        blocked = False
+        for issue in result["unresolved"]:
+            code = issue["code"]
+            if code.startswith("UNCLOSED_") or code == "INTERACTING_RULES":
+                blocked = True
+                self.check(code, f"line {issue['line']}", "complete, stable parse", issue["message"], False)
+            elif issue.get("severity") != "info":
+                self.prompts.append({**issue, "status": "pending"})
+        changes = result["changes"]
+        if not changes:
+            self.check("CANONICAL_FORMAT", "candidate", "verified fixed point",
+                       "parse incomplete" if blocked else "verified fixed point",
+                       not blocked and result["idempotent"])
+            return
+        for change in changes:
+            loc = f"line {change['line']}, column {change['column']}"
+            self.check("CANONICAL_FORMAT", loc, change["after"], change["before"], False)
+            self.checks[-1].update(rule=change["rule"], stage=change["stage"],
+                                   line=change["line"], column=change["column"])
+
     def resource(self, href, line, syntax, hashes):
         location = f"line {line}: {href}"
         try:
@@ -414,7 +437,7 @@ def _stage(code, location):
 @lru_cache(maxsize=1)
 def _rules_hash():
     scripts = Path(__file__).resolve().parent
-    names = ("accept_note", "validate_delivery", "validate_note", "lint_presentation", "format_helpers")
+    names = ("accept_note", "normalize_note", "validate_delivery", "validate_note", "lint_presentation", "format_helpers")
     return _json_hash({name: _file_hash(scripts.joinpath(name + ".py")) for name in names})
 
 
@@ -438,6 +461,7 @@ def accept_note(candidate_path: Path, contract: dict | None = None, *,
         raw = path.read_bytes()
         fingerprints["candidate_sha256"] = sha256(raw).hexdigest()
         text = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+        audit.canonical_format(raw.decode("utf-8"))
         audit.root = Path(audit.root).resolve()
         first = text.split("\n", 1)[0].strip()
         audit.check("FRONTMATTER_PRESENT", "line 1", "---", first)
@@ -494,7 +518,8 @@ def accept_note(candidate_path: Path, contract: dict | None = None, *,
     audit.prompts.append(dict(code="SOURCE_FIDELITY", status="pending",
                               message="Compare meaning, translation, object identities and source inventory with originals."))
     for item in (*audit.checks, *audit.prompts):
-        item.update(stage=_stage(item["code"], item.get("location", "")), input_sha256=input_hash, rules_sha256=rules)
+        item.setdefault("stage", _stage(item["code"], item.get("location", "")))
+        item.update(input_sha256=input_hash, rules_sha256=rules)
     return dict(schema_version=1, mechanical_status="fail" if failed else "pass", source_coverage=coverage,
                 source_fidelity="not_assessed", inputs=fingerprints, input_sha256=input_hash, rules_sha256=rules,
                 counts=counts, checks=audit.checks, review_prompts=audit.prompts)
