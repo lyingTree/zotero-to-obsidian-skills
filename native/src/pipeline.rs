@@ -1,9 +1,9 @@
 //! Freeze source-derived contracts and verified sequential edits. These
 //! primitives do not assert that a source plan is exhaustive or semantic.
-use crate::{files,parse_json,path,path_text,render,ENGINE_VERSION,REFERENCE_VERSION};
+use crate::{acceptance,files,normalize,parse_json,path,path_text,render,ENGINE_VERSION,REFERENCE_VERSION};
 use anyhow::{anyhow,ensure,Context,Result};
 use serde_json::{json,Map,Value};
-use std::{collections::BTreeSet,fs,io::Write,path::{Path,PathBuf}};
+use std::{collections::{BTreeSet,BTreeMap},fs,io::Write,path::{Path,PathBuf}};
 
 pub fn read_json(p:&Path)->Result<Value>{
     let bytes=fs::read(p)?;
@@ -159,4 +159,180 @@ pub fn rebase(rendering:&Value,normalized:&Value)->Result<Value>{
     result["normalization_input_sha256"]=normalized.get("input_sha256").cloned().context("normalization input hash")?;
     result["mapping_basis"]=json!("original renderer spans rebased through verified sequential formatting edits");
     Ok(result)
+}
+
+
+// One native invocation owns the complete mechanical pipeline. Original source
+// files are read only, and run folders are content and executable addressed.
+const STAGES:[(&str,&str);6]=[
+    ("input","输入与版本绑定"),("render","内容单元与段落组装"),
+    ("normalize","量值、空行与块格式化"),("mapping","来源与交付位置更新"),
+    ("accept","结构、链接与资源验收"),("save","保存与回读"),
+];
+fn stage(events:&mut Vec<Value>,index:usize,status:&str,progress:&mut impl FnMut(usize,usize,&str)){
+    let (id,label)=STAGES[index];
+    events.push(json!({"stage":id,"label":label,"status":status,"observation":"direct_rust_execution"}));
+    progress(events.len(),STAGES.len(),&format!("{label}：{status}"));
+}
+fn engine()->Result<Value>{
+    let binary=files::snapshot(&std::env::current_exe()?)?;
+    Ok(json!({"schema_version":1,"engine":"rust-native","engine_version":ENGINE_VERSION,
+        "reference_version":REFERENCE_VERSION,"binary_sha256":binary["sha256"]}))
+}
+fn resolve_contract(contract:&Value,base:&Path)->Result<Value>{
+    let mut c=contract.clone();
+    if let Some(sources)=c.get_mut("sources").and_then(Value::as_object_mut){
+        for v in sources.values_mut(){
+            if let Some(s)=v["path"].as_str(){
+                let p=Path::new(s);
+                let resolved=acceptance::resolve(&if p.is_absolute(){p.to_path_buf()}else{base.join(p)})?;
+                v["path"]=json!(path_text(&resolved)?);
+            }
+        }
+    }
+    Ok(c)
+}
+fn publish_record(directory:&Path,receipts:&mut BTreeMap<String,String>,name:&str,data:&[u8])->Result<()>{
+    publish(&directory.join(name),data)?;
+    receipts.insert(name.into(),files::digest(data));Ok(())
+}
+fn phases(norm:&Option<Value>,audit:&Option<Value>,events:&[Value])->Value{
+    let changes=norm.as_ref().and_then(|v|v["changes"].as_array()).map(Vec::as_slice).unwrap_or(&[]);
+    let repairs=changes.iter().map(|row|{
+        let mut v=Map::new();
+        for k in ["stage","rule","line","column","start","end","before","after"]{if let Some(x)=row.get(k){v.insert(k.into(),x.clone());}}
+        Value::Object(v)
+    }).collect::<Vec<_>>();
+    let mut pending=Vec::new();let mut failures=Vec::new();
+    if let Some(n)=norm{
+        if let Some(rows)=n["unresolved"].as_array(){
+            for row in rows.iter().filter(|r|r["severity"]!="info"){
+                let mut r=row.clone();r["detected_in"]=json!(row["stage"].as_str().unwrap_or("normalize"));r["cause_status"]=json!("not_established");pending.push(r);
+            }
+        }
+    }
+    if let Some(a)=audit{
+        for row in a["checks"].as_array().into_iter().flatten().filter(|r|r["status"]=="fail"){
+            let mut r=row.clone();r["detected_in"]=row["stage"].clone();r["cause_status"]=json!("not_established");failures.push(r);
+        }
+        for row in a["review_prompts"].as_array().into_iter().flatten(){
+            let mut r=row.clone();r["detected_in"]=row["stage"].clone();r["cause_status"]=json!("not_established");pending.push(r);
+        }
+    }
+    json!({"schema_version":1,"executed_stages":events,"automatic_repairs":repairs,"observed_failures":failures,
+        "review_prompts":pending,"unobserved_model_processes":["pdf_text_extraction","docx_extraction","source_segmentation",
+            "title_recognition","author_affiliation_recognition","translation","citation_identity_matching"],
+        "boundary":"This local run observes rendering and file checks; an output defect alone does not prove which upstream model operation caused it."})
+}
+fn report(result:&Value,norm:&Option<Value>,audit:&Option<Value>)->String{
+    let mut s=format!("# Rust 原生规范化与机械验收\n\n运行标识：{}\n\n程序状态：**{}**。来源语义核对：**not_assessed**。\n\n该状态仅描述程序实际执行的机械检查，不自动确认译义、裁剪和来源清单完整性。\n\n## 阶段记录\n\n| 阶段 | 状态 |\n|---|---|\n",result["run_id"].as_str().unwrap_or(""),result["status"].as_str().unwrap_or(""));
+    for row in result["stages"].as_array().into_iter().flatten(){
+        s+=&format!("| {} | {} |\n",row["label"].as_str().unwrap_or(""),row["status"].as_str().unwrap_or(""));
+    }
+    s+="\n## 定位信息\n\n";
+    for row in result["issues"].as_array().into_iter().flatten(){s+=&format!("- {}：{}\n",row["code"].as_str().unwrap_or(""),row["message"].as_str().unwrap_or(""));}
+    if result["issues"].as_array().is_some_and(Vec::is_empty){s+="没有程序执行异常。具体检查与保留提示见下方。\n";}
+    if let Some(n)=norm{
+        s+=&format!("\n## 自动规范化\n\n记录 {} 次变换；已逐项回放并验证二次运行字节一致。\n\n原稿保存在 original.md，实际输出为 normalized.md；原值、新值与位置见 normalization.json。\n",n["changes"].as_array().map_or(0,Vec::len));
+        for row in n["unresolved"].as_array().into_iter().flatten(){s+=&format!("- {}，行 {}：{}\n",row["code"].as_str().unwrap_or("NORMALIZE_REVIEW"),row["line"],row["message"].as_str().unwrap_or(""));}
+    }
+    if let Some(a)=audit{
+        s+=&format!("\n## 机械检查\n\n机械规则：**{}**；来源合同覆盖：**{}**。\n\n详细 expected / actual、检查代码与位置保存在 acceptance.json。\n",a["mechanical_status"].as_str().unwrap_or(""),a["source_coverage"].as_str().unwrap_or(""));
+        for row in a["checks"].as_array().into_iter().flatten().filter(|r|r["status"]=="fail"){
+            s+=&format!("- {} / {} / {}：期望 {}；实际 {}。\n",row["stage"].as_str().unwrap_or(""),row["code"].as_str().unwrap_or(""),row["location"].as_str().unwrap_or(""),row["expected"],row["actual"]);
+        }
+        s+=&format!("\n另有 {} 条启发式提示；未将提示直接计作来源语义失败。\n",a["review_prompts"].as_array().map_or(0,Vec::len));
+    }
+    s+="\n## 结果边界\n\n缺少来源合同或单元映射时，未核实范围明确保留。程序不修改源 PDF、DOCX、已有原稿或原资源，不写入 Zotero / Obsidian。\n";s
+}
+pub fn process(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,contract:&Value,
+               resource_root:Option<&Path>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    let eng=engine()?;
+    let source_path=source.map(files::canonical).transpose()?;
+    let original=source_path.as_ref().map(fs::read).transpose()?;
+    let base=if let Some(p)=&source_path{p.parent().context("source parent")?.to_path_buf()}else{std::env::current_dir()?};
+    let contract=resolve_contract(contract,&base)?;
+    let resource_root=acceptance::resolve(resource_root.unwrap_or(&base))?;
+    let input=match (&source_path,&original){(Some(p),Some(b))=>json!({"path":path_text(p)?,"sha256":files::digest(b)}),_=>Value::Null};
+    let request=json!({"schema_version":1,"mode":if source.is_some(){"markdown"}else{"structured"},"input":input,
+        "plan":plan,"content":content,"contract":contract,"resource_root":path_text(&resource_root)?,"engine":eng});
+    let request_bytes=pretty(&request)?;let id=files::digest(&request_bytes);
+    fs::create_dir_all(output)?;let root=files::canonical(output)?;let directory=root.join(&id);
+    match fs::create_dir(&directory){Ok(())=>{},Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{},Err(e)=>return Err(e.into())}
+    let m=fs::symlink_metadata(&directory)?;
+    ensure!(m.is_dir()&&!m.file_type().is_symlink(),"Refusing a symlink or non-directory run folder");
+    let mut receipts=BTreeMap::new();let mut events=Vec::new();let mut issues=Vec::new();
+    publish_record(&directory,&mut receipts,"request.json",&request_bytes)?;
+    stage(&mut events,0,"verified",&mut progress);
+    let mut rendering=None;
+    let raw=if let Some(bytes)=&original{
+        publish_record(&directory,&mut receipts,"original.md",bytes)?;
+        stage(&mut events,1,"not_requested",&mut progress);
+        match std::str::from_utf8(bytes){Ok(s)=>Some(s.to_owned()),Err(e)=>{issues.push(json!({"stage":"input","code":"INPUT_ENCODING","message":e.to_string()}));None}}
+    }else{
+        let r=render::render_note(plan,content);
+        publish_record(&directory,&mut receipts,"rendering-original.json",&pretty(&r)?)?;
+        let text=r["text"].as_str().map(str::to_owned);
+        if let Some(s)=&text{
+            publish_record(&directory,&mut receipts,"original.md",s.as_bytes())?;
+            stage(&mut events,1,"rendered",&mut progress);
+        }else{
+            for f in r["findings"].as_array().into_iter().flatten(){let mut row=f.clone();row["stage"]=json!("render");issues.push(row);}
+            stage(&mut events,1,"blocked",&mut progress);
+        }
+        rendering=Some(r);text
+    };
+    let normalized=if let Some(s)=&raw{
+        let n=normalize::normalize(s)?;
+        let t=n["text"].as_str().context("normalized text")?;
+        let second=normalize::normalize(t)?;
+        ensure!(replay(s,&n["changes"])?==t&&second["text"]==t&&second["changes"].as_array().is_some_and(Vec::is_empty),
+            "Normalization failed replay or idempotence verification");
+        publish_record(&directory,&mut receipts,"normalization.json",&pretty(&n)?)?;
+        publish_record(&directory,&mut receipts,"normalized.md",t.as_bytes())?;
+        stage(&mut events,2,"verified",&mut progress);Some(n)
+    }else{stage(&mut events,2,"blocked",&mut progress);None};
+    let rendering=if let (Some(r),Some(n))=(rendering.as_ref(),normalized.as_ref()){
+        match rebase(r,n){
+            Ok(rebased)=>{
+                publish_record(&directory,&mut receipts,"rendering.json",&pretty(&rebased)?)?;
+                stage(&mut events,3,"verified",&mut progress);rebased
+            },
+            Err(e)=>{issues.push(json!({"stage":"mapping","code":"MAPPING_REBASE","message":e.to_string()}));stage(&mut events,3,"blocked",&mut progress);Value::Null}
+        }
+    }else{stage(&mut events,3,"not_available",&mut progress);Value::Null};
+    let note=directory.join("normalized.md");
+    let audit=if normalized.is_some(){
+        let a=acceptance::accept(&note,&contract,Some(&resource_root),&rendering)?;
+        publish_record(&directory,&mut receipts,"acceptance.json",&pretty(&a)?)?;
+        stage(&mut events,4,a["mechanical_status"].as_str().context("mechanical status")?,&mut progress);Some(a)
+    }else{stage(&mut events,4,"blocked",&mut progress);None};
+    let unsafe_parse=normalized.as_ref().and_then(|n|n["unresolved"].as_array()).is_some_and(|a|a.iter().any(|r|r["code"].as_str().is_some_and(|s|s.starts_with("UNCLOSED_")||s=="INTERACTING_RULES")));
+    let status=if normalized.is_none(){"blocked"}else if audit.as_ref().is_some_and(|a|a["mechanical_status"]=="pass"&&a["source_coverage"]=="verified_against_contract")&&issues.is_empty()&&!unsafe_parse{"mechanical_pass"}else{"needs_attention"};
+    stage(&mut events,5,"committing",&mut progress);
+    if let Some(a)=&audit{
+        ensure!(acceptance::accept(&note,&contract,Some(&resource_root),&rendering)?==*a,
+            "Source, resource, candidate or evidence changed after acceptance; no final receipt was published");
+    }
+    if let Some(p)=&source_path{ensure!(files::snapshot(p)?["sha256"]==request["input"]["sha256"],"Original changed during processing");}
+    ensure!(engine()?==eng,"Engine binary changed during processing; no final receipt was published");
+    for (name,hash) in &receipts{
+        let p=directory.join(name);
+        let m=fs::symlink_metadata(&p)?;
+        ensure!(m.is_file()&&!m.file_type().is_symlink()&&files::snapshot(&p)?["sha256"]==hash.as_str(),"Published artifact changed during processing: {}",p.display());
+    }
+    events.last_mut().unwrap()["status"]=json!("verified");
+    publish_record(&directory,&mut receipts,"phases.json",&pretty(&phases(&normalized,&audit,&events))?)?;
+    let outputs=receipts.iter().map(|(k,v)|Ok((k.clone(),json!({"path":path_text(&directory.join(k))?,"sha256":v})))).collect::<Result<Map<String,Value>>>()?;
+    let mut result=json!({"schema_version":1,"run_id":id,"directory":path_text(&directory)?,"status":status,
+        "source_fidelity":"not_assessed","stages":events,"issues":issues,"outputs":outputs});
+    let markdown=report(&result,&normalized,&audit);
+    publish_record(&directory,&mut receipts,"report.md",markdown.as_bytes())?;
+    result["outputs"]["report.md"]=json!({"path":path_text(&directory.join("report.md"))?,"sha256":files::digest(markdown.as_bytes())});
+    // All advertised outputs are independently read back before committing the receipt.
+    for(name,hash)in &receipts{
+        let p=directory.join(name);let m=fs::symlink_metadata(&p)?;
+        ensure!(m.is_file()&&!m.file_type().is_symlink()&&files::snapshot(&p)?["sha256"]==hash.as_str(),"Artifact changed before receipt: {}",p.display());
+    }
+    publish(&directory.join("result.json"),&pretty(&result)?)?;Ok(result)
 }

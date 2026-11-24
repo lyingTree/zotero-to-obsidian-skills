@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import hashlib
 from pathlib import Path
 import subprocess
 import sys
@@ -394,6 +395,55 @@ class NativeAcceptanceComparison(acceptance_suite.TestAccept):
         patcher = patch.object(acceptance_suite.acceptance, "accept_note", native)
         patcher.start()
         self.addCleanup(patcher.stop)
+
+
+class NativeEndToEndComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_process_markdown_and_content_native_receipts(self):
+        import test_note_pipeline as suite
+        source = self.root.joinpath("paper.txt")
+        source.write_bytes(b"source evidence")
+        note = self.root.joinpath("candidate.md")
+        note.write_text("---\ntype: article\n---\n\n# Example\n\n## 1 方法\n每60 min观测，增加31.$2\\%$。\n", encoding="utf-8")
+        contract = {"schema_version": 1, "sources": {"main": {"path": str(source),
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}},
+            "counts": {"figures": 0, "equations": 0, "tables": 0, "bibliography": 0}}
+        for selected in (contract, None):
+            expected = suite.pipeline.process_markdown(note, self.root.joinpath("python"),
+                contract=selected, resource_root=self.root, progress=None)
+            actual = self.invoke("note_pipeline.process_markdown", str(note), str(self.root.joinpath("rust")),
+                contract=selected, resource_root=str(self.root))
+            self.assertEqual(actual["status"], expected["status"])
+            self.assertEqual(actual["source_fidelity"], "not_assessed")
+            self.assertEqual(Path(actual["directory"]).joinpath("normalized.md").read_bytes(),
+                             Path(expected["directory"]).joinpath("normalized.md").read_bytes())
+            self.assertEqual(actual, self.invoke("note_pipeline.process_markdown", str(note),
+                str(self.root.joinpath("rust")), contract=selected, resource_root=str(self.root)))
+            for name, record in actual["outputs"].items():
+                path = Path(record["path"])
+                self.assertEqual(path.name, name)
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), record["sha256"])
+        plan = {"schema_version": 1, "properties": {"type": "article"}, "units": [
+            {"unit_id": "title", "kind": "header", "original_title": "A source", "translated": True,
+             "authors": ["Author"], "affiliations": ["Institute"], "scope": "main",
+             "source": {"source_id": "main", "locator": "title"}},
+            {"unit_id": "p", "kind": "paragraph", "scope": "main",
+             "source": {"source_id": "main", "locator": "p"}}]}
+        content = {"title": {"translated_title": "来源"}, "p": {"text": "每60 min观测。"}}
+        contract = suite.pipeline.build_contract(plan, {"main": source})
+        for supplied in (content, {}):
+            expected = suite.pipeline.process_content(plan, supplied, self.root.joinpath("python"),
+                contract=contract, resource_root=self.root, progress=None)
+            actual = self.invoke("note_pipeline.process_content", plan, supplied, str(self.root.joinpath("rust")),
+                contract=contract, resource_root=str(self.root))
+            self.assertEqual(actual["status"], expected["status"])
+            self.assertEqual(actual["source_fidelity"], expected["source_fidelity"])
+            if supplied:
+                for name in ("normalized.md", "rendering.json", "normalization.json"):
+                    self.assertEqual(Path(actual["directory"]).joinpath(name).read_bytes(),
+                                     Path(expected["directory"]).joinpath(name).read_bytes())
 
 
 if __name__ == "__main__":

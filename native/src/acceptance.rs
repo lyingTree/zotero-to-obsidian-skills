@@ -34,7 +34,7 @@ fn stage(code:&str)->&'static str{
 }
 // Resolve existing path prefixes, including dangling links, without assuming
 // missing targets are inside the vault. Limit link traversals and reject cycles.
-fn resolve(p:&Path)->Result<PathBuf>{
+pub(crate) fn resolve(p:&Path)->Result<PathBuf>{
     fn inner(p:&Path,depth:usize)->Result<PathBuf>{
         ensure!(depth<40,"Too many symbolic links");
         let absolute=if p.is_absolute(){p.to_path_buf()}else{std::env::current_dir()?.join(p)};

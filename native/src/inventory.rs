@@ -78,7 +78,7 @@ pub fn inspect(text:&str)->Result<Inventory>{
             fence=None;inv.event("table",opening+1,number);
             // A malformed table has already been diagnosed by structural validation.
             let payload=lines[opening+1..idx].iter().map(|s|s.to_string()).collect::<Vec<_>>();
-            let Ok(data)=properties::parse_yaml(validate::rich_payload(&payload).as_bytes())else{continue;};
+            let data=properties::parse_yaml(validate::rich_payload(&payload).as_bytes())?;
             if !data.is_object(){continue;}
             let sheets=if data["version"]==3{data["sheets"].as_array().map(|s|s.iter().collect::<Vec<_>>()).unwrap_or_default()}else{vec![&data]};
             if data["version"]==3{

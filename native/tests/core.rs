@@ -484,3 +484,42 @@ fn grid_rejects_covered_values_overlap_and_ambiguous_dotted_ids(){
         "merges":[{"anchor":"a.b.c","end":"a.b.c"}]});
     assert!(check_merges("t",None,&sheet).iter().any(|f|f.code=="TABLE_MERGE_ENDPOINT"));
 }
+
+#[test]
+fn complete_native_mechanical_pipeline_preserves_receipts_and_rejects_changed_evidence(){
+    use z2o_native::pipeline::{process,build_contract};
+    let root=tempdir().unwrap();let source=root.path().join("原始文献.txt");fs::write(&source,b"source bytes").unwrap();
+    let original=root.path().join("候选.md");
+    let bytes="---\ntype: article\n---\n\n# Example\n\n## 1 方法\n每60 min观测，增加31.$2\\%$。\n".as_bytes();
+    fs::write(&original,bytes).unwrap();let output=root.path().join("结果");
+    let contract=json!({"schema_version":1,"sources":{"main":{"path":source,"sha256":files::digest(b"source bytes")}},
+        "counts":{"figures":0,"equations":0,"tables":0,"bibliography":0}});
+    let run=||process(Some(&original),&Value::Null,&Value::Null,&output,&contract,Some(root.path()),|_,_,_|{});
+    let result=run().unwrap();assert_eq!(result["status"],"mechanical_pass","{result}");
+    assert_eq!(result["source_fidelity"],"not_assessed");
+    let directory=Path::new(result["directory"].as_str().unwrap());
+    assert_eq!(fs::read(directory.join("original.md")).unwrap(),bytes);
+    assert_eq!(fs::read(&original).unwrap(),bytes);
+    assert!(fs::read_to_string(directory.join("normalized.md")).unwrap().contains(r"$60\,\mathrm{min}$"));
+    assert_eq!(result,run().unwrap());
+    fs::remove_file(directory.join("report.md")).unwrap();fs::remove_file(directory.join("result.json")).unwrap();
+    assert_eq!(result,run().unwrap());let receipt=fs::read(directory.join("result.json")).unwrap();
+    fs::write(&source,b"changed source").unwrap();assert!(run().is_err());assert_eq!(fs::read(directory.join("result.json")).unwrap(),receipt);
+    fs::write(&source,b"source bytes").unwrap();
+    fs::write(directory.join("normalized.md"),b"manual edit").unwrap();assert!(run().is_err());
+    assert_eq!(fs::read(directory.join("normalized.md")).unwrap(),b"manual edit");
+    let plan=json!({"schema_version":1,"properties":{"type":"article"},"units":[
+        {"unit_id":"title","kind":"header","original_title":"A source","translated":true,"authors":["Author"],"affiliations":["Institute"],"scope":"main","source":{"source_id":"main","locator":"title"}},
+        {"unit_id":"p","kind":"paragraph","scope":"main","source":{"source_id":"main","locator":"p"}}]});
+    let content=json!({"title":{"translated_title":"来源"},"p":{"text":"每60 min观测。"}});
+    let c=build_contract(&plan,&json!({"main":source})).unwrap();
+    let result=process(None,&plan,&content,&output,&c,Some(root.path()),|_,_,_|{}).unwrap();
+    assert_eq!(result["status"],"mechanical_pass","{result}");
+    let blocked=process(None,&plan,&json!({}),&output,&c,Some(root.path()),|_,_,_|{}).unwrap();
+    assert_eq!(blocked["status"],"blocked");assert!(!Path::new(blocked["directory"].as_str().unwrap()).join("normalized.md").exists());
+    let changed=root.path().join("changed-during-run");
+    let attempt=process(Some(&original),&Value::Null,&Value::Null,&changed,&contract,Some(root.path()),|done,_,_|{
+        if done==5{fs::write(&source,b"changed during acceptance").unwrap();}
+    });
+    assert!(attempt.is_err());assert!(fs::read_dir(&changed).unwrap().all(|e|!e.unwrap().path().join("result.json").exists()));
+}

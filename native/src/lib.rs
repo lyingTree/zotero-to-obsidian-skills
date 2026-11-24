@@ -70,6 +70,8 @@ pub const OPERATIONS: &[&str] = &[
     "note_pipeline.prepare_content_job",
     "note_pipeline.replay_changes",
     "note_pipeline.rebase_rendering",
+    "note_pipeline.process_markdown",
+    "note_pipeline.process_content",
     "lint_presentation.lint_presentation",
     "lint_presentation.lint_file",
     "validate_delivery.check_merges",
@@ -187,6 +189,12 @@ impl Call {
     }
     fn required(&mut self, name: &str) -> Result<Value> {
         self.kwargs.remove(name).ok_or_else(|| anyhow!("missing argument: {name}"))
+    }
+    fn optional_positional(&mut self, name: &str, default: Value) -> Result<Value> {
+        match self.args.pop_front() {
+            Some(v) => { ensure!(!self.kwargs.contains_key(name), "duplicate argument: {name}"); Ok(v) }
+            None => Ok(self.option(name, default)),
+        }
     }
     fn option(&mut self, name: &str, default: Value) -> Value { self.kwargs.remove(name).unwrap_or(default) }
     fn finish(self) -> Result<()> {
@@ -389,6 +397,17 @@ pub fn invoke(request: Value) -> Result<Value> {
             let rendering=c.positional("rendering")?;let normalized=c.positional("normalized")?;c.finish()?;
             pipeline::rebase(&rendering,&normalized)?
         }
+        "note_pipeline.process_markdown" | "note_pipeline.process_content" => {
+            let (source,plan,content)=if op.ends_with("process_markdown"){
+                (Some(path(&c.positional("source_path")?)?),Value::Null,Value::Null)
+            }else{(None,c.positional("plan")?,c.positional("content")?)};
+            let output=path(&c.positional("output_root")?)?;
+            let contract=c.option("contract",Value::Null);
+            let root=c.option("resource_root",Value::Null);
+            let root=if root.is_null(){None}else{Some(path(&root)?)};
+            c.finish()?;
+            pipeline::process(source.as_deref(),&plan,&content,&output,&contract,root.as_deref(),|done,total,label|eprintln!("[{done}/{total}] {label}"))?
+        }
         "lint_presentation.lint_presentation" => {
             let text=c.positional("text")?;c.finish()?;
             serde_json::to_value(presentation::lint(text.as_str().context("text must be UTF-8")?)?)?
@@ -405,7 +424,7 @@ pub fn invoke(request: Value) -> Result<Value> {
         }
         "accept_note.accept_note" => {
             let candidate=path(&c.positional("candidate_path")?)?;
-            let contract=c.option("contract",Value::Null);
+            let contract=c.optional_positional("contract",Value::Null)?;
             let root=c.option("resource_root",Value::Null);
             let root=if root.is_null(){None}else{Some(path(&root)?)};
             let rendering=c.option("rendering",Value::Null);c.finish()?;
