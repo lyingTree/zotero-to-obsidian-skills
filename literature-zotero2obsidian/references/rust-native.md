@@ -195,3 +195,9 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 ### PDF 对象索引器与逐方法回归
 
 新增 `pdf_image_objects.ImageObjectIndexer.index_page` 原生接口：明确 PDF 与实际页码，可选 object_directory，按源文件 SHA-256 隔离缓存；真实间接调用 XRef+generation 对象与 SMask/Mask 编码流独立绑定，重复相同字节安全复用，未支持的 mask/codec/显示效果保留明确待审原因，严禁覆盖不同旧证据。并保留严格支持的 JPEG/PNG 独立导出候选；不声称等价于旧版每个 raw_asset 格式或可见像素验收。新增实际 JPEG/Flate/SMask 夹具的逐页索引与复用测试。新增 14 个原生翻译复核方法的参考决策逐条执行差分（真实查询、单元绑定幂等、对照 Python 决策日志和数据）。上一轮 58ad068 CPU smoke 已通过；其余任务因新提交取消，等待本提交的完整 CI，保持全部发布门禁。
+
+### 全公开接口覆盖与原生离线候选安装
+
+修复 5322d80 在 CI 中的两个真实 E0599 编译错误（render_note.keys 缺少错误传播）。剩余报告对象、进度与脚本入口共 27 个公开符号新增真实 native 调用；报告方法根据当前实际文件重新执行相应校验器并投影，不接受调用方伪造的通过报告。旧 main 的可编辑脚本全局变量改为显式 JSON 参数，退出语义作为 exit_code 字段返回；不运行 Python。进度条输出 stderr，保持 stdout JSON 协议。此轮针对上次 AST 报告列出的全部缺口，最终以新编译二进制的门禁结果为准。
+
+新增 native_runtime.package / inspect_bundle / install 及 z2o package、z2o install 原生入口。从实际仓库 12 个技能目录与当前预编译程序构建独立候选目录，包清单逐文件 SHA-256、大小及 Unix 可执行位，绑定 OS/CPU 架构、当前运行器哈希及独立可信清单哈希。拒绝链接/特殊文件、路径穿越、大小写/Unicode 冲突、额外或缺失文件；先完整暂存、复核，再提交目录，保留本地旧技能的原始备份和事务记录；重复同一包跳过。安装后的每个 SKILL.md 在 YAML 题头后插入明确 native-only 守则；旧 .py 作为参考资料保留，不能作为执行路径。实际外部 Zotero/Obsidian、OCR 资源自动分发、第三方许可证和正式发布仍待验收，不宣称已替代外部技能。CI 六个平台新增预编译实际仓库候选包、空 PATH 安装、安装后 describe，以及合成夹具的升级备份、重复安装、篡改拒绝和实际 invoke。避免同一 PR push/PR 双跑，并不取消已开始的六平台验收。当前仅保存安装回执，不发布二进制安装包或 2.0.0。

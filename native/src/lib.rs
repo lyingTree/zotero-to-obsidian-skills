@@ -31,6 +31,8 @@ pub mod draft_queue;
 pub mod delivery_prepare;
 pub mod delivery_provenance;
 pub mod delivery_validate;
+pub mod runtime_reports;
+pub mod native_install;
 pub mod workflow;
 pub mod mapping_compare;
 pub mod handoff_conflicts;
@@ -224,6 +226,36 @@ pub const OPERATIONS: &[&str] = &[
     "complete_workflow.record_decision_rows",
     "complete_workflow.bind_candidate",
     "deterministic_stage_checks.record_file_checks",
+    "native_runtime.package",
+    "native_runtime.inspect_bundle",
+    "native_runtime.install",
+    "check_records.CheckFinding.to_dict",
+    "check_records.CheckRecordsReport.offline_records_ready",
+    "check_records.CheckRecordsReport.recorded_checks_complete",
+    "check_records.CheckRecordsReport.structurally_consistent",
+    "check_records.CheckRecordsReport.to_dict",
+    "complete_workflow.CompletionReport.as_dict",
+    "complete_workflow.CompletionReport.records_ready",
+    "complete_workflow.CompletionReport.summary",
+    "handoff_maps.HandoffReport.as_dict",
+    "handoff_maps.HandoffReport.records_ready",
+    "handoff_maps.HandoffReport.to_dict",
+    "validate_delivery.DeliveryReport.structurally_consistent",
+    "validate_delivery.DeliveryReport.to_dict",
+    "validate_translation_review.TranslationReviewFinding.to_dict",
+    "validate_translation_review.TranslationReviewReport.records_ready",
+    "validate_translation_review.TranslationReviewReport.to_dict",
+    "draft_queue.progress_bar",
+    "handoff_maps.progress_bar",
+    "note_pipeline.progress_bar",
+    "pdf_image_objects.progress_bar",
+    "prepare_source_inventory.progress_bar",
+    "prepare_translation_review.progress_bar",
+    "lint_presentation.main",
+    "pdf_image_objects.main",
+    "prepare_source_inventory.main",
+    "validate_delivery.main",
+    "validate_note.main",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -483,7 +515,7 @@ pub fn invoke(request: Value) -> Result<Value> {
         }
         "render_note.keys" => {
             let v=c.positional("value")?;let p=string(&c.positional("path")?,"path")?;
-            let required=c.optional_positional("required",json!(""));let optional=c.optional_positional("optional",json!(""));
+            let required=c.optional_positional("required",json!(""))?;let optional=c.optional_positional("optional",json!(""))?;
             let required=required.as_str().context("required must be text")?;let optional=optional.as_str().context("optional must be text")?;
             c.finish()?;render::keys(&v,&p,required,optional)?;Value::Null
         }
@@ -535,6 +567,15 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             if op.ends_with("inspect_note"){serde_json::to_value(validate::inspect(text))?}
             else{serde_json::to_value(validate::validate_note(text))?}
+        }
+        "validate_note.main" => {
+            let p=path(&c.positional("path")?)?;c.finish()?;
+            let findings=validate::validate_file(&p);
+            json!({"exit_code":if findings.iter().any(|f|f.level=="error"){1}else{0},"findings":findings,"source_fidelity":"not_assessed"})
+        }
+        "lint_presentation.main" => {
+            let p=path(&c.positional("path")?)?;c.finish()?;
+            json!({"prompts":presentation::lint_file(&p)?,"source_fidelity":"not_verified"})
         }
         "validate_note.validate_file" => {
             let p = path(&c.positional("path")?)?;
@@ -660,7 +701,7 @@ pub fn invoke(request: Value) -> Result<Value> {
             json!(path_text(&translation_prepare::prepare(&inv,&candidate,&output,&ids,glossary.as_deref(),&targets,
                 |i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?)?)
         }
-        "prepare_source_inventory.prepare_docx_sources" | "prepare_source_inventory.prepare_sources" => {
+        "prepare_source_inventory.prepare_docx_sources" | "prepare_source_inventory.prepare_sources" | "prepare_source_inventory.main" => {
             let sources=c.positional("source_pdfs")?;
             let root=path(&c.positional("work_directory")?)?;
             let roles=c.option("source_roles",Value::Null);
@@ -675,7 +716,7 @@ pub fn invoke(request: Value) -> Result<Value> {
             }else{
                 source_prepare::prepare_sources(&sources,&root,&roles,glossary.as_deref(),dpi,ocr.as_ref(),|i,n,label|eprintln!("[{i}/{n}] {label}"))?
             };
-            json!(path_text(&result)?)
+            if op.ends_with(".main"){json!({"exit_code":0,"inventory_path":path_text(&result)?,"source_fidelity":"not_assessed"})}else{json!(path_text(&result)?)}
         }
         "check_records.bind_file" | "check_records.bind_evidence" => {
             let p=path(&c.positional("path")?)?;
@@ -715,6 +756,14 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             if op.ends_with("pending_check_batch"){check_ledger::pending_batch(&p,limit,prefix.as_deref())?}
             else{check_ledger::pending_rows(&p,limit,prefix.as_deref())?}
+        }
+        "check_records.CheckFinding.to_dict" | "check_records.CheckRecordsReport.offline_records_ready" |
+        "check_records.CheckRecordsReport.recorded_checks_complete" | "check_records.CheckRecordsReport.structurally_consistent" |
+        "check_records.CheckRecordsReport.to_dict" => {
+            let p=path(&c.positional("path")?)?;
+            let index=if op.contains(".CheckFinding."){Some(usize::try_from(c.required("finding_index")?.as_u64().context("finding_index must be an integer")?)?)}else{None};
+            c.finish()?;let r=check_validate::validate(&p,runtime_reports::progress_line)?;
+            runtime_reports::project_report(&r,op.rsplit('.').next().unwrap(),index)?
         }
         "check_records.validate_check_records" => {
             let p=path(&c.positional("path")?)?;c.finish()?;
@@ -791,7 +840,8 @@ pub fn invoke(request: Value) -> Result<Value> {
         "validate_delivery.scan_markdown_links" => {
             let text=c.positional("text")?;c.finish()?;delivery_prepare::links(text.as_str().context("text must be a string")?)
         }
-        "handoff_maps.write_handoff_maps" | "handoff_maps.validate_handoff_maps" => {
+        "handoff_maps.write_handoff_maps" | "handoff_maps.validate_handoff_maps" |
+        "handoff_maps.HandoffReport.as_dict" | "handoff_maps.HandoffReport.records_ready" | "handoff_maps.HandoffReport.to_dict" => {
             let inv=path(&c.positional("inventory_path")?)?;
             let candidate=path(&c.positional("candidate_path")?)?;
             let write=op=="handoff_maps.write_handoff_maps";
@@ -799,7 +849,7 @@ pub fn invoke(request: Value) -> Result<Value> {
             let paths=c.positional("map_paths")?;
             let expected=c.option("expected_source_bindings",Value::Null);c.finish()?;
             if let Some(d)=deliveries{handoff_native::write(&inv,&candidate,&d,&paths,&expected,|i,n,label|eprintln!("[{i}/{n}] {label}"))?}
-            else{handoff_native::validate(&inv,&candidate,&paths,&expected,|i,n,label|eprintln!("[{i}/{n}] {label}"))?}
+            else{let r=handoff_native::validate(&inv,&candidate,&paths,&expected,runtime_reports::progress_line)?;if op.ends_with(".records_ready"){r["records_ready"].clone()}else{r}}
         }
         "mapping_rerun.record_mapping_rerun" => {
             let run=path(&c.positional("run_path")?)?;let deliveries=c.positional("deliveries")?;
@@ -836,6 +886,16 @@ pub fn invoke(request: Value) -> Result<Value> {
                 source_roles:&roles,candidate_path:&candidate,resource_root:&resource,
                 glossary_path:g.as_deref(),translation_required:translation,run_id:&id};
             json!(path_text(&workflow::initialize_with_ocr(opt,ocr.as_ref(),|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
+        }
+        "complete_workflow.CompletionReport.as_dict" | "complete_workflow.CompletionReport.records_ready" |
+        "complete_workflow.CompletionReport.summary" => {
+            let p=path(&c.positional("run_path")?)?;
+            let count=if op.ends_with(".summary"){c.option("examples_per_code",json!(2)).as_u64().context("examples_per_code must be a positive integer")?}else{2};
+            ensure!(count>0,"examples_per_code must be positive");c.finish()?;
+            let r=workflow::inspect(&p,runtime_reports::progress_line)?;
+            if op.ends_with(".records_ready"){r["records_ready"].clone()}
+            else if op.ends_with(".summary"){runtime_reports::completion_summary(&r,usize::try_from(count)?)?}
+            else{r}
         }
         "complete_workflow.inspect_workflow" | "complete_workflow.require_completed_records" => {
             let p=path(&c.positional("run_path")?)?;c.finish()?;
@@ -880,9 +940,18 @@ pub fn invoke(request: Value) -> Result<Value> {
             ensure!(check_ledger::bind_file(&inventory)?==binding,"Source inventory changed during replay");
             result
         }
-        "validate_delivery.validate_delivery" => {
-            let p=path(&c.positional("manifest_path")?)?;c.finish()?;
-            delivery_validate::validate_delivery(&p,|i,n,label|eprintln!("[{i}/{n}] {label}"))?
+        "validate_delivery.validate_delivery" | "validate_delivery.DeliveryReport.structurally_consistent" |
+        "validate_delivery.DeliveryReport.to_dict" | "validate_delivery.main" => {
+            let p=path(&c.positional("manifest_path")?)?;
+            let output=if op.ends_with(".main"){c.option("report_path",Value::Null)}else{Value::Null};
+            let output=if output.is_null(){None}else{Some(path(&output)?)};
+            c.finish()?;
+            let report=delivery_validate::validate_delivery(&p,runtime_reports::progress_line)?;
+            if op.ends_with(".structurally_consistent"){report["structurally_consistent"].clone()}
+            else if op.ends_with(".main"){
+                if let Some(out)=output{runtime_reports::save_new_report(&out,&report)?;}
+                json!({"exit_code":if report["structurally_consistent"]==true{0}else{1},"report":report})
+            }else{report}
         }
         "validate_delivery.check_source_provenance" => {
             let inv=path(&c.positional("inventory_path")?)?;c.finish()?;
@@ -1023,14 +1092,18 @@ pub fn invoke(request: Value) -> Result<Value> {
                 }
             }
         }
-        "pdf_image_objects.export_image_object" => {
+        "pdf_image_objects.export_image_object" | "pdf_image_objects.main" => {
             let source=path(&c.positional("source_pdf")?)?;
             let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
             let xref=u32::try_from(c.required("image_xref")?.as_u64().context("image_xref must be an integer")?)?;
             let dest=path(&c.required("destination")?)?;
             let e=c.option("expected_source_sha256",Value::Null);
             let e=if e.is_null(){None}else{Some(string(&e,"expected_source_sha256")?)};
-            c.finish()?;pdf_structure::export_image_object(&source,page,xref,&dest,e.as_deref())?
+            let receipt=if op.ends_with(".main"){c.option("export_record_path",Value::Null)}else{Value::Null};
+            let receipt=if receipt.is_null(){None}else{Some(path(&receipt)?)};
+            c.finish()?;let r=pdf_structure::export_image_object(&source,page,xref,&dest,e.as_deref())?;
+            if let Some(p)=receipt{runtime_reports::save_new_report(&p,&r)?;}
+            if op.ends_with(".main"){json!({"exit_code":0,"record":r})}else{r}
         }
         "pdf_image_objects.inspect_crop_boundaries" | "pdf_image_objects.render_page_region" => {
             let source=path(&c.positional("source_pdf")?)?;
@@ -1107,13 +1180,18 @@ pub fn invoke(request: Value) -> Result<Value> {
             let binding=check_ledger::bind_file(&p)?;
             if op.ends_with("sha256_file"){binding["sha256"].clone()}else{binding}
         }
-        "validate_translation_review.validate_translation_review" => {
+        "validate_translation_review.validate_translation_review" |
+        "validate_translation_review.TranslationReviewFinding.to_dict" |
+        "validate_translation_review.TranslationReviewReport.records_ready" |
+        "validate_translation_review.TranslationReviewReport.to_dict" => {
             let p=path(&c.positional("path")?)?;
             let inv=c.optional_positional("inventory_path",Value::Null)?;
             let candidate=c.optional_positional("candidate_path",Value::Null)?;
             let inv=if inv.is_null(){None}else{Some(path(&inv)?)};
             let candidate=if candidate.is_null(){None}else{Some(path(&candidate)?)};
-            c.finish()?;translation_validate::validate(&p,inv.as_deref(),candidate.as_deref())?
+            let index=if op.contains(".TranslationReviewFinding."){Some(usize::try_from(c.required("finding_index")?.as_u64().context("finding_index must be an integer")?)?)}else{None};
+            c.finish()?;let report=translation_validate::validate(&p,inv.as_deref(),candidate.as_deref())?;
+            if op.ends_with(".validate_translation_review"){report}else{runtime_reports::project_report(&report,op.rsplit('.').next().unwrap(),index)?}
         }
         "translation_review_writer.ReviewWriter.scope" |
         "translation_review_writer.ReviewWriter.exclude" |
@@ -1178,6 +1256,31 @@ pub fn invoke(request: Value) -> Result<Value> {
             let p=path(&c.positional("draft_path")?)?;c.finish()?;
             let writer=translation_writer::Writer::from_draft(&p)?;
             json!({"data":writer.data,"prepared":writer.prepared,"decisions":writer.commands,"terminology_summary":writer.summary})
+        }
+        "native_runtime.package" => {
+            let source=path(&c.positional("source_root")?)?;let dest=path(&c.positional("destination")?)?;
+            c.finish()?;native_install::package(&source,&dest,runtime_reports::progress_line)?
+        }
+        "native_runtime.inspect_bundle" | "native_runtime.install" => {
+            let manifest=path(&c.positional("package_manifest")?)?;
+            let sha=string(&c.positional("expected_package_sha256")?,"expected_package_sha256")?;
+            if op.ends_with(".install"){
+                let root=path(&c.positional("skills_root")?)?;c.finish()?;
+                native_install::install(&manifest,&sha,&root,runtime_reports::progress_line)?
+            }else{c.finish()?;native_install::inspect_bundle(&manifest,&sha)?}
+        }
+        "draft_queue.progress_bar" |
+        "handoff_maps.progress_bar" |
+        "note_pipeline.progress_bar" |
+        "pdf_image_objects.progress_bar" |
+        "prepare_source_inventory.progress_bar" |
+        "prepare_translation_review.progress_bar" => {
+            let done=usize::try_from(c.positional("done")?.as_u64().context("done must be a nonnegative integer")?)?;
+            let total=usize::try_from(c.positional("total")?.as_u64().context("total must be a nonnegative integer")?)?;
+            let label=c.positional("label")?;
+            let label=label.as_str().context("label must be a string")?;
+            c.finish()?;ensure!(done<=total,"Progress exceeds declared total");
+            runtime_reports::progress_line(done,total,label);Value::Null
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

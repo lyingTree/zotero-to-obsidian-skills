@@ -1,14 +1,28 @@
 use anyhow::{anyhow,ensure,Result};
 use serde_json::json;
 use std::{env,fs,io::{self,Write},path::PathBuf,process::ExitCode};
-use z2o_native::{describe,invoke,parse_json,ENGINE_VERSION};
+use z2o_native::{describe,invoke,parse_json,ENGINE_VERSION,native_install,runtime_reports};
 
 fn run()->Result<serde_json::Value>{
     let mut args=env::args_os().skip(1);
-    let cmd=args.next().ok_or_else(||anyhow!("use describe, invoke <request.json>, or --version"))?;
+    let cmd=args.next().ok_or_else(||anyhow!("use describe, invoke <request.json>, package <source_root> <destination>, install <package.json> <trusted_sha256> <skills_root>, or --version"))?;
     match cmd.to_str(){
         Some("describe")=>{ensure!(args.next().is_none(),"unexpected argument");Ok(describe())}
         Some("--version")=>{ensure!(args.next().is_none(),"unexpected argument");Ok(json!({"engine":"rust-native","version":ENGINE_VERSION}))}
+        Some("package")=>{
+            let source=PathBuf::from(args.next().ok_or_else(||anyhow!("source root required"))?);
+            let dest=PathBuf::from(args.next().ok_or_else(||anyhow!("new package destination required"))?);
+            ensure!(args.next().is_none(),"unexpected argument");
+            native_install::package(&source,&dest,runtime_reports::progress_line)
+        }
+        Some("install")=>{
+            let manifest=PathBuf::from(args.next().ok_or_else(||anyhow!("package manifest required"))?);
+            let sha=args.next().ok_or_else(||anyhow!("independently trusted manifest SHA-256 required"))?;
+            let sha=sha.to_str().ok_or_else(||anyhow!("manifest hash must be ASCII"))?;
+            let root=PathBuf::from(args.next().ok_or_else(||anyhow!("skills root required"))?);
+            ensure!(args.next().is_none(),"unexpected argument");
+            native_install::install(&manifest,sha,&root,runtime_reports::progress_line)
+        }
         Some("invoke")=>{
             let p=PathBuf::from(args.next().ok_or_else(||anyhow!("request file required"))?);
             ensure!(args.next().is_none(),"unexpected argument");

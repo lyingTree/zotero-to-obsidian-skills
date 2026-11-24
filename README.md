@@ -41,7 +41,9 @@
 
 参见 [Rust 原生迁移](literature-zotero2obsidian/references/rust-native.md)。直接迁移至原生 Rust，不嵌入 Python、不自动回退。此分支仅完成部分操作及六种平台/架构的测试配置，尚未达到全流程发布门槛；现有安装说明仍为 1.1.0 参考实现。开发者可运行 native crate 的测试和 release 构建；未迁移的操作明确失败。
 
-需要 Python 3.10+ 和 Git。推荐在 Python 编辑器中打开 [install.py](install.py)，设置顶部配置后运行脚本，无需拼接命令行参数：
+原生迁移分支新增仅用于候选验收的离线安装器：预编译 z2o 可构建含 12 个技能的哈希绑定候选目录、核验清单并安装，保留原技能备份，不需要 Python 或 Git 执行安装。实际全流程、外部 Zotero/Obsidian、OCR 分发、平台与许可证资格仍未通过；不是正式用户安装包。
+
+1.1.0 参考安装方式仍需要 Python 3.10+ 和 Git。推荐在 Python 编辑器中打开 [install.py](install.py)，设置顶部配置后运行脚本，无需拼接命令行参数：
 
 ```python
 SKILLS_ROOT = Path(r"D:\YourAgent\skills")

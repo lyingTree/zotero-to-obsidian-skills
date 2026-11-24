@@ -30,7 +30,7 @@
   "capabilities": {
     "all_original_runtime_operations": {
       "qualified": false,
-      "blocker": "Native decision methods, renderer helpers, glossary methods, atomic rule lookup, PDF geometry and object indexer implemented; remaining report/progress/launcher compatibility and actual behavioral qualification"
+      "blocker": "All previously reported public symbol gaps have explicit native operations; confirm actual compiled AST coverage and historical behavior parity"
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
@@ -54,7 +54,7 @@
     },
     "native_installation_and_external_integration": {
       "qualified": false,
-      "blocker": "Native OCR local verified package installation implemented; trusted distribution catalog, runtime platform and existing installer/Zotero/Obsidian integration remain"
+      "blocker": "Offline native 12-skill candidate package/installer implemented, with precompiled binary, checked manifest, backups and no-PATH tests; trusted release distribution and Zotero/Obsidian integrations remain"
     },
     "twelve_skill_production_entrypoints": {
       "qualified": false,
@@ -66,7 +66,7 @@
     },
     "platform_installation_and_release_artifacts": {
       "qualified": false,
-      "blocker": "Six native clean-install tests and packaging/artifact verification"
+      "blocker": "Six-target candidate packaging and clean installation CI added; actual tests, trusted release signing, licenses and qualified release artifacts remain"
     },
     "locked_dependencies_and_license_review": {
       "qualified": false,

@@ -2,6 +2,8 @@ name: Rust native migration
 
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -10,7 +12,9 @@ permissions:
 
 concurrency:
   group: rust-native-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Keep a started six-platform qualification run intact; avoid duplicate
+  # branch push + pull_request jobs and repeated cancellation on new commits.
+  cancel-in-progress: false
 
 env:
   RUST_TOOLCHAIN: '1.95.0'
@@ -73,7 +77,30 @@ jobs:
         run: cargo +1.95.0 test --locked --target ${{ matrix.target }}
       - name: Build release executable for the exact target
         run: cargo +1.95.0 build --locked --release --target ${{ matrix.target }}
-      # The migration is incomplete. No release artifact is published from this workflow.
+      - name: Build and install actual repository candidate with precompiled executable
+        shell: bash
+        run: |
+          set -eu
+          suffix=""
+          if [[ "$RUNNER_OS" == "Windows" ]]; then suffix=".exe"; fi
+          exe="$(pwd)/target/${{ matrix.target }}/release/z2o${suffix}"
+          bundle="$RUNNER_TEMP/z2o-native-candidate-bundle"
+          installed="$RUNNER_TEMP/z2o-native-candidate-installed"
+          "$exe" package .. "$bundle"
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest="$(sha256sum "$bundle/package.json" | awk '{print $1}')"
+          else
+            digest="$(shasum -a 256 "$bundle/package.json" | awk '{print $1}')"
+          fi
+          PATH="" "$exe" install "$bundle/package.json" "$digest" "$installed" > "$RUNNER_TEMP/z2o-install-receipt.json"
+          PATH="" "$installed/literature-zotero2obsidian/runtime/z2o${suffix}" describe
+      - name: Retain native installation candidate receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-install-receipt-${{ matrix.target }}
+          path: ${{ runner.temp }}/z2o-install-receipt.json
+          if-no-files-found: error
+      # Migration remains unqualified. Do not publish the executable or bundle.
 
   differential:
     needs: resolve-lock
