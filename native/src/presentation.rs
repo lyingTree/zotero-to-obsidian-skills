@@ -329,7 +329,7 @@ pub fn lint(text:&str)->Result<Vec<Prompt>>{
         if let Some((marker,len,language,first))=fence.as_ref(){
             if !validate::closing(raw,*marker,*len){payload.push(raw.to_owned());continue;}
             if language=="rich-table"{
-                if let Ok(data)=properties::parse_yaml(&validate::rich_payload(&payload)){table_scan(&data,*first,&mut out)?;}
+                if let Ok(data)=properties::parse_yaml(validate::rich_payload(&payload).as_bytes()){table_scan(&data,*first,&mut out)?;}
             }fence=None;payload.clear();continue;
         }
         if let Some((first,parts))=math.as_mut(){

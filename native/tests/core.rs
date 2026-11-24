@@ -446,3 +446,41 @@ fn presentation_visible_prose_excludes_opaque_destinations(){
     let body="<!-- hidden 60 min -->\n".to_owned()+ "\x60\x60\x60markdown\n30%\n\x60\x60\x60\n"+r"$30\%$";
     assert!(lint(&body).unwrap().is_empty());
 }
+
+#[test]
+fn mechanical_acceptance_uses_actual_objects_and_source_bytes(){
+    use z2o_native::acceptance::accept;
+    let root=tempdir().unwrap();let candidate=root.path().join("候选.md");
+    let source=root.path().join("source.pdf");fs::write(&source,b"actual source").unwrap();
+    let image=root.path().join("fig one.png");fs::write(&image,b"actual image").unwrap();
+    let body="---\ntype: article\n---\n\n![A](<fig%20one.png>)  \n**图A** 示例\n^fig-A\n";
+    fs::write(&candidate,body).unwrap();
+    let contract=json!({"schema_version":1,"sources":{"s":{"path":source,"sha256":files::digest(b"actual source")}},
+        "required_anchors":["fig-A"],"counts":{"figures":1,"images":1,"tables":0,"equations":0,"bibliography":0},
+        "resources":{"fig%20one.png":files::digest(b"actual image")}});
+    let report=accept(&candidate,&contract,Some(root.path()),&Value::Null).unwrap();
+    assert_eq!(report["mechanical_status"],"pass","{report}");
+    assert_eq!(report["source_coverage"],"verified_against_contract");
+    assert_eq!(report["source_fidelity"],"not_assessed");
+    assert_eq!(report,accept(&candidate,&contract,Some(root.path()),&Value::Null).unwrap());
+    fs::write(&source,b"changed").unwrap();fs::write(&image,b"changed").unwrap();
+    let report=accept(&candidate,&contract,Some(root.path()),&Value::Null).unwrap();
+    for code in ["SOURCE_HASH","RESOURCE_HASH"]{assert!(report["checks"].as_array().unwrap().iter().any(|r|r["code"]==code&&r["status"]=="fail"));}
+    assert_eq!(report["mechanical_status"],"fail");assert_eq!(report["source_coverage"],"failed");
+    fs::write(&candidate,b"---\ntype: article\n---\n\n![](<%2e%2e/outside.png>)").unwrap();
+    let report=accept(&candidate,&Value::Null,Some(root.path()),&Value::Null).unwrap();
+    assert!(report["checks"].as_array().unwrap().iter().any(|r|r["code"]=="RESOURCE_BOUNDARY"&&r["status"]=="fail"));
+}
+#[test]
+fn grid_rejects_covered_values_overlap_and_ambiguous_dotted_ids(){
+    use z2o_native::grid::check_merges;
+    let sheet=json!({"columns":[{"id":"c","name":"A"},{"id":"d","name":"B"}],
+        "rows":[{"id":"r","cells":{"c":"x","d":"y"}},{"id":"s","cells":{"c":"","d":null}}],
+        "merges":[{"anchor":"r.c","end":"s.d"},{"anchor":"r.c","end":"r.d"}]});
+    let findings=check_merges("t",None,&sheet);
+    assert!(findings.iter().any(|f|f.code=="TABLE_MERGE_COVERED_VALUE"));assert!(findings.iter().any(|f|f.code=="TABLE_MERGE_OVERLAP"));
+    let sheet=json!({"columns":[{"id":"b.c","name":"A"},{"id":"c","name":"B"}],
+        "rows":[{"id":"a","cells":{}},{"id":"a.b","cells":{}}],
+        "merges":[{"anchor":"a.b.c","end":"a.b.c"}]});
+    assert!(check_merges("t",None,&sheet).iter().any(|f|f.code=="TABLE_MERGE_ENDPOINT"));
+}

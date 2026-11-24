@@ -361,5 +361,40 @@ class NativePresentationComparison(presentation_suite.PresentationTests):
         self.addCleanup(patcher.stop)
 
 
+import test_accept_note as acceptance_suite
+
+class NativeAcceptanceComparison(acceptance_suite.TestAccept):
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        reference = acceptance_suite.acceptance.accept_note
+        def native(candidate_path, contract=None, *, resource_root=None, rendering=None):
+            expected = reference(candidate_path, contract, resource_root=resource_root, rendering=rendering)
+            with tempfile.TemporaryDirectory() as folder:
+                request = Path(folder).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version": 1, "operation": "accept_note.accept_note",
+                    "args": [str(candidate_path)], "kwargs": {"contract": contract,
+                    "resource_root": str(resource_root) if resource_root is not None else None, "rendering": rendering}},
+                    ensure_ascii=False), encoding="utf-8")
+                completed = subprocess.run([str(BINARY), "invoke", str(request)], check=True,
+                    capture_output=True, encoding="utf-8", timeout=90)
+                actual = json.loads(completed.stdout)["result"]
+            for key in ("mechanical_status", "source_coverage", "source_fidelity"):
+                self.assertEqual(actual[key], expected[key], key)
+            self.assertEqual({r["code"] for r in actual["checks"] if r["status"] == "fail"},
+                             {r["code"] for r in expected["checks"] if r["status"] == "fail"})
+            if not any(r["code"] == "INPUT_INVALID" for r in expected["checks"]):
+                self.assertEqual(actual["counts"], expected["counts"])
+                def rows(report):
+                    return sorted((r["code"], r["location"], r["status"]) for r in report["checks"])
+                self.assertEqual(rows(actual), rows(expected))
+            # Native rules hash binds the native executable, not the old Python files.
+            self.assertEqual(actual["inputs"]["candidate_sha256"], expected["inputs"]["candidate_sha256"])
+            return actual
+        patcher = patch.object(acceptance_suite.acceptance, "accept_note", native)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

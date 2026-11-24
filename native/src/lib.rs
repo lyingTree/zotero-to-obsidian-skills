@@ -16,6 +16,9 @@ pub mod source_urls;
 pub mod glossary;
 pub mod pipeline;
 pub mod presentation;
+pub mod grid;
+pub mod inventory;
+pub mod acceptance;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -69,6 +72,8 @@ pub const OPERATIONS: &[&str] = &[
     "note_pipeline.rebase_rendering",
     "lint_presentation.lint_presentation",
     "lint_presentation.lint_file",
+    "validate_delivery.check_merges",
+    "accept_note.accept_note",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -391,6 +396,20 @@ pub fn invoke(request: Value) -> Result<Value> {
         "lint_presentation.lint_file" => {
             let p=path(&c.positional("path")?)?;c.finish()?;
             serde_json::to_value(presentation::lint_file(&p)?)?
+        }
+        "validate_delivery.check_merges" => {
+            let id=string(&c.positional("identity")?,"identity")?;
+            let unit=c.positional("unit")?;
+            let data=c.positional("data")?;c.finish()?;
+            grid::report(&id,if unit.is_null(){None}else{Some(&unit)},&data)
+        }
+        "accept_note.accept_note" => {
+            let candidate=path(&c.positional("candidate_path")?)?;
+            let contract=c.option("contract",Value::Null);
+            let root=c.option("resource_root",Value::Null);
+            let root=if root.is_null(){None}else{Some(path(&root)?)};
+            let rendering=c.option("rendering",Value::Null);c.finish()?;
+            acceptance::accept(&candidate,&contract,root.as_deref(),&rendering)?
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };
