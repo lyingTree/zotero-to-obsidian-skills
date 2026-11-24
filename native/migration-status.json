@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "reference_version": "1.1.0",
+  "release_target": "2.0.0",
+  "module_status": {
+    "accept_note": "implementation_candidate",
+    "docx_source_inventory": "implementation_candidate",
+    "glossary_candidates": "implementation_candidate",
+    "lint_presentation": "implementation_candidate",
+    "normalize_note": "implementation_candidate",
+    "note_pipeline": "implementation_candidate",
+    "render_note": "implementation_candidate",
+    "source_url_inventory": "implementation_candidate",
+    "validate_note": "implementation_candidate",
+    "deterministic_stage_checks": "partial",
+    "format_helpers": "partial",
+    "validate_delivery": "partial",
+    "check_records": "not_started",
+    "complete_workflow": "not_started",
+    "draft_queue": "not_started",
+    "handoff_maps": "not_started",
+    "mapping_rerun": "not_started",
+    "pdf_image_objects": "not_started",
+    "prepare_source_inventory": "not_started",
+    "prepare_translation_review": "not_started",
+    "translation_review_tasks": "not_started",
+    "translation_review_writer": "not_started",
+    "validate_translation_review": "not_started"
+  },
+  "capabilities": {
+    "all_original_runtime_operations": {
+      "qualified": false,
+      "blocker": "Remaining original API and behavior parity"
+    },
+    "pdf_source_geometry_and_image_evidence": {
+      "qualified": false,
+      "blocker": "PDF page/object/coordinate, mask, extraction and crop parity"
+    },
+    "docx_source_qualification": {
+      "qualified": false,
+      "blocker": "DOCX awaits full integration and platform qualification"
+    },
+    "source_delivery_mapping_and_review_ledger": {
+      "qualified": false,
+      "blocker": "Source/delivery handoff and atomic review ledger parity"
+    },
+    "translation_review_lifecycle": {
+      "qualified": false,
+      "blocker": "Translation review preparation, tasks, writer and validation parity"
+    },
+    "native_complete_workflow": {
+      "qualified": false,
+      "blocker": "Orchestration, draft queue, restart and mapping rerun parity"
+    },
+    "native_installation_and_external_integration": {
+      "qualified": false,
+      "blocker": "Native installer, Zotero and Obsidian integration without Python"
+    },
+    "twelve_skill_production_entrypoints": {
+      "qualified": false,
+      "blocker": "All 12 production entrypoints native-only"
+    },
+    "all_reference_regressions_and_frozen_examples": {
+      "qualified": false,
+      "blocker": "Complete historical per-rule parity and representative model-run evidence"
+    },
+    "platform_installation_and_release_artifacts": {
+      "qualified": false,
+      "blocker": "Six native clean-install tests and packaging/artifact verification"
+    },
+    "locked_dependencies_and_license_review": {
+      "qualified": false,
+      "blocker": "Committed Cargo.lock and dependency/distribution license review"
+    }
+  },
+  "required_targets": [
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin"
+  ],
+  "nonruntime_api_exclusions": {},
+  "api_replacements": {
+    "docx_source_inventory.NativeDocument.resolve_native_locator": "docx_source_inventory.resolve_native_locator"
+  }
+}

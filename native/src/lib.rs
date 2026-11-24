@@ -171,16 +171,23 @@ pub fn path_text(p: &Path) -> Result<String> {
 }
 
 pub fn describe() -> Value {
+    let manifest: Value=serde_json::from_str(include_str!("../migration-status.json"))
+        .expect("valid native migration manifest");
+    let modules=manifest["module_status"].as_object().expect("module status");
+    let mut blockers:Vec<String>=manifest["capabilities"].as_object().expect("capability gates").values()
+        .filter(|v|v["qualified"]!=true).filter_map(|v|v["blocker"].as_str().map(str::to_owned)).collect();
+    blockers.extend(modules.iter().filter(|(_,v)|*v!="qualified").map(|(name,status)|format!("Unqualified module: {name} ({})",status.as_str().unwrap_or("unknown"))));
+    if ENGINE_VERSION!=manifest["release_target"].as_str().unwrap_or(""){blockers.push("Native engine version is still a migration candidate".into());}
     json!({
         "schema_version": SCHEMA_VERSION, "engine": "rust-native", "engine_version": ENGINE_VERSION,
         "reference_version": REFERENCE_VERSION, "platform": std::env::consts::OS,
         "architecture": std::env::consts::ARCH, "system_python_required": false,
-        "python_fallback": false, "full_workflow_ready": false, "operations": OPERATIONS,
-        "release_blockers": ["PDF provenance and visual crop parity", "native DOCX inventory parity",
-            "translation review and source/delivery mapping parity", "full Markdown rendering and normalization parity",
-            "native installer and Zotero/Obsidian integration parity", "all historical regression tests and platform qualification"],
+        "python_fallback": false, "full_workflow_ready": blockers.is_empty(), "operations": OPERATIONS,
+        "release_target": manifest["release_target"], "module_status": modules,
+        "required_targets": manifest["required_targets"], "release_blockers": blockers,
     })
 }
+
 
 struct Call { args: VecDeque<Value>, kwargs: Map<String, Value> }
 impl Call {

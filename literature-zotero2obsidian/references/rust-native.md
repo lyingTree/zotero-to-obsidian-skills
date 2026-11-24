@@ -4,7 +4,7 @@
 
 当前为迁移候选，不是完整的用户安装包。native/Cargo.toml 的 0.1.0 是原生引擎开发版本，与仓库 VERSION 独立；完成迁移和发布验收前不修改已发布的 1.1.0，不发布 tag/release。
 
-## 已实现的第一批操作
+## 当前已实现的操作
 
 使用 native/src/main.rs 构建的 z2o.exe 或 z2o；describe 返回精确注册的操作、平台、引擎版本及 full_workflow_ready。invoke 读取版本化 JSON 文件，输出 JSON 结果；任何未注册操作均以非零退出码和 UNMIGRATED_OPERATION 报告，不允许静默跳过。
 
@@ -28,7 +28,12 @@
 | format_helpers 增量 | build_rich_table_block：JSON 数据的块状 YAML、逐 sheet 校验、动态围栏长度和 LF/CRLF |
 | normalize_note | normalize_note、normalize_file：保护语法范围、确定性修改、Unicode 变换记录、幂等性、独占发布与回读 |
 | validate_note | validate_note、validate_file、inspect_note：静态 YAML、Rich Table 全工作表、公式、锚点、可见链接与书目检查；inspect_note 返回围栏实际记录 |
-| 其余 17 个生产 Python 模块及上述模块的其他操作 | 尚未完成等价迁移 |
+| glossary_candidates | 原生术语索引、候选及来源证据 |
+| note_pipeline | 原生完整本地机械流水线、来源合同、重放、回读与不可变回执 |
+| lint_presentation / accept_note | 排版提示及实际对象、链接、来源与资源哈希、逐单元机械验收 |
+| validate_delivery 增量 | Rich Table 合并范围、覆盖值、重叠与来源网格检查；完整交付验收未迁移 |
+| docx_source_inventory | 原生 XML、段落/表格/图片关系、嵌入媒体、待核对象及原生位置校验 |
+| 其他操作 | 以 native/migration-status.json 和实际二进制 describe 为准，尚未全部迁移 |
 
 所有原生实现目前均需通过相应回归，不能以新增函数数量充当迁移完成率。YAML 解析使用 serde-saphyr 的重复键拒绝及解析预算；保守修复不重新序列化原有自定义属性，不确定的复杂 YAML 阻断。Unicode 规范化/完整 casefold 算法必须与目标文件系统约定及参考版本对照，不能假设库的 Unicode 数据版本一致。路径使用本机 Path/PathBuf，文件名仍同时检查 UTF-16 单元及可声明的 UTF-8 字节预算。资源相对路径拒绝穿越、设备名和解析到根外的符号链接；并发文件替换不是本阶段只读扫描所能完全消除的风险。
 
@@ -55,7 +60,7 @@
 
 ### 组装引擎的迁移验收边界
 
-新增的 Rust 双遍组装先验证来源计划与翻译槽位并分配编号、锚点，再生成实际 Markdown；对未知/重复/缺失占位符、跨对象锚点、重复标题指向和非法源字段直接阻断。映射使用 Unicode 码点而不是 UTF-8 字节位置，并记录真实 SHA-256。YAML 输出经独立回读核对全部 JSON 数据，保守引号策略不承诺任意 PyYAML 格式字节完全相同；复杂标量、浮点数序列化及旧合同兼容性仍需差分覆盖。完整正文规范化、最终文件验收与写入流水线未迁移，full_workflow_ready 保持 false。
+新增的 Rust 双遍组装先验证来源计划与翻译槽位并分配编号、锚点，再生成实际 Markdown；对未知/重复/缺失占位符、跨对象锚点、重复标题指向和非法源字段直接阻断。映射使用 Unicode 码点而不是 UTF-8 字节位置，并记录真实 SHA-256。YAML 输出经独立回读核对全部 JSON 数据，保守引号策略不承诺任意 PyYAML 格式字节完全相同；复杂标量、浮点数序列化及旧合同兼容性仍需差分覆盖。本地 Markdown 机械处理流水线已实现；完整来源抽取、审阅台账、正式交付、外部集成及原生安装链尚未全部迁移，full_workflow_ready 保持 false。
 
 ### 规范化迁移验收
 
@@ -64,3 +69,7 @@ Rust 规范化器使用独立词法扫描与原始字节区间，处理 CRLF/LF�
 ### 静态验收迁移
 
 静态验收使用真正的 YAML 事件节点定位与结构样式检查、独立安全反序列化、Markdown 注释/代码/公式屏蔽、书目命名空间及全部工作表可见链接扫描。Rich Table 的原子检查复用同一份实际扫描记录，避免两个扫描器认定不同的范围。差分执行原始静态验收和 Rich Table 测试类，核对规则 ID、级别、行号、围栏记录及非解析错误文字；解析库原生诊断文本保留差异，待进一步核对复杂 YAML 类型。静态无发现不等于全文交付或译义通过。
+
+### 2.0.0 发布门槛
+
+native/migration-status.json 登记实际存在的 23 个参考模块和 11 项必要发布能力。scripts/check_native_release.py 使用 AST 枚举参考公开函数和公开类方法，核对实际二进制 describe、缺失接口、资格状态、版本及已提交 Cargo.lock。开发分支报告缺项；VERSION 或 tag 进入 2.x 或明确请求发布检查时，存在缺项便返回非零。模块状态只有经过行为差分、六平台实机运行及完整工作流验收后才能改为 qualified。此门槛不以操作注册数量代替等价性，也不自动创建 tag/Release。
