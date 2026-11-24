@@ -33,3 +33,6 @@ install.local.json
 .env
 .env.*
 .pytest_cache/
+
+# Rust local build output
+/native/target/

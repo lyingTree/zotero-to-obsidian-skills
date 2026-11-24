@@ -1,0 +1,63 @@
+name: Rust native migration
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-native-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Install Rust development toolchain
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+      - name: Check the actual runner target
+        run: rustc +stable -vV
+      - name: Native target tests (including no-Python-PATH process tests)
+        run: cargo +stable test --target ${{ matrix.target }}
+      - name: Build release executable for the exact target
+        run: cargo +stable build --release --target ${{ matrix.target }}
+      # The migration is incomplete. No release artifact is published from this workflow.
+
+  differential:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install reference-only dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Build Rust reference-comparison target
+        run: cargo build --manifest-path native/Cargo.toml
+      - name: Compare Python 1.1.0 and native operations
+        run: python scripts/compare_native_reference.py
