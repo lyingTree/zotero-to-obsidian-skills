@@ -1396,5 +1396,57 @@ class NativePublicHelperComparison(unittest.TestCase):
         for box, ok in [([0, 0, 200, 100], True), ([0, 0, 201, 100], False), ([10, 0, 0, 100], False), ([False, 0, 1, 2], False)]:
             self.assertEqual(self.invoke("prepare_source_inventory.valid_pdf_bbox", box, expected), ok)
 
+
+    def test_all_named_translation_writer_methods_execute_real_reference_decisions(self):
+        import test_translation_review_writer as suite
+        fixture = suite.CompactReviewTests(methodName="test_compact_draft_resumes_exact_decisions_and_keeps_remaining_targets")
+        fixture.setUp()
+        try:
+            writer, unit = fixture.active()
+            writer.scope("passed", "Explicit fixture scope decision.")
+            writer.exclude("two", "Second unit outside this test scope.", "Explicit fixture exclusion.")
+            writer.source_issues_review("pending", "Further source review is needed.")
+            writer.terminology_review("pending", covered_units=["one"], no_unlisted_reason=None)
+            writer.review("pending")
+            unit.check("alignment", "passed", "Actual pair compared.")
+            unit.occurrence("claims", "claim-a", unit.source(fixture.source_text), unit.candidate(fixture.candidate_text),
+                            "failed", "Retain an explicit unresolved comparison.")
+            term = unit.term("badge", "cobalt badge", "concept", unit.source("cobalt badge"))
+            term.search("full_phrase", "cobalt badge", "Actual query.")
+            term.search("family", "badge", "Actual family query.")
+            term.search_status("aliases", "not_applicable", "No alias in the selected source.")
+            term.decide("adopted", "钴蓝色徽片", "Actual fixture decision.", matches=["BADGE"])
+            unit.scan("concept", "scanned", ["badge"], "Actual term candidate.")
+            unit.issue("issue-one", unit.source("cobalt badge"), "Review this excerpt.",
+                       ["cobalt badge"], "Retain pending", "pending", "Independent review still needed.")
+            draft = writer.save_draft(fixture.base.joinpath("method-draft.json"))
+            reference_commands = json.loads(draft.read_text(encoding="utf-8"))["decisions"]
+            commands = []
+            method_classes = {
+                "unit": "ReviewWriter", "scope": "ReviewWriter", "exclude": "ReviewWriter",
+                "source_issues_review": "ReviewWriter", "terminology_review": "ReviewWriter", "review": "ReviewWriter",
+                "check": "UnitReview", "scan": "UnitReview", "occurrence": "UnitReview",
+                "term": "UnitReview", "issue": "UnitReview",
+                "search": "TermReview", "search_status": "TermReview", "decide": "TermReview",
+            }
+            seen = set()
+            for command in reference_commands:
+                method = command["op"]
+                args = {key: value for key, value in command.items() if key != "op"}
+                result = self.invoke("translation_review_writer." + method_classes[method] + "." + method,
+                                     str(fixture.prepared), commands, **args)
+                commands = result["decisions"]
+                seen.add(method)
+                if method == "search":
+                    self.assertEqual([h["entry_id"] for h in result["method_result"]], ["BADGE"])
+            self.assertEqual(seen, set(method_classes))
+            self.assertEqual(result["data"], writer.data)
+            self.assertEqual(commands, reference_commands)
+            again = self.invoke("translation_review_writer.ReviewWriter.unit", str(fixture.prepared), commands, unit_id="one")
+            self.assertEqual(again["decisions"], commands)
+            self.assertTrue(again["method_result"]["reused"])
+        finally:
+            fixture.doCleanups()
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -191,3 +191,7 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 ### 补齐公开生产接口（候选）
 
 新增 ReviewWriter 的 scope/exclude/source_issues_review/terminology_review/review/unit，UnitReview 的 check/scan/occurrence/term/issue，TermReview 的 search/search_status/decide 共 14 个独立 native 操作。接口名保留原类名，调用方式为 prepared_path、已有 decisions 和各方法显式 kwargs；从冻结准备记录重放并真实执行，不接受伪造的可变 review ledger。单元 handle 重复获取保持幂等；实际 search 返回 method_result 中的真实命中，并保留完整新决策日志。新增 render_note.keys/line/digest/canonical/literal/template_fields、glossary_candidates.GlossaryIndex.search/suggest、check_records.AtomicRule.catalog_entry/location 和 prepare_source_inventory.pdf_page_rect/valid_pdf_bbox。所有接口复用当前 native 核心实现，不使用 Python。新增公开渲染辅助函数和实际旋转 PDF 几何差分测试、拒绝缺参和保护字段测试。CLI/progress、报告对象访问器、ImageObjectIndexer 的带对象目录完整行为，以及复杂 JSON 浮点规范化等仍需审查；不改正式资格和发布门禁。
+
+### PDF 对象索引器与逐方法回归
+
+新增 `pdf_image_objects.ImageObjectIndexer.index_page` 原生接口：明确 PDF 与实际页码，可选 object_directory，按源文件 SHA-256 隔离缓存；真实间接调用 XRef+generation 对象与 SMask/Mask 编码流独立绑定，重复相同字节安全复用，未支持的 mask/codec/显示效果保留明确待审原因，严禁覆盖不同旧证据。并保留严格支持的 JPEG/PNG 独立导出候选；不声称等价于旧版每个 raw_asset 格式或可见像素验收。新增实际 JPEG/Flate/SMask 夹具的逐页索引与复用测试。新增 14 个原生翻译复核方法的参考决策逐条执行差分（真实查询、单元绑定幂等、对照 Python 决策日志和数据）。上一轮 58ad068 CPU smoke 已通过；其余任务因新提交取消，等待本提交的完整 CI，保持全部发布门禁。

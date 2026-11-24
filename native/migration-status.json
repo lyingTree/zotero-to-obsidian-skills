@@ -30,11 +30,11 @@
   "capabilities": {
     "all_original_runtime_operations": {
       "qualified": false,
-      "blocker": "Native decision methods, render helpers, glossary class operations, atomic rule lookup and PDF geometry helpers added; report/progress/launcher compatibility and image-indexer parity remain"
+      "blocker": "Native decision methods, renderer helpers, glossary methods, atomic rule lookup, PDF geometry and object indexer implemented; remaining report/progress/launcher compatibility and actual behavioral qualification"
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "Native PDF page/line/object inventory and same-backend replay integrated; independent codec/painted-text, OCR accuracy and all-platform qualification remain"
+      "blocker": "Native PDF page/line/object inventory, replay and source-scoped object/mask stream store implemented; complex codec/painted-text parity and OCR platform qualification remain"
     },
     "docx_source_qualification": {
       "qualified": false,

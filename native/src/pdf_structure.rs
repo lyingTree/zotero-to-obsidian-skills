@@ -504,3 +504,102 @@ mod geometry_helpers_tests{
         assert!(!valid_pdf_bbox(&page,&json!([0,0,0,0])));
     }
 }
+
+
+/// Retain the actual invoked object and optional mask streams in a source-
+/// scoped immutable object store. Native standalone images are supplementary
+/// candidates, not replacements for the raw streams or rendered page.
+fn object_store_dir(p:&Path)->Result<PathBuf>{
+    match fs::symlink_metadata(p){
+        Ok(m)=>{
+            ensure!(m.is_dir()&&!m.file_type().is_symlink(),"Refusing linked/non-directory image object store");
+            #[cfg(windows)]{
+                use std::os::windows::fs::MetadataExt;
+                ensure!(m.file_attributes()&0x400==0,"Refusing reparse-point image object store");
+            }
+        },
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>fs::create_dir_all(p)?,
+        Err(e)=>return Err(e.into())
+    }
+    files::canonical(p)
+}
+fn store_stream(pdf:&Pdf,id:(u32,u16),root:&Path,source:&Value)->Result<Value>{
+    let s=pdf.raw_object(id.0,id.1)?;
+    let hash=files::digest(&s.content);
+    let mut row=json!({"image_xref":id.0,"generation":id.1,"encoded_stream_sha256":hash,
+        "encoded_stream_bytes":s.content.len(),"source_fidelity":"not_assessed"});
+    if s.content.len()>128*1024*1024{row["status"]=json!("blocked_budget");return Ok(row);}
+    let p=root.join(format!("xref-{:06}-g{}.bin",id.0,id.1));
+    ensure!(path_text(&p)?!=source["path"],"Image evidence must not replace source PDF");
+    if p.exists(){crate::check_write::no_link(&p)?;}
+    pipeline::publish(&p,&s.content)?;
+    crate::check_write::no_link(&p)?;
+    let actual=check_ledger::bind_file(&p)?;
+    ensure!(actual["sha256"]==hash,"Stored stream differs from actual object");
+    row["status"]=json!("raw_stream_stored");
+    row["asset"]=actual;Ok(row)
+}
+/// Original ImageObjectIndexer.index_page ABI: explicit PDF path and page,
+/// optional object_directory replaces the Python context manager. Preserve
+/// occurrence identities even for unsupported filters/display effects, and
+/// bind all emitted bytes. Repeated pages/objects reuse identical streams.
+pub fn index_page_with_objects(source:&Path,page:u64,object_directory:Option<&Path>,expected_sha:Option<&str>,
+    mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    let before=check_ledger::bind_file(source)?;
+    if let Some(expected)=expected_sha{ensure!(before["sha256"]==expected,"Original PDF hash differs from expected binding");}
+    let pdf=Pdf::open(source)?;
+    let mut result=pdf.index(page)?;
+    result["source_file"]=before.clone();result["page"]=json!(page);
+    let Some(directory)=object_directory else{
+        ensure!(check_ledger::bind_file(source)?==before,"Source PDF changed while indexing");
+        return Ok(result);
+    };
+    let root=object_store_dir(directory)?;
+    let root=object_store_dir(&root.join(format!("source-{}",before["sha256"].as_str().context("Source digest")?)))?;
+    let _lock=crate::check_write::lock_target(&root.join("object-store"))?;
+    let objects=result["objects"].as_array().context("Actual indexed image objects required")?.clone();
+    let mut streams=BTreeMap::<(u32,u16),Value>::new();
+    let mut stored=Vec::with_capacity(objects.len());
+    for(i,mut row)in objects.into_iter().enumerate(){
+        let xref=u32::try_from(row["image_xref"].as_u64().context("Actual image XRef")?)?;
+        let generation=u16::try_from(row["generation"].as_u64().context("Actual generation")?)?;
+        let id=(xref,generation);
+        if !streams.contains_key(&id){streams.insert(id,store_stream(&pdf,id,&root,&before)?);}
+        let raw=&streams[&id];
+        ensure!(raw["encoded_stream_sha256"]==row["encoded_stream_sha256"],"Actual encoded object differs from index");
+        row["encoded_stream"]=raw.clone();
+        // Soft and explicit masks are independent object dependencies;
+        // storing their encoded bytes does not assert decoded alpha fidelity.
+        for key in ["smask","mask"]{
+            let locator=row[key].clone();
+            if let Some(x)=locator["xref"].as_u64(){
+                let mid=(u32::try_from(x)?,u16::try_from(locator["generation"].as_u64().context("Mask generation")?)?);
+                ensure!(mid!=id,"Recursive image mask");
+                if !streams.contains_key(&mid){
+                    match store_stream(&pdf,mid,&root,&before){
+                        Ok(v)=>{streams.insert(mid,v);},
+                        Err(e)=>{streams.insert(mid,json!({"image_xref":mid.0,"generation":mid.1,"status":"unresolved","reason":format!("{e:#}")}));},
+                    }
+                }
+                row[format!("{key}_stream")]=streams[&mid].clone();
+            }else if locator["direct_or_other"]==true{
+                row[format!("{key}_stream")]=json!({"status":"unresolved_direct_or_other","review_required":true});
+            }
+        }
+        let name=root.join(format!("xref-{xref:06}-g{generation}"));
+        match export_indexed(&pdf,source,&before,page,xref,&name,&result){
+            Ok(v)=>{row["raw_asset"]=v["asset"].clone();row["extraction"]=v;},
+            Err(e)=>{row["extraction"]=json!({"status":"standalone_extraction_unavailable","reason":format!("{e:#}"),"review_required":true});},
+        }
+        stored.push(row);progress(i+1,result["objects"].as_array().unwrap().len(),"actual image objects and masks");
+    }
+    // Revalidate all retained files at the point of returning the index.
+    for r in streams.values(){if let Some(b)=r.get("asset"){ensure!(check_ledger::bind_file(&crate::path(&b["path"])?)?==*b,"Image stream changed during indexing");}}
+    for r in &stored{if let Some(b)=r.get("raw_asset"){ensure!(check_ledger::bind_file(&crate::path(&b["path"])?)?==*b,"Standalone object changed during indexing");}}
+    ensure!(check_ledger::bind_file(source)?==before,"Source PDF changed during image object extraction");
+    result["objects"]=json!(stored);result["object_directory"]=json!(path_text(&root)?);
+    result["object_streams"]=json!(streams.into_values().collect::<Vec<_>>());
+    result["source_fidelity"]=json!("not_assessed");
+    result["image_evidence_ready"]=json!(false);
+    Ok(result)
+}

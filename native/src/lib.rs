@@ -129,6 +129,7 @@ pub const OPERATIONS: &[&str] = &[
     "mapping_rerun.compare_stable_projections",
     "mapping_rerun.compare_bound_maps",
     "pdf_image_objects.index_page_structure",
+    "pdf_image_objects.ImageObjectIndexer.index_page",
     "pdf_image_objects.export_image_object",
     "pdf_image_objects.inspect_crop_boundaries",
     "pdf_image_objects.render_page_region",
@@ -1063,6 +1064,16 @@ pub fn invoke(request: Value) -> Result<Value> {
         "check_records.AtomicRule.catalog_entry" | "check_records.AtomicRule.location" => {
             let root=path(&c.positional("skills_root")?)?;let id=string(&c.required("rule_id")?,"rule_id")?;
             c.finish()?;check_ledger::atomic_rule(&root,&id,op.ends_with(".location"),|i,n,label|eprintln!("[{i}/{n}] {label}"))?
+        }
+        "pdf_image_objects.ImageObjectIndexer.index_page" => {
+            let source=path(&c.positional("source_pdf")?)?;
+            let n=c.positional("page_number")?.as_u64().context("page_number must be an integer")?;
+            let dir=c.option("object_directory",Value::Null);
+            let dir=if dir.is_null(){None}else{Some(path(&dir)?)};
+            let expected=c.option("expected_source_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
+            c.finish()?;
+            pdf_structure::index_page_with_objects(&source,n,dir.as_deref(),expected.as_deref(),|i,n,label|eprintln!("[{i}/{n}] {label}"))?
         }
         "pdf_image_objects.index_page_structure" => {
             let p=path(&c.positional("source_pdf")?)?;let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;

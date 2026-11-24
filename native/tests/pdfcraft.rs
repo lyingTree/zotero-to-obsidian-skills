@@ -78,6 +78,16 @@ fn strict_native_image_extraction_preserves_bytes_and_alpha(){
     doc.objects.insert(pages,Object::Dictionary(dictionary!{"Type"=>"Pages","Kids"=>vec![Object::Reference(page)],"Count"=>1,"MediaBox"=>vec![0.into(),0.into(),100.into(),100.into()]}));
     let catalog=doc.add_object(dictionary!{"Type"=>"Catalog","Pages"=>pages});doc.trailer.set("Root",catalog);doc.save(&pdf).unwrap();
     let original=fs::read(&pdf).unwrap();
+    let store=root.join("object-store");
+    let indexed=z2o_native::pdf_structure::index_page_with_objects(&pdf,1,Some(&store),None,|_,_,_|{}).unwrap();
+    assert_eq!(indexed["objects"].as_array().unwrap().len(),2);
+    assert_eq!(indexed["object_streams"].as_array().unwrap().len(),3);
+    let found=indexed["objects"].as_array().unwrap().iter().find(|r|r["image_xref"]==f.0).unwrap();
+    assert_eq!(found["smask_stream"]["image_xref"],m.0);
+    assert_eq!(fs::read(found["smask_stream"]["asset"]["path"].as_str().unwrap()).unwrap(),vec![255,127]);
+    let repeated=z2o_native::pdf_structure::index_page_with_objects(&pdf,1,Some(&store),None,|_,_,_|{}).unwrap();
+    assert_eq!(repeated,indexed);
+    assert!(z2o_native::pdf_structure::index_page_with_objects(&pdf,1,Some(&store),Some(&"0".repeat(64)),|_,_,_|{}).is_err());
     let a=export_image_object(&pdf,1,j.0,&root.join("jpeg"),None).unwrap();
     assert_eq!(a["method"],"original_extracted_bytes");assert_eq!(fs::read(root.join("jpeg.jpeg")).unwrap(),jpeg);
     let b=export_image_object(&pdf,1,f.0,&root.join("alpha"),None).unwrap();
