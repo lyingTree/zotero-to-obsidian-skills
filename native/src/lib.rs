@@ -36,6 +36,7 @@ pub mod handoff_conflicts;
 pub mod pdf_structure;
 pub mod pdfcraft_backend;
 pub mod ocr_backend;
+pub mod ocr_pdf;
 pub mod translation_validate;
 pub mod translation_writer;
 pub mod translation_tasks;
@@ -123,6 +124,7 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_source_inventory.ocr_hardware_plan",
     "prepare_source_inventory.inspect_ocr_package",
     "prepare_source_inventory.recognize_ocr_png",
+    "prepare_source_inventory.prepare_pdf_ocr_evidence",
     "prepare_source_inventory.prepare_pdfcraft_evidence",
     "prepare_source_inventory.prepare_pdf_structure_evidence",
     "prepare_source_inventory.record_figure_edges",
@@ -769,6 +771,26 @@ pub fn invoke(request: Value) -> Result<Value> {
         }
         "mapping_rerun.compare_stable_projections" => {
             let a=c.positional("baseline")?;let b=c.positional("current")?;c.finish()?;mapping_compare::compare(&a,&b)?
+        }
+        "prepare_source_inventory.prepare_pdf_ocr_evidence" => {
+            let source=path(&c.positional("source_pdf")?)?;
+            let dest=path(&c.required("destination")?)?;
+            let manifest=c.option("package_manifest",Value::Null);
+            let manifest=if manifest.is_null(){None}else{Some(path(&manifest)?)};
+            let package_sha=c.option("expected_package_sha256",Value::Null);
+            let package_sha=if package_sha.is_null(){None}else{Some(string(&package_sha,"expected_package_sha256")?)};
+            let expected=c.option("expected_source_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
+            let profile=string(&c.option("profile",json!("auto")),"profile")?;
+            let layout=string(&c.option("layout",json!("auto")),"layout")?;
+            let mode=string(&c.option("mode",json!("auto")),"mode")?;
+            let dpi=c.option("dpi",json!(200)).as_u64().context("dpi must be an integer")?;
+            let regions=c.option("regions",json!({}));let coordinate_system=c.option("coordinate_system",Value::Null);
+            c.finish()?;
+            let opt=ocr_pdf::Options{package_manifest:manifest.as_deref(),package_sha:package_sha.as_deref(),
+                profile:&profile,layout:&layout,mode:&mode,dpi,expected_source_sha:expected.as_deref(),
+                regions:&regions,coordinate_system:&coordinate_system};
+            json!(path_text(&ocr_pdf::prepare(&source,&dest,opt,|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
         }
         "prepare_source_inventory.ocr_hardware_plan" => {
             let profile=string(&c.option("profile",json!("auto")),"profile")?;c.finish()?;

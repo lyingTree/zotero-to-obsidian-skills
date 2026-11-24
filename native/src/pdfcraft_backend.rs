@@ -98,7 +98,15 @@ impl Backend{
         engine.verify()?;Ok(engine)
     }
     pub fn len(&self)->usize{self.pages.len()}
-    fn verify(&self)->Result<()>{
+    pub(crate) fn source_binding(&self)->&Value{&self.source}
+    pub(crate) fn structure(&self,page:u64)->Result<Value>{
+        let mut result=self.structural.index(page)?;
+        self.verify()?;
+        result["source_file"]=self.source.clone();
+        result["page"]=json!(page);Ok(result)
+    }
+
+    pub(crate) fn verify(&self)->Result<()>{
         ensure!(check_ledger::bind_file(&self.source_path)?==self.source,"Source PDF changed during evidence preparation");
         Ok(())
     }

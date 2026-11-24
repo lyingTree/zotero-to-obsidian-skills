@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "PdfCraft rendering plus CPU-first PP-OCRv6 inference candidate; scanned/hybrid inventory integration, real OCR accuracy, crop/object and six-platform parity remain"
+      "blocker": "PdfCraft plus CPU-first PP-OCRv6 page routing, resumable evidence and region candidate implemented; actual model/CPU qualification, complete source inventory/figure export/boundary parity remain"
     },
     "docx_source_qualification": {
       "qualified": false,

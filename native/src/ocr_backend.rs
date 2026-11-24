@@ -211,10 +211,11 @@ impl Engine{
             ocr.init_models_no_angle(package.utf8("detector")?,package.utf8("recognizer")?,package.utf8("dictionary")?,threads)
                 .context("PP-OCRv6 model initialisation failed")?;
             let layout=if package.resources.contains_key("layout"){
-                let session=ort::session::Session::builder()?
-                    .with_intra_threads(threads)?.with_inter_threads(1)?
-                    .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?
-                    .commit_from_file(package.get("layout")?)?;
+                let session=ort::session::Session::builder().map_err(ppocr_rs::OcrError::from)?
+                    .with_intra_threads(threads).map_err(ppocr_rs::OcrError::from)?
+                    .with_inter_threads(1).map_err(ppocr_rs::OcrError::from)?
+                    .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3).map_err(ppocr_rs::OcrError::from)?
+                    .commit_from_file(package.get("layout")?).map_err(ppocr_rs::OcrError::from)?;
                 Some(LayoutAnalyzer::from_session(session))
             }else{None};
             let orientation=if package.resources.contains_key("orientation"){

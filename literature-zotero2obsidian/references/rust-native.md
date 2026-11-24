@@ -141,3 +141,7 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 新增 `prepare_source_inventory.ocr_hardware_plan`、`inspect_ocr_package`、`recognize_ocr_png`。按总内存和可用内存选择已安装 tiny/small/medium 模型，限制 det/rec 线程、检测输入尺寸和单页像素；layout 按需加载，orientation 单独记录原始方向和逆变换。辅助模型的线程限制、低端 CPU 兼容及内存峰值仍需实测。模型包 schema 1 为 `{"engine":"ppocr-v6","runtime":{"platform":"linux","architecture":"x86_64","version":"1.28.2","file":{"path":"runtime/libonnxruntime.so","sha256":"<actual>"}}, "profiles":{"tiny":{"detector":{...},"recognizer":{...},"dictionary":{...}}},"auxiliary":{"orientation":{...},"layout":{...}},"schema_version":1}`。所有资源记录均为包根目录相对路径+真实 SHA-256，manifest SHA-256 须来自独立可信安装配置。拒绝不匹配平台、目录穿越、链接及修改后的资产；不自动下载、执行或信任未经批准的远程模型。识别字典必须从对应模型的 inference.yml 提取，保留空行和 token 顺序，不可混用通用训练字典。包内 ONNX 应为自包含权重，安装器需验证发行来源和外部数据引用。
 
 输出保留逐行、逐词检测/识别分数、原始图像坐标、方向校正后的坐标、可选版面区域及全部 OCR 候选；未知/越界框和低分候选只能触发复核。分数不是正确概率；不得自动通过验收。MiniCPM-OCR/Jev、表格结构重建、可信资源分发、实际 CPU 推理六平台测试及完整扫描 PDF 工作流均待继续实现/验证。现已回收上轮 PdfCraft 实际依赖锁文件，加入 OCR 后须由 CI 重新解析并提交最终 lockfile。
+
+### PDF 逐页 OCR 证据与恢复
+
+新增 `prepare_source_inventory.prepare_pdf_ocr_evidence`。默认 auto 策略按实际页文字层与图像调用分类：正常文字候选不加载 OCR；无文字/异常文字层或占页大图伴随文字层时整页 OCR；含局部图像的混合页保留原文字与页面图像，提示显式区域复核。可按 `regions={"3":[[x0,y0,x1,y1]]}` 配合未旋转 PDF 点坐标执行区域 OCR，也可 mode=all。完整扫描页、原文字层、OCR 文字/方向/置信分数、源图和反算 PDF 坐标分别保存，不自动覆盖或合并。job.json 冻结原 PDF、模型包、DPI、策略和版本；成功页单独发布、恢复时重验文件，失败尝试保留并允许同输入重试。报告始终 source_inventory_ready=false、acceptance_ready=false；不冒充完整的 prepare_sources。尚需真实模型/平台测试、模型安装分发、表格/公式、GPU 扩展、最终内容映射与语义验收。布局会使用内存预算控制的 CPU 会话，方向分类器的线程/峰值预算仍需独立测试。
