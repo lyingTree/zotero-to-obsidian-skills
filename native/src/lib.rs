@@ -35,6 +35,7 @@ pub mod runtime_reports;
 pub mod native_install;
 pub mod zotero_local;
 pub mod vault_library;
+pub mod vault_publish;
 pub mod workflow;
 pub mod mapping_compare;
 pub mod handoff_conflicts;
@@ -235,6 +236,7 @@ pub const OPERATIONS: &[&str] = &[
     "zotero_local.catalog",
     "vault_library.index",
     "vault_library.match_reference",
+    "vault_publish.plan",
     "check_records.CheckFinding.to_dict",
     "check_records.CheckRecordsReport.offline_records_ready",
     "check_records.CheckRecordsReport.recorded_checks_complete",
@@ -1293,6 +1295,20 @@ pub fn invoke(request: Value) -> Result<Value> {
             let catalog=path(&c.positional("catalog_path")?)?;let ch=string(&c.required("expected_catalog_sha256")?,"expected_catalog_sha256")?;
             let reference=c.positional("reference")?;c.finish()?;
             vault_library::match_reference(&index,&ih,&catalog,&ch,&reference)?
+        }
+        "vault_publish.plan" => {
+            let run=path(&c.positional("run_path")?)?;
+            let run_sha=string(&c.required("expected_run_sha256")?,"expected_run_sha256")?;
+            let vault=path(&c.required("vault_root")?)?;
+            let literature=string(&c.required("literature_relative")?,"literature_relative")?;
+            let assets=string(&c.required("assets_relative")?,"assets_relative")?;
+            let note=string(&c.required("note_relative")?,"note_relative")?;
+            let expected=c.required("expected_existing_sha256")?;
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_existing_sha256")?)};
+            let inspect=c.option("inspect_workflow",json!(true)).as_bool().context("inspect_workflow must be boolean")?;
+            c.finish()?;
+            vault_publish::plan(vault_publish::Options{run:&run,run_sha:&run_sha,vault:&vault,literature_relative:&literature,
+                assets_relative:&assets,note_relative:&note,expected_existing_sha:expected.as_deref(),inspect_workflow:inspect},runtime_reports::progress_line)?
         }
         "native_runtime.package" => {
             let source=path(&c.positional("source_root")?)?;let dest=path(&c.positional("destination")?)?;

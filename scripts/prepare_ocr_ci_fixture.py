@@ -19,13 +19,16 @@ import zipfile
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from PIL import Image, ImageDraw, ImageFont
-
 ROOT = Path(os.environ["Z2O_OCR_FIXTURE_DIR"]).resolve()
 ORT_VERSION = "1.32.0"
-# Pinned checksum published on the exact official PyPI release file page.
-ORT_WHEEL_NAME = "onnxruntime-1.32.0-cp312-cp312-manylinux_2_28_x86_64.whl"
-ORT_WHEEL_SHA256 = "99e1074c4b2197accd5073052a465361be17b89c093b8ffb6e6bd8f986c52df8"
+# Exact published PyPI file digests for the supported architecture candidates.
+ASSET_CATALOG = Path(__file__).resolve().parents[1].joinpath("native", "ocr-cpu-assets.json")
+TARGET = os.environ.get("Z2O_OCR_TARGET", "x86_64-unknown-linux-gnu")
+RUNTIME_SPEC = json.loads(ASSET_CATALOG.read_text(encoding="utf-8"))["targets"][TARGET]
+if RUNTIME_SPEC.get("status") == "blocked":
+    raise RuntimeError(RUNTIME_SPEC["reason"])
+ORT_WHEEL_NAME = RUNTIME_SPEC["wheel"]
+ORT_WHEEL_SHA256 = RUNTIME_SPEC["sha256"]
 HF_ORG = "PaddlePaddle"
 MAX_DOWNLOAD = 256 * 1024 * 1024
 HEX40 = re.compile(r"[0-9a-f]{40}")
@@ -85,8 +88,8 @@ def official_cpu_runtime() -> tuple[dict, dict]:
     if len(archive) != asset.get("size") or sha256(archive).hexdigest() != ORT_WHEEL_SHA256:
         raise ValueError("Pinned CPU wheel size or SHA-256 mismatch.")
     records = {}
-    runtime_name = f"libonnxruntime.so.{ORT_VERSION}"
-    permitted = {runtime_name, "libonnxruntime_providers_shared.so"}
+    runtime_names = set(RUNTIME_SPEC["runtime_names"])
+    permitted = runtime_names | set(RUNTIME_SPEC["dependencies"])
     with zipfile.ZipFile(BytesIO(archive)) as wheel:
         # Only these native regular shared libraries are materialized. Never
         # install/import a wheel, follow archive symlinks, or extract scripts.
@@ -104,10 +107,12 @@ def official_cpu_runtime() -> tuple[dict, dict]:
             if len(data) != member.file_size:
                 raise ValueError("Truncated or oversized library.")
             records[path.name] = write(f"runtime/{path.name}", data)
-    if runtime_name not in records:
-        raise ValueError("CPU wheel does not contain the expected standalone runtime library.")
+    found = runtime_names & records.keys()
+    if len(found) != 1:
+        raise ValueError("CPU wheel does not contain exactly one expected standalone runtime library.")
+    runtime_name = next(iter(found))
     return (
-        {"platform": "linux", "architecture": "x86_64", "version": ORT_VERSION,
+        {"platform": RUNTIME_SPEC["platform"], "architecture": RUNTIME_SPEC["architecture"], "version": ORT_VERSION,
          "file": records[runtime_name],
          "dependencies": [b for n, b in records.items() if n != runtime_name]},
         {"distribution": "Microsoft onnxruntime CPU wheel (native libraries only)",
@@ -117,9 +122,15 @@ def official_cpu_runtime() -> tuple[dict, dict]:
     )
 
 
-def model(repo: str, filenames: tuple[str, ...]) -> tuple[dict[str, bytes], dict]:
+def model(repo: str, filenames: tuple[str, ...], pinned: dict | None = None) -> tuple[dict[str, bytes], dict]:
     identity = f"{HF_ORG}/{repo}"
-    entry = metadata(f"https://huggingface.co/api/models/{identity}?blobs=true")
+    if pinned is not None:
+        revision = pinned.get("revision", "")
+        if pinned.get("repository") != identity or not HEX40.fullmatch(revision):
+            raise ValueError("Shared model provenance does not bind the expected repository/revision.")
+        entry = metadata(f"https://huggingface.co/api/models/{identity}/revision/{revision}?blobs=true")
+    else:
+        entry = metadata(f"https://huggingface.co/api/models/{identity}?blobs=true")
     revision = entry.get("sha", "")
     if entry.get("id") != identity or not HEX40.fullmatch(revision):
         raise ValueError("Cannot establish an immutable official model revision.")
@@ -149,7 +160,10 @@ def model(repo: str, filenames: tuple[str, ...]) -> tuple[dict[str, bytes], dict
             raise ValueError("The expected standalone ONNX weight lacks LFS provenance.")
         result[name] = data
         provenance[name] = {"url": url, "sha256": digest, "upstream_identity": expected}
-    return result, {"repository": identity, "revision": revision, "files": provenance}
+    record = {"repository": identity, "revision": revision, "files": provenance}
+    if pinned is not None and record != pinned:
+        raise ValueError("Shared CPU qualification must use the same exact model artifacts.")
+    return result, record
 
 
 def recognition_dictionary(config: bytes) -> bytes:
@@ -179,35 +193,63 @@ def main() -> None:
     print("[1/4] Verify official CPU runtime", flush=True)
     runtime, runtime_provenance = official_cpu_runtime()
     print("[2/4] Resolve and verify official Tiny detection and recognition weights", flush=True)
-    det, det_source = model("PP-OCRv6_tiny_det_onnx", ("inference.onnx",))
-    rec, rec_source = model("PP-OCRv6_tiny_rec_onnx", ("inference.onnx", "inference.yml"))
+    shared_path = os.environ.get("Z2O_OCR_SHARED_FIXTURE_DIR")
+    shared = None
+    if shared_path:
+        shared_root = Path(shared_path).resolve()
+        raw_manifest = shared_root.joinpath("package.json").read_bytes()
+        expected = shared_root.joinpath("package.sha256").read_text(encoding="ascii").strip()
+        if sha256(raw_manifest).hexdigest() != expected:
+            raise ValueError("Shared qualification manifest changed.")
+        shared = json.loads(raw_manifest)
+    det, det_source = model("PP-OCRv6_tiny_det_onnx", ("inference.onnx",),
+                            shared["provenance"]["detector"] if shared else None)
+    rec, rec_source = model("PP-OCRv6_tiny_rec_onnx", ("inference.onnx", "inference.yml"),
+                            shared["provenance"]["recognizer"] if shared else None)
     detector = write("tiny/det.onnx", det["inference.onnx"])
     recognizer = write("tiny/rec.onnx", rec["inference.onnx"])
     config = write("tiny/rec_inference.yml", rec["inference.yml"])
     dictionary = write("tiny/dict.txt", recognition_dictionary(rec["inference.yml"]))
-    print("[3/4] Save exact test-resource manifest", flush=True)
+    print("[3/4] Prepare the exact bilingual image-only scan", flush=True)
+    if shared:
+        for name in ("fixture.pdf", "fixture.png"):
+            data = shared_root.joinpath(name).read_bytes()
+            expected = shared["provenance"]["fixtures"][name]
+            if expected["sha256"] != sha256(data).hexdigest() or expected["size"] != len(data):
+                raise ValueError("Shared test fixture changed.")
+            write(name, data)
+        if shared["profiles"]["tiny"] != {"detector": detector, "recognizer": recognizer, "dictionary": dictionary}:
+            raise ValueError("Test model bindings differ between CPU platforms.")
+    else:
+        # Pillow and Noto CJK are development-only tools on the generating
+        # Linux runner. Other platforms consume the exact original bytes.
+        from PIL import Image, ImageDraw, ImageFont
+        font_path = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
+        font = ImageFont.truetype(str(font_path), size=76, index=2)
+        with Image.new("RGB", (1600, 480), "white") as image:
+            draw = ImageDraw.Draw(image)
+            draw.text((80, 65), "NATIVE OCR TEST 12345", fill="black", font=font)
+            draw.text((80, 235), "海洋重力波 2026", fill="black", font=font)
+            image.save(ROOT.joinpath("fixture.png"), format="PNG")
+            image.save(ROOT.joinpath("fixture.pdf"), format="PDF", resolution=144.0)
+    fixtures = {}
+    for name in ("fixture.pdf", "fixture.png"):
+        raw = ROOT.joinpath(name).read_bytes()
+        fixtures[name] = {"sha256": sha256(raw).hexdigest(), "size": len(raw)}
+    print("[4/4] Save exact test-resource manifest", flush=True)
     package = {
         "schema_version": 1,
         "engine": "ppocr-v6",
         "runtime": runtime,
         "profiles": {"tiny": {"detector": detector, "recognizer": recognizer, "dictionary": dictionary}},
         "provenance": {"runtime": runtime_provenance, "detector": det_source,
-                       "recognizer": rec_source, "recognition_config": config,
+                       "recognizer": rec_source, "recognition_config": config, "fixtures": fixtures,
                        "boundary": "CI-resolved test assets only; not a qualified production distribution catalog."},
     }
     raw = (json.dumps(package, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     binding = write("package.json", raw)
     write("package.sha256", (binding["sha256"] + "\n").encode("ascii"))
     print(f"Package SHA-256: {binding['sha256']}", flush=True)
-    print("[4/4] Generate invented bilingual image-only scan", flush=True)
-    font_path = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
-    font = ImageFont.truetype(str(font_path), size=76, index=2)
-    with Image.new("RGB", (1600, 480), "white") as image:
-        draw = ImageDraw.Draw(image)
-        draw.text((80, 65), "NATIVE OCR TEST 12345", fill="black", font=font)
-        draw.text((80, 235), "海洋重力波 2026", fill="black", font=font)
-        image.save(ROOT.joinpath("fixture.png"), format="PNG")
-        image.save(ROOT.joinpath("fixture.pdf"), format="PDF", resolution=144.0)
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "Native PDF page/line/object inventory, replay and source-scoped object/mask stream store implemented; complex codec/painted-text parity and OCR platform qualification remain"
+      "blocker": "Native PDF replay and Linux x64 bilingual CPU OCR verified at 442f0a0; exact additional four-platform CPU inference matrix added; Intel macOS compatible runtime unavailable in pinned catalog, model and full codec/painted-text qualification remain"
     },
     "docx_source_qualification": {
       "qualified": false,
@@ -54,7 +54,7 @@
     },
     "native_installation_and_external_integration": {
       "qualified": false,
-      "blocker": "Native candidate installer plus local Zotero API v3 GET item/collection/attachment/catalog and read-only vault identity index/matching candidates implemented; actual desktop integration, write transaction, note sync, and trusted release distribution remain"
+      "blocker": "Native offline installer, local Zotero GET metadata/attachments/catalog, vault identity index and exact read-only publication preflight implemented; actual desktop/API qualification, transaction/rollback and explicit note sync remain"
     },
     "twelve_skill_production_entrypoints": {
       "qualified": false,
@@ -70,7 +70,7 @@
     },
     "locked_dependencies_and_license_review": {
       "qualified": false,
-      "blocker": "Committed actual PdfCraft+PP-OCR Cargo.lock from successful CI resolution; verify locked builds, model/runtime distribution licenses and a trusted production asset catalog"
+      "blocker": "Committed actual Cargo.lock and official pinned 1.32.0 CPU wheel identities for five target candidates; standalone library compatibility, license/distribution audit and missing Intel macOS artifact remain"
     }
   },
   "required_targets": [

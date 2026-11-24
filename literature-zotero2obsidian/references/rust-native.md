@@ -209,3 +209,11 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 新增 `vault_library.index(vault_root, literature_relative, excluded_relative=[], personal_library_id=..., output_path=...)` 及 `vault_library.match_reference(index_path, reference, expected_index_sha256=..., catalog_path=..., expected_catalog_sha256=...)`（JSON kwargs 或显式命名输入）。扫描已确认文献根下真实笔记，排除模板/附件/工作稿等目录并保留无法读取记录；仅使用末尾原条目 URI，不将正文引用中的 DOI 当作笔记身份。结合实际绑定 Zotero catalog、完整题名、全部作者、年份、文献类型及 DOI；同 DOI 冲突、重名、重复笔记保持歧义。个人库映射需明确实际库 ID，唯一候选仍须独立版本确认。空结果只针对已绑定快照，不证明当前实时库无文献。真实笔记读取和篡改负例测试。两项均不修改真实库，正式桌面集成和提交链仍需资格验证。
 
 补齐 author affiliation_numbers / affiliation_units、未编号及缺失理由、重复关系、同源归属，以及实际 bibliography call 的独立 citation unit 和重复参考锚点约束。当前 `NATIVE_DELIVERY_PARITY_PENDING` 等最终阻断仍保留。442f0a0 实际 CI 编译后二进制覆盖 23 个参考模块、0 缺失公开符号，差分和 CPU OCR 通过；本次新增功能仍须 CI 验收。
+
+### 实际 CPU OCR 平台资源门禁
+
+`native/ocr-cpu-assets.json` 固定 Microsoft 官方 PyPI 1.32.0 CPU wheel 发布页的实际文件名和 SHA-256：Linux x86-64/ARM64、Windows x86-64/ARM64、macOS ARM64。仅提取明确定名的独立原生库及依赖，若 wheel 缺少独立库则测试失败，不安装或导入 wheel。新增四个真实目标的 CPU inference CI，复用成功的 Linux x86-64 扫描版 PDF、PNG、原始模型 revision 与完整资源哈希，使用同一个中英文验收测试及空 PATH、禁用 GPU 的真实程序。PyPI 1.32.0 发布文件没有 Intel macOS wheel；该目标显式记录上游 API-28 CPU artifact blocker，不用 Rosetta/ARM 包冒充 x86-64 推理验收。现有六平台普通二进制/安装任务不变。所有额外 OCR 平台是待验收候选，实际完整模型包、生产分发与许可证尚未资格确认。来源：https://pypi.org/project/onnxruntime/1.32.0/#files 。
+
+### 原生写库预检与逐模块验收报告
+
+新增 `vault_publish.plan(run_path, expected_run_sha256=..., vault_root=..., literature_relative=..., assets_relative=..., note_relative=..., expected_existing_sha256=..., inspect_workflow=true)`。使用明确真实 vault 根及原生 run.json，逐级检查实际路径、Unicode/case 冲突、链接和设备名，绑定工作区、候选 MD、源附件、实际嵌入资源和既有目标字节；工作区及候选资源须位于库外。仅生成只读计划，不创建任何 vault 目录或覆盖文件。相同字节资源仍需归属核验，冲突必须规划新路径。写前调用实际完整工作流检查，不以预检替代用户授权或最终验收；尚未实现正式 vault 提交事务、回滚与 Zotero note 写入。`scripts/check_native_release.py --report-path` 直接保存真实编译二进制和参考 AST 对照的 23 模块完整 JSON，CI 上传 native-module-progress 回执，所有原有资格/版本门禁不变。

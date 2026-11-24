@@ -110,6 +110,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT.joinpath("native", "target", "debug", "z2o.exe" if os.name == "nt" else "z2o"))
     parser.add_argument("--require-release", action="store_true")
+    parser.add_argument("--report-path", type=Path, help="Write the actual compiled module report to a new JSON file.")
     args = parser.parse_args()
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     version = ROOT.joinpath("VERSION").read_text(encoding="utf-8").strip()
@@ -123,7 +124,11 @@ def main():
     ref = os.environ.get("GITHUB_REF", "")
     report = evaluate(manifest, json.loads(proc.stdout), reference_inventory(ROOT), version, crate,
                       ROOT.joinpath("native", "Cargo.lock").is_file() and tracked, ref)
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    if args.report_path is not None:
+        with args.report_path.open("x", encoding="utf-8", newline="\n") as output:
+            output.write(rendered)
+    print(rendered, end="")
     releasing = args.require_release or version.split(".", 1)[0] == "2" or bool(re.match(r"refs/tags/v?2(?:[.-]|$)", ref))
     return int(bool(report["configuration_errors"]) or releasing and not report["ready_for_release"])
 
