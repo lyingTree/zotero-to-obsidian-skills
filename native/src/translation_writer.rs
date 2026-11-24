@@ -398,8 +398,10 @@ impl Writer{
             let mut hits=HashMap::new();
             for s in term["searches"].as_object().unwrap().values(){for q in rows(&s["queries"],"queries")?{for h in rows(&q["hits"],"hits")?{hits.insert(text(&h["entry_id"],"entry ID")?,h.clone());}}}
             ensure!(ids.iter().all(|id|hits.contains_key(id.as_str()))&&(decision!="adopted"||!ids.is_empty()),"TRW_GLOSSARY_HIT: choose only actual search result IDs");
+            // Resolve the selected hits before mutating the term that owns their borrowed IDs.
+            let glossary_matches=json!(ids.iter().map(|id|hits[id.as_str()].clone()).collect::<Vec<_>>());
             term["decision"]=c["decision"].clone();term["translation"]=c["translation"].clone();term["decision_reason"]=c["reason"].clone();
-            term["glossary_matches"]=json!(ids.iter().map(|id|hits[id.as_str()].clone()).collect::<Vec<_>>());term["resolution_basis"]=c["resolution_basis"].clone();
+            term["glossary_matches"]=glossary_matches;term["resolution_basis"]=c["resolution_basis"].clone();
         }else{
             let mode=text(&c["mode"],"search mode")?;
             ensure!(["full_phrase","aliases","family"].contains(&mode),"TRW_SEARCH_MODE: unknown mode");
@@ -439,8 +441,9 @@ impl Writer{
         // Preserve selected-unit order from the immutable preparation.
         for uid in &self.selected{
             for term in payload["units"][uid]["term_candidates"].as_array_mut().unwrap(){
-                let decision=text(&term["decision"],"term decision")?;
-                if matches!(decision,"pending"|"not_a_term"){continue;}
+                // Own the decision across the subsequent mutation of this term.
+                let decision=text(&term["decision"],"term decision")?.to_owned();
+                if matches!(decision.as_str(),"pending"|"not_a_term"){continue;}
                 let section=if decision=="adopted"{"adopted"}else{"unlisted"};
                 let rows=result[section].as_array_mut().unwrap();
                 term["terminology_pointer"]=json!(format!("/{section}/{}",rows.len()));
