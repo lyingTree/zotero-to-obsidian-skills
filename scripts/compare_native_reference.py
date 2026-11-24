@@ -935,6 +935,52 @@ class NativeDeliveryPreparationComparison(unittest.TestCase):
 
 
 
+class NativeFigurePreparationComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_pending_pdf_figure_review_against_reference(self):
+        import test_figure_review_records as suite
+        from copy import deepcopy
+        fixture = suite.FigureReviewTests(methodName="test_generated_rows_cover_only_actual_figures_and_all_atomic_ids")
+        fixture.setUp()
+        try:
+            original = fixture.inventory_path.read_bytes()
+            inventory = fixture.inventory_path.with_name("native-inventory.json")
+            inventory.write_bytes(original)
+            # Test an actual XRef in addition to explicit geometry.
+            value = json.loads(original)
+            value["units"][-1]["evidence"][0]["image_xref"] = fixture.image_xref
+            fixture.inventory_path.write_text(json.dumps(value), encoding="utf-8")
+            inventory.write_text(json.dumps(value), encoding="utf-8")
+            fixture.generate()
+            native = Path(self.invoke("prepare_source_inventory.prepare_figure_reviews", str(inventory),
+                {key: [str(p) for p in paths] for key, paths in fixture.assets.items()},
+                str(fixture.base.joinpath("native-review")), resource_root=str(fixture.base)))
+            actual = json.loads(native.read_text(encoding="utf-8"))
+            expected = deepcopy(fixture.ledger)
+            actual_snapshot = Path(actual.pop("inventory")["path"])
+            expected_snapshot = Path(expected.pop("inventory")["path"])
+            self.assertEqual(json.loads(actual_snapshot.read_text(encoding="utf-8")),
+                             json.loads(expected_snapshot.read_text(encoding="utf-8")))
+            self.assertEqual(actual.pop("inventory_path"), str(inventory.resolve()))
+            expected.pop("inventory_path")
+            self.assertEqual(actual, expected)
+            self.assertEqual(json.loads(inventory.read_text(encoding="utf-8"))["figure_reviews_path"], str(native))
+            self.assertTrue(all(c["status"] == "pending" for row in actual["figures"] for c in row["checks"]))
+            bad = fixture.inventory_path.with_name("bad-inventory.json")
+            value["units"][-1]["evidence"][0]["image_xref"] = 999999
+            bad.write_text(json.dumps(value), encoding="utf-8")
+            before = bad.read_bytes()
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("prepare_source_inventory.prepare_figure_reviews", str(bad),
+                    {key: [str(p) for p in paths] for key, paths in fixture.assets.items()},
+                    str(fixture.base.joinpath("bad-review")), resource_root=str(fixture.base))
+            self.assertEqual(bad.read_bytes(), before)
+        finally:
+            fixture.doCleanups()
+
+
 class NativeFigureEdgeComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp
     invoke = ReferenceComparison.invoke

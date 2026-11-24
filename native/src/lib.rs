@@ -111,6 +111,7 @@ pub const OPERATIONS: &[&str] = &[
     "pdf_image_objects.index_page_structure",
     "prepare_source_inventory.prepare_pdf_structure_evidence",
     "prepare_source_inventory.record_figure_edges",
+    "prepare_source_inventory.prepare_figure_reviews",
     "prepare_source_inventory.file_record",
     "prepare_source_inventory.sha256_file",
     "prepare_source_inventory.prepare_sources",
@@ -715,6 +716,16 @@ pub fn invoke(request: Value) -> Result<Value> {
         "prepare_source_inventory.prepare_pdf_structure_evidence" => {
             let p=path(&c.positional("source_pdf")?)?;let dest=path(&c.positional("destination")?)?;c.finish()?;
             json!(path_text(&pdf_structure::prepare_structure(&p,&dest,|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
+        }
+        "prepare_source_inventory.prepare_figure_reviews" => {
+            let inventory=path(&c.positional("inventory_path")?)?;
+            let assets=c.positional("final_assets")?;
+            let work=path(&c.positional("work_directory")?)?;
+            let root=c.option("resource_root",Value::Null);
+            let root=if root.is_null(){None}else{Some(path(&root)?)};
+            c.finish()?;
+            json!(path_text(&source_prepare::prepare_figure_reviews(&inventory,&assets,&work,root.as_deref(),
+                |i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
         }
         "prepare_source_inventory.record_figure_edges" => {
             let review=path(&c.positional("review_path")?)?;

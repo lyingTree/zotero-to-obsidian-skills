@@ -83,6 +83,48 @@ impl Pdf{
         Ok(Geometry{bounds:[0.,0.,w,h],media,crop,rotation,unit,matrix:[unit,0.,0.,-unit,-clipped[0]*unit,clipped[3]*unit],rotated})
     }
     pub fn bounds(&self,n:u64)->Result<[f64;4]>{Ok(self.geometry(n)?.bounds)}
+    /// Collect the image resources actually reachable from the page/Form resource
+    /// dictionaries. This is a resource lookup, not evidence of a painted image.
+    pub fn resource_image_xrefs(&self,n:u64)->Result<HashSet<u32>>{
+        fn visit(doc:&Document,res:&Dictionary,seen:&mut HashSet<ObjectId>,
+                 images:&mut HashSet<u32>,depth:usize,budget:&mut usize)->Result<()>{
+            ensure!(depth<=MAX_FORM,"PDF Form resource depth exceeds limit");
+            let Some(xobjects)=dictionary(doc,res,b"XObject")? else{return Ok(());};
+            for (_,value) in xobjects.iter(){
+                *budget+=1;ensure!(*budget<=MAX_OPS,"PDF resource traversal exceeds budget");
+                let id=match value{Object::Reference(id)=>Some(*id),_=>None};
+                if let Some(id)=id{if !seen.insert(id){continue;}}
+                let stream=deref(doc,value)?.as_stream()?;
+                let subtype=deref(doc,stream.dict.get(b"Subtype")?)?.as_name()?;
+                match subtype{
+                    b"Image"=>{if let Some(id)=id{images.insert(id.0);}},
+                    b"Form"=>{if let Some(nested)=dictionary(doc,&stream.dict,b"Resources")?{
+                        visit(doc,nested,seen,images,depth+1,budget)?;
+                    }},
+                    _=>{},
+                }
+            }
+            Ok(())
+        }
+        let mut images=HashSet::new();
+        let mut seen=HashSet::new();
+        let mut budget=0;
+        if let Some(resources)=inherited(&self.doc,self.page(n)?,b"Resources")?{
+            visit(&self.doc,resources.as_dict()?,&mut seen,&mut images,0,&mut budget)?;
+        }
+        Ok(images)
+    }
+    pub fn contains_bbox(&self,n:u64,bbox:&Value)->Result<bool>{
+        let bounds=self.bounds(n)?;
+        let Some(a)=bbox.as_array().filter(|a|a.len()==4) else{return Ok(false);};
+        let mut b=[0.;4];
+        for (i,v) in a.iter().enumerate(){
+            let Some(x)=v.as_f64().filter(|x|x.is_finite()) else{return Ok(false);};
+            b[i]=x;
+        }
+        Ok(b[0]<b[2]&&b[1]<b[3]&&inside(bounds,b))
+    }
+
     pub fn index(&self,n:u64)->Result<Value>{
         let id=self.page(n)?;let geometry=self.geometry(n)?;
         let empty=Dictionary::new();

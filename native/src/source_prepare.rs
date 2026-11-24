@@ -201,3 +201,180 @@ pub fn record_figure_edges(
     crate::check_write::replace_bytes(&review_path, previous["sha256"].as_str().context("ledger SHA-256")?, &bytes)?;
     Ok(review_path)
 }
+
+
+const FIGURE_GOALS: &[&str] = &[
+    "子图面板齐全。","面板号完整。","图内文字完整。","轴线完整。","刻度完整。","单位完整。",
+    "图例完整。","色标完整。","图内要素可读。","图外题注没有混入图件。","相邻图件没有混入。",
+    "正文没有混入图件。","页眉没有混入图件。","页脚没有混入图件。","页码没有混入图件。",
+    "图件没有大块页边空白。","图号与图件对应。","题注与图件对应。","来源页码已登记。",
+    "来源附件哈希已登记。","图框或原图对象定位已登记。","适用的坐标系已登记。",
+    "最终图片哈希已登记。","视觉证据位置已登记。","最终嵌入图片与已验资源哈希一致。",
+    "输出图像的透明度效果与源页一致。","输出图像的颜色与源页一致。","图内数据表在原图中完整保留。",
+];
+
+fn figure_index<'a>(rows:&'a Value,key:&str,label:&str)
+    ->Result<std::collections::HashMap<&'a str,&'a Value>>{
+    let mut index=std::collections::HashMap::new();
+    for row in rows.as_array().with_context(||format!("{label} must be an array of objects"))?{
+        ensure!(row.is_object(),"{label} must contain objects");
+        let id=row[key].as_str().filter(|s|!s.trim().is_empty())
+            .with_context(||format!("{label} requires nonempty {key} values"))?;
+        ensure!(index.insert(id,row).is_none(),"Duplicate {label} {key}: {id}");
+    }
+    Ok(index)
+}
+
+fn json_bytes(v:&Value)->Result<Vec<u8>>{
+    let mut b=serde_json::to_vec_pretty(v)?;b.push(b'\n');Ok(b)
+}
+
+/// Initialize the pending schema-2 review from real PDF/DOCX locations and bound
+/// image files. PDF page renders must already exist; this does not render pages
+/// or certify pixel content, visual completeness, or any review observation.
+pub fn prepare_figure_reviews(inventory_path:&Path,final_assets:&Value,work_directory:&Path,
+    resource_root:Option<&Path>,mut progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
+    use std::collections::{HashMap,HashSet};
+    use crate::{pdf_structure::Pdf,check_write,pipeline};
+    check_write::no_link(inventory_path)?;
+    let inventory_path=files::canonical(inventory_path)?;
+    let _lock=check_write::lock_target(&inventory_path)?;
+    let (old,bound)=files::read_bound(&inventory_path)?;
+    let mut inventory=crate::parse_json(std::str::from_utf8(&old)?)?;
+    ensure!(inventory.is_object()&&inventory["schema_version"].as_u64()==Some(1),
+        "Expected source inventory schema_version 1");
+    ensure!(inventory.get("figure_reviews_path").is_none(),"This inventory already names a figure-review ledger; preserve that review history");
+    let base=inventory_path.parent().context("inventory parent")?;
+    let root=files::canonical(resource_root.unwrap_or(base))?;
+    ensure!(root.is_dir(),"resource root must be a directory");
+    let _units=figure_index(&inventory["units"],"id","units")?;
+    let sources=figure_index(&inventory["sources"],"id","sources")?;
+    let figures:Vec<_>=inventory["units"].as_array().unwrap().iter().filter(|u|u["kind"]=="figure").collect();
+    let assets=final_assets.as_object().context("final_assets must map figure unit IDs to image path lists")?;
+    ensure!(assets.len()==figures.len()&&figures.iter().all(|u|assets.contains_key(u["id"].as_str().unwrap())),
+        "final_assets must cover exactly the inventory's figure unit IDs");
+    let coordinates=json!({"space":"pdf_page","unit":"pt","origin":"top_left",
+        "x_axis":"right","y_axis":"down","rotation":"unrotated"});
+    let mut pdfs:HashMap<String,Pdf>=HashMap::new();
+    let mut source_files:HashMap<String,Value>=HashMap::new();
+    let mut image_xrefs:HashMap<(String,u64),HashSet<u32>>=HashMap::new();
+    let mut evidence:HashMap<String,Value>=HashMap::new();
+    fn remember(evidence:&mut HashMap<String,Value>,b:&Value)->Result<()>{
+        let key=b["path"].as_str().context("evidence path")?.to_owned();
+        if let Some(previous)=evidence.get(&key){ensure!(previous==b,"Evidence changed during preparation");}
+        else{evidence.insert(key,b.clone());}
+        Ok(())
+    }
+    let mut rows=Vec::with_capacity(figures.len());
+    for (i,unit) in figures.iter().enumerate(){
+        let id=unit["id"].as_str().unwrap();
+        let sid=unit["source"].as_str().context("choose a source ID from the inventory")?;
+        let source=sources.get(sid).with_context(||format!("{id}: choose a source ID from the inventory"))?;
+        if !source_files.contains_key(sid){
+            let b=figure_reference(source,base,sid)?;
+            remember(&mut evidence,&b)?;source_files.insert(sid.to_owned(),b);
+        }
+        let source_file=&source_files[sid];
+        let locs=unit["evidence"].as_array().filter(|v|!v.is_empty()&&v.iter().all(Value::is_object))
+            .with_context(||format!("{id}: source locations are required"))?;
+        let mut locations=Vec::with_capacity(locs.len());
+        if source["format"]=="docx"{
+            for location in locs{
+                let mut locator=docx::figure_location(source,location)?;
+                let b=figure_reference(&locator["source_media"],base,&format!("{id}:native-media"))?;
+                remember(&mut evidence,&b)?;locator["source_media"]=b;locations.push(locator);
+            }
+        }else{
+            if !pdfs.contains_key(sid){
+                let pdf=Pdf::open(&path(&source_file["path"])?)?;
+                pdfs.insert(sid.to_owned(),pdf);
+            }
+            let pdf=&pdfs[sid];
+            let pages=source["pages"].as_array().with_context(||format!("{sid}: pages must be an array of objects"))?;
+            ensure!(pages.len()==pdf.len()&&pages.iter().enumerate().all(|(j,v)|v.is_object()&&v["page"].as_u64()==Some((j+1) as u64)),
+                "{sid}: record every actual PDF page once in source order");
+            for location in locs{
+                let page=location["page"].as_u64().filter(|n|*n>=1&&*n<=pdf.len() as u64)
+                    .with_context(||format!("{id}: unknown source page"))?;
+                ensure!(location["basis"]=="visual","{id}: figure locations require visible-page evidence");
+                let mut locator=json!({"page":page});
+                ensure!(!location["bbox"].is_null()||!location["image_xref"].is_null(),
+                    "{id}: locate the figure with a bbox or image_xref");
+                if !location["bbox"].is_null(){
+                    ensure!(location["coordinate_system"]==coordinates,
+                        "{id}: declare unrotated PDF points with a top-left origin and right/down axes");
+                    ensure!(pdf.contains_bbox(page,&location["bbox"])?,
+                        "{id}: bbox must be a finite nonempty PDF-point rectangle inside its page");
+                    locator["bbox"]=location["bbox"].clone();
+                    locator["coordinate_system"]=coordinates.clone();
+                }
+                if !location["image_xref"].is_null(){
+                    let xref=location["image_xref"].as_u64().and_then(|n|u32::try_from(n).ok())
+                        .with_context(||format!("{id}: image_xref must name an image on this source page"))?;
+                    let key=(sid.to_owned(),page);
+                    if !image_xrefs.contains_key(&key){image_xrefs.insert(key.clone(),pdf.resource_image_xrefs(page)?);}
+                    ensure!(image_xrefs[&key].contains(&xref),"{id}: image_xref must name an image on this source page");
+                    locator["image_xref"]=json!(xref);
+                }
+                let b=figure_reference(&pages[page as usize-1]["render"],base,&format!("{id}:page-{page}"))?;
+                remember(&mut evidence,&b)?;locator["page_render"]=b;locations.push(locator);
+            }
+        }
+        let values=assets[id].as_array().filter(|a|!a.is_empty())
+            .with_context(||format!("{id}: provide a nonempty sequence of final image paths"))?;
+        let mut final_files=Vec::with_capacity(values.len());
+        let mut seen=HashSet::new();
+        for raw in values{
+            let p=path(raw)?;let p=if p.is_absolute(){p}else{root.join(p)};
+            let b=binding(&p)?;
+            ensure!(seen.insert(b["path"].as_str().unwrap().to_owned()),"{id}: do not repeat final image paths");
+            remember(&mut evidence,&b)?;final_files.push(b);
+        }
+        let mut edge_reviews=Vec::new();
+        for (index,b) in final_files.iter().enumerate(){
+            for side in FIGURE_EDGES{
+                edge_reviews.push(json!({"asset_index":index,"edge":side,"status":"pending","observation":"",
+                    "source_file":source_file,"final_asset":b,"source_locations":[]}));
+            }
+        }
+        let checks:Vec<_>=FIGURE_GOALS.iter().enumerate().map(|(j,g)|json!({
+            "id":format!("FIG-A{:02}",j+1),"goal":g,"status":"pending","reason":"","evidence":[]
+        })).collect();
+        rows.push(json!({"unit":id,"source":sid,"source_file":source_file,
+            "source_locations":locations,"final_assets":final_files,"edge_reviews":edge_reviews,"checks":checks}));
+        progress(i+1,figures.len(),&format!("prepare pending figure review {id}"));
+    }
+    // Check the immutable evidence again immediately before publishing.
+    for b in evidence.values(){
+        ensure!(binding(&path(&b["path"])?)?==*b,"Figure evidence changed during preparation");
+    }
+    ensure!(files::snapshot(&inventory_path)?["sha256"]==bound["sha256"],"Inventory changed during preparation");
+    let snapshot_bytes=json_bytes(&inventory)?;
+    let root=safe_dir(work_directory)?;
+    let review=root.join("figure-reviews.json");
+    let snapshot=root.join("figure-inventory-snapshot.json");
+    ensure!(review!=inventory_path&&snapshot!=inventory_path,"Review output must not replace its inventory");
+    no_existing(&review)?;no_existing(&snapshot)?;
+    let snapshot_binding=json!({"path":path_text(&snapshot)?,"sha256":files::digest(&snapshot_bytes)});
+    let ledger=json!({"schema_version":2,"inventory":snapshot_binding,"inventory_path":path_text(&inventory_path)?,
+        "evidence_boundary":"These are reviewer-supplied records. Their existence or self-reported passes do not prove independent visual inspection.",
+        "figures":rows});
+    inventory["figure_reviews_path"]=json!(path_text(&review)?);
+    let after=json_bytes(&inventory)?;
+    // Independent new files first, mutable pointer last. A durable recovery
+    // receipt preserves the old bytes even if a process is interrupted.
+    let recovery=tempfile::Builder::new().prefix(".z2o-figure-transaction-").tempdir_in(&root)?.keep();
+    pipeline::publish(&recovery.join("inventory.before"),&old)?;
+    pipeline::publish(&recovery.join("inventory.after"),&after)?;
+    pipeline::publish(&recovery.join("plan.json"),&json_bytes(&json!({
+        "inventory":bound,"after_sha256":files::digest(&after),"review":path_text(&review)?,
+        "snapshot":snapshot_binding,"boundary":"Inspect current file hashes before any manual recovery."
+    }))?)?;
+    exclusive(&snapshot,&crate::parse_json(std::str::from_utf8(&snapshot_bytes)?)?)?;
+    ensure!(binding(&snapshot)?==snapshot_binding,"Snapshot bytes changed before publication");
+    exclusive(&review,&ledger)?;
+    check_write::replace_bytes(&inventory_path,bound["sha256"].as_str().unwrap(),&after)
+        .with_context(||format!("Inventory pointer update failed; retained review and recovery files at {}",recovery.display()))?;
+    pipeline::publish(&recovery.join("completed.json"),b"{\"status\":\"completed\"}\n")?;
+    Ok(review)
+}
