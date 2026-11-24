@@ -536,5 +536,78 @@ class NativeDocxComparison(docx_suite.NativeDocxTests):
             self.addCleanup(patcher.stop)
 
 
+class NativePreparationComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_docx_source_inventory_uses_real_files_and_pending_terms(self):
+        from prepare_source_inventory import prepare_sources
+        from test_docx_source_inventory import make_docx, paragraph, image_call, image_relation, PNG
+        source = self.root.joinpath("论文.docx")
+        make_docx(source, paragraph("First source.") + image_call("image"),
+                  relationships=[image_relation("image", "media/one.png")],
+                  media={"word/media/one.png": PNG})
+        glossary = self.root.joinpath("术语.md")
+        glossary.write_text("test", encoding="utf-8")
+        py_root = self.root.joinpath("python")
+        rs_root = self.root.joinpath("rust")
+        expected_path = prepare_sources({"main": source}, py_root, source_roles={"main": "main"},
+                                        glossary_path=glossary, progress=None)
+        actual_path = Path(self.invoke("prepare_source_inventory.prepare_docx_sources", {"main": str(source)},
+                                        str(rs_root), source_roles={"main": "main"}, glossary_path=str(glossary)))
+        def compare(a, b, key=None):
+            if isinstance(a, dict):
+                self.assertEqual(set(a), set(b))
+                for k in a:
+                    compare(a[k], b[k], k)
+            elif isinstance(a, list):
+                self.assertEqual(len(a), len(b))
+                for x, y in zip(a, b):
+                    compare(x, y)
+            elif key == "path":
+                self.assertEqual(Path(a).name, Path(b).name)
+                self.assertEqual(Path(a).read_bytes(), Path(b).read_bytes())
+            elif key == "terminology_path":
+                compare(json.loads(Path(a).read_text(encoding="utf-8")),
+                        json.loads(Path(b).read_text(encoding="utf-8")))
+            else:
+                self.assertEqual(a, b, key)
+        compare(json.loads(actual_path.read_text(encoding="utf-8")),
+                json.loads(expected_path.read_text(encoding="utf-8")))
+
+    def test_pending_translation_scaffold_source_binding_and_negative_cases(self):
+        import test_translation_review as suite
+        ref = suite.review
+        source = self.root.joinpath("source.pdf")
+        source.write_bytes(b"fixture source")
+        candidate = self.root.joinpath("candidate.md")
+        candidate.write_text("翻译。", encoding="utf-8")
+        inventory = {"sources": [{"id":"s","path":source.name,
+            "sha256":hashlib.sha256(source.read_bytes()).hexdigest(),
+            "pages":[{"page":1,"blocks":[{"id":"b1","bbox":[0,1,3,4],"text":"Source 1"},
+                                        {"id":"b2","bbox":[2,5,9,10],"text":"Source 2"}]}]}],
+            "units":[{"id":"p1","source":"s","kind":"paragraph",
+                      "evidence":[{"basis":"text_blocks","page":1,"blocks":["b2","b1"]}]},
+                     {"id":"p2","source":"s","kind":"paragraph","evidence":[{"page":1,"quote":"Source 2"}]}]}
+        inv = self.root.joinpath("inventory.json")
+        inv.write_text(json.dumps(inventory), encoding="utf-8")
+        py_out, rs_out = self.root.joinpath("python.json"), self.root.joinpath("rust.json")
+        ref.prepare_translation_review(inv,candidate,py_out,unit_ids=["p1"],progress=None)
+        self.invoke("prepare_translation_review.prepare_translation_review",str(inv),str(candidate),str(rs_out),
+                    unit_ids=["p1"])
+        self.assertEqual(json.loads(py_out.read_text(encoding="utf-8")),json.loads(rs_out.read_text(encoding="utf-8")))
+        for unit_ids in ([],["p1","p1"],["unknown"]):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("prepare_translation_review.prepare_translation_review",str(inv),str(candidate),
+                            str(self.root.joinpath("invalid.json")),unit_ids=unit_ids)
+        self.assertFalse(self.root.joinpath("invalid.json").exists())
+        loc={"page":1,"quote":"12"}
+        self.assertEqual(self.invoke("prepare_translation_review.new_occurrence","num","numbers",source_span=loc),
+                         ref.new_occurrence("num","numbers",source_span=loc))
+        self.assertEqual(self.invoke("prepare_translation_review.new_term_candidate","t","ocean","concept",
+                                     source_excerpt="ocean",source_locator=loc),
+                         ref.new_term_candidate("t","ocean","concept",source_excerpt="ocean",source_locator=loc))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -552,3 +552,47 @@ fn native_docx_inventory_preserves_xml_order_embedded_bytes_and_pending_objects(
     assert!(docx::prepare_docx_source(&source,"si",&evidence,|_,_,_|{}).is_err());
     let mut invalid=loc;invalid["page"]=json!(1);assert!(!docx::evidence_errors(&r,&invalid).is_empty());
 }
+
+
+#[test]
+fn translation_pending_scope_and_independent_file_bindings(){
+    use z2o_native::translation_prepare as tr;
+    let root=tempdir().unwrap();
+    let source=root.path().join("source.pdf");
+    // The scaffold binds actual bytes and inventory locations; it does not parse
+    // PDF display evidence or assert the quoted source is faithful.
+    fs::write(&source,b"synthetic source bytes").unwrap();
+    let candidate=root.path().join("candidate.md");fs::write(&candidate,"译文。\n").unwrap();
+    let binding=tr::bind_file(&source).unwrap();
+    let inv=json!({"schema_version":1,"sources":[{"id":"a","path":source.file_name().unwrap().to_str().unwrap(),"sha256":binding["sha256"],
+        "pages":[{"page":1,"blocks":[{"id":"b1","bbox":[1,2,5,6],"text":"Source A"},{"id":"b2","bbox":[0,8,8,10],"text":"Source B"}]}]}],
+        "units":[{"id":"p1","source":"a","kind":"paragraph","evidence":[{"page":1,"basis":"text_blocks","blocks":["b2","b1"]}]},
+        {"id":"p2","source":"a","kind":"paragraph","evidence":[{"page":1,"quote":"Source B"}]}]});
+    let input=root.path().join("inventory.json");fs::write(&input,serde_json::to_vec(&inv).unwrap()).unwrap();
+    let output=root.path().join("review.json");
+    let path=tr::prepare(&input,&candidate,&output,&json!(["p1"]),None,&json!({}),|_,_,_|{}).unwrap();
+    let review=z2o_native::pipeline::read_json(&path).unwrap();
+    assert_eq!(review["review_status"],"pending");
+    assert_eq!(review["scope"]["unselected_inventory_units"],json!(["p2"]));
+    let loc=&review["units"]["p1"]["source_locations"][0];
+    assert_eq!(loc["quote"],"Source B\nSource A");
+    assert_eq!(loc["bbox"],json!([0.0,2.0,8.0,10.0]));
+    assert_eq!(review["units"]["p1"]["checks"]["completeness"]["status"],"pending");
+    assert_eq!(review["units"]["p1"]["occurrences"]["claims"],json!([]));
+    assert!(tr::prepare(&input,&candidate,&output,&json!(["p1"]),None,&Value::Null,|_,_,_|{}).is_err());
+    let next=root.path().join("next.json");fs::write(&source,b"changed").unwrap();
+    assert!(tr::prepare(&input,&candidate,&next,&json!(["p1"]),None,&Value::Null,|_,_,_|{}).is_err());
+    assert!(!next.exists());
+    assert_eq!(tr::occurrence("num1","numbers",&json!({"page":1,"quote":"12"})).unwrap()["difference_type"],Value::Null);
+    assert_eq!(tr::term("t","ocean","concept","ocean", &json!({"page":1})).unwrap()["decision"],"pending");
+}
+
+#[test]
+fn docx_source_orchestrator_blocks_pdf_before_writing(){
+    let root=tempdir().unwrap();
+    let pdf=root.path().join("source.pdf");fs::write(&pdf,b"%PDF-1.7").unwrap();
+    let out=root.path().join("work");
+    let result=z2o_native::source_prepare::prepare_docx_sources(&json!({"main":pdf.to_str().unwrap()}),&out,&Value::Null,None,144,|_,_,_|{});
+    assert!(result.unwrap_err().to_string().contains("UNMIGRATED_PDF_INVENTORY"));
+    assert!(!out.exists());
+}

@@ -20,6 +20,8 @@ pub mod grid;
 pub mod inventory;
 pub mod acceptance;
 pub mod docx;
+pub mod translation_prepare;
+pub mod source_prepare;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -84,6 +86,13 @@ pub const OPERATIONS: &[&str] = &[
     "docx_source_inventory.source_native_text",
     "docx_source_inventory.resolve_native_locator",
     "docx_source_inventory.native_figure_location",
+    "prepare_translation_review.bind_review_file",
+    "prepare_translation_review.bind_review_evidence",
+    "prepare_translation_review.new_occurrence",
+    "prepare_translation_review.new_term_candidate",
+    "prepare_translation_review.expand_source_locations",
+    "prepare_translation_review.prepare_translation_review",
+    "prepare_source_inventory.prepare_docx_sources",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -464,6 +473,49 @@ pub fn invoke(request: Value) -> Result<Value> {
         "docx_source_inventory.resolve_native_locator" => {
             let p=path(&c.positional("path")?)?;let location=c.positional("locator")?;c.finish()?;
             json!(docx::NativeDocument::new(&p)?.resolve(&location)?)
+        }
+        "prepare_translation_review.bind_review_file" | "prepare_translation_review.bind_review_evidence" => {
+            let p=path(&c.positional("path")?)?;
+            if op.ends_with("bind_review_file"){c.finish()?;translation_prepare::bind_file(&p)?}
+            else{let loc=c.positional("locator")?;c.finish()?;translation_prepare::bind_evidence(&p,&loc)?}
+        }
+        "prepare_translation_review.new_occurrence" => {
+            let id=string(&c.positional("occurrence_id")?,"occurrence_id")?;
+            let kind=string(&c.positional("kind")?,"kind")?;
+            let span=c.required("source_span")?;c.finish()?;translation_prepare::occurrence(&id,&kind,&span)?
+        }
+        "prepare_translation_review.new_term_candidate" => {
+            let id=string(&c.positional("term_id")?,"term_id")?;
+            let original=string(&c.positional("original")?,"original")?;
+            let category=string(&c.positional("category")?,"category")?;
+            let excerpt=string(&c.required("source_excerpt")?,"source_excerpt")?;
+            let loc=c.required("source_locator")?;c.finish()?;translation_prepare::term(&id,&original,&category,&excerpt,&loc)?
+        }
+        "prepare_translation_review.expand_source_locations" => {
+            let unit=c.positional("unit")?;let source=c.positional("source")?;c.finish()?;
+            translation_prepare::expand(&unit,&source)?
+        }
+        "prepare_translation_review.prepare_translation_review" => {
+            let inv=path(&c.positional("inventory_path")?)?;
+            let candidate=path(&c.positional("candidate_path")?)?;
+            let output=path(&c.positional("output_path")?)?;
+            let ids=c.required("unit_ids")?;
+            let glossary=c.option("glossary_path",Value::Null);
+            let glossary=if glossary.is_null(){None}else{Some(path(&glossary)?)};
+            let targets=c.option("candidate_locations",Value::Null);c.finish()?;
+            json!(path_text(&translation_prepare::prepare(&inv,&candidate,&output,&ids,glossary.as_deref(),&targets,
+                |i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?)?)
+        }
+        "prepare_source_inventory.prepare_docx_sources" => {
+            let sources=c.positional("source_pdfs")?;
+            let root=path(&c.positional("work_directory")?)?;
+            let roles=c.option("source_roles",Value::Null);
+            let glossary=c.option("glossary_path",Value::Null);
+            let glossary=if glossary.is_null(){None}else{Some(path(&glossary)?)};
+            let dpi=c.option("dpi",json!(144)).as_u64().context("dpi must be an integer")?;
+            c.finish()?;
+            json!(path_text(&source_prepare::prepare_docx_sources(&sources,&root,&roles,glossary.as_deref(),dpi,
+                |i,n,label|if i%128==0||i==n{eprintln!("[{i}/{n}] {label}");})?)?)
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

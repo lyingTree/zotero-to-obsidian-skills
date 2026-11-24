@@ -21,8 +21,8 @@
     "handoff_maps": "not_started",
     "mapping_rerun": "not_started",
     "pdf_image_objects": "not_started",
-    "prepare_source_inventory": "not_started",
-    "prepare_translation_review": "not_started",
+    "prepare_source_inventory": "partial",
+    "prepare_translation_review": "implementation_candidate",
     "translation_review_tasks": "not_started",
     "translation_review_writer": "not_started",
     "validate_translation_review": "not_started"
@@ -38,7 +38,7 @@
     },
     "docx_source_qualification": {
       "qualified": false,
-      "blocker": "DOCX awaits full integration and platform qualification"
+      "blocker": "DOCX source preparation integrated; full workflow and platform qualification still required"
     },
     "source_delivery_mapping_and_review_ledger": {
       "qualified": false,
@@ -46,7 +46,7 @@
     },
     "translation_review_lifecycle": {
       "qualified": false,
-      "blocker": "Translation review preparation, tasks, writer and validation parity"
+      "blocker": "Translation review tasks, writer and validation parity; preparation candidate awaits qualification"
     },
     "native_complete_workflow": {
       "qualified": false,

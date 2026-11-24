@@ -33,6 +33,8 @@
 | lint_presentation / accept_note | 排版提示及实际对象、链接、来源与资源哈希、逐单元机械验收 |
 | validate_delivery 增量 | Rich Table 合并范围、覆盖值、重叠与来源网格检查；完整交付验收未迁移 |
 | docx_source_inventory | 原生 XML、段落/表格/图片关系、嵌入媒体、待核对象及原生位置校验 |
+| prepare_source_inventory | DOCX 专用来源准备；PDF 仍阻断 |
+| prepare_translation_review | 真实文件绑定、位置扩展、待核出现项/术语及翻译审计初始化 |
 | 其他操作 | 以 native/migration-status.json 和实际二进制 describe 为准，尚未全部迁移 |
 
 所有原生实现目前均需通过相应回归，不能以新增函数数量充当迁移完成率。YAML 解析使用 serde-saphyr 的重复键拒绝及解析预算；保守修复不重新序列化原有自定义属性，不确定的复杂 YAML 阻断。Unicode 规范化/完整 casefold 算法必须与目标文件系统约定及参考版本对照，不能假设库的 Unicode 数据版本一致。路径使用本机 Path/PathBuf，文件名仍同时检查 UTF-16 单元及可声明的 UTF-8 字节预算。资源相对路径拒绝穿越、设备名和解析到根外的符号链接；并发文件替换不是本阶段只读扫描所能完全消除的风险。
@@ -73,3 +75,7 @@ Rust 规范化器使用独立词法扫描与原始字节区间，处理 CRLF/LF�
 ### 2.0.0 发布门槛
 
 native/migration-status.json 登记实际存在的 23 个参考模块和 11 项必要发布能力。scripts/check_native_release.py 使用 AST 枚举参考公开函数和公开类方法，核对实际二进制 describe、缺失接口、资格状态、版本及已提交 Cargo.lock。开发分支报告缺项；VERSION 或 tag 进入 2.x 或明确请求发布检查时，存在缺项便返回非零。模块状态只有经过行为差分、六平台实机运行及完整工作流验收后才能改为 qualified。此门槛不以操作注册数量代替等价性，也不自动创建 tag/Release。
+
+### 来源准备与翻译审计初始化
+
+DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结果。新增 prepare_source_inventory.prepare_docx_sources 可为一组 DOCX 生成统一来源清单及待核术语记录；在创建工作目录前阻断 PDF（无 Python 回退）。JSON 对象按键顺序处理，跨文档阅读顺序必须由独立来源计划确认。新增 prepare_translation_review 的原生脚手架在发布前复核源、清单、候选和术语表文件哈希，保留显式选中和未选中单元、各类待核检查与出现项；不推断任何语义结论。新增实际文件比较及负例测试，仍待 CI 验证。尚未移植 PDF 渲染/图片对象链、翻译审计 writer/validator、完整验收台账/映射及原生安装器和 API。
