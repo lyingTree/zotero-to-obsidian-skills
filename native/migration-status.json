@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "PP-OCR CPU real qualification; native MiniCPM-OCR/Jev llama.cpp and isolated CUDA/DirectML/CoreML attempts with CPU fallback now implemented as candidates; real enhancement weights, accelerator hardware, full PDF and all-platform qualification remain"
+      "blocker": "PP-OCR CPU real qualification; optional isolated GPU/CPU fallback integrated into PDF OCR preparation and inventory, with same-profile model bindings; local MiniCPM-OCR/Jev model-bearing Linux/Intel Mac CI tests added; actual new results, accelerator hardware and full PDF/platform qualification remain"
     },
     "docx_source_qualification": {
       "qualified": false,

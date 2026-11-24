@@ -140,6 +140,20 @@ fn actual_cpu_ocr_scan_with_verified_package(){
     let reading:String=r["plain_text"].as_str().unwrap().chars().filter(|c|!c.is_whitespace()).flat_map(char::to_uppercase).collect();
     assert!(reading.contains("NATIVEOCRTEST12345")&&reading.contains("海洋重力波2026"),"{r}");
     fs::write(root.join("fallback-evidence.json"),serde_json::to_vec_pretty(r).unwrap()).unwrap();
+    let request=json!({"schema_version":1,"operation":"prepare_source_inventory.prepare_pdf_ocr_evidence","args":[source],"kwargs":{
+        "destination":root.join("accelerated-pdf-evidence"),"package_manifest":manifest,"expected_package_sha256":digest,
+        "profile":"tiny","layout":"off","dpi":144,"mode":"auto","accelerator":{"acceleration":"auto",
+            "gpu_package_manifest":gpu_manifest,"expected_gpu_package_sha256":files::digest(&gpu_bytes),"timeout_seconds":180}}});
+    let req=root.join("accelerated-pdf-request.json");fs::write(&req,serde_json::to_vec(&request).unwrap()).unwrap();
+    let output=std::process::Command::new(env!("CARGO_BIN_EXE_z2o")).arg("invoke").arg(&req).env("PATH","").output().unwrap();
+    assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+    let answer:serde_json::Value=serde_json::from_slice(&output.stdout).unwrap();
+    let report=pipeline::read_json(Path::new(answer["result"].as_str().unwrap())).unwrap();
+    assert_eq!(report["blocked_page_count"],0,"{report}");
+    let record=pipeline::read_json(Path::new(report["pages"][0]["record"]["path"].as_str().unwrap())).unwrap();
+    let result=pipeline::read_json(Path::new(record["ocr_regions"][0]["recognition"]["path"].as_str().unwrap())).unwrap();
+    assert_eq!(result["cpu_fallback_used"],true);
+    assert!(result["blocks"].as_array().unwrap().iter().any(|b|b["unrotated_pdf_bbox"].is_array()));
 }
 
 

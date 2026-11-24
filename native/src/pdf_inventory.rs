@@ -12,12 +12,12 @@ const MAX_STREAM:usize=128*1024*1024;
 const MAX_JSON:u64=128*1024*1024;
 type Box4=[f64;4];
 #[derive(Clone)]
-pub struct OcrSettings{pub manifest:PathBuf,pub sha256:String,pub profile:String,pub layout:String}
+pub struct OcrSettings{pub manifest:PathBuf,pub sha256:String,pub profile:String,pub layout:String,pub accelerator:Option<crate::ocr_acceleration::Settings>}
 impl OcrSettings{
     pub fn from_value(v:&Value)->Result<Option<Self>>{
         if v.is_null(){return Ok(None);}
         let m=v.as_object().context("ocr must be an explicit configuration object")?;
-        ensure!(m.keys().all(|s|matches!(s.as_str(),"package_manifest"|"expected_package_sha256"|"profile"|"layout")),"Unknown OCR inventory configuration");
+        ensure!(m.keys().all(|s|matches!(s.as_str(),"package_manifest"|"expected_package_sha256"|"profile"|"layout"|"accelerator")),"Unknown OCR inventory configuration");
         let manifest=files::canonical(&path(&v["package_manifest"])?)?;
         let sha256=v["expected_package_sha256"].as_str().filter(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))).context("Trusted OCR package SHA-256 required")?.to_owned();
         let profile=v.get("profile").map(|v|v.as_str().context("OCR profile must be text")).transpose()?.unwrap_or("auto").to_owned();
@@ -25,11 +25,13 @@ impl OcrSettings{
         ensure!(matches!(profile.as_str(),"auto"|"tiny"|"small"|"medium")&&matches!(layout.as_str(),"auto"|"on"|"off"),"Invalid OCR profile or layout");
         check_write::no_link(&manifest)?;
         ensure!(check_ledger::bind_file(&manifest)?["sha256"]==sha256,"OCR_PACKAGE_MANIFEST_HASH_MISMATCH");
-        Ok(Some(Self{manifest,sha256,profile,layout}))
+        let accelerator=crate::ocr_acceleration::Settings::from_value(&v["accelerator"])?;
+        Ok(Some(Self{manifest,sha256,profile,layout,accelerator}))
     }
     pub fn binding(&self)->Result<Value>{
         let b=check_ledger::bind_file(&self.manifest)?;
         ensure!(b["sha256"]==self.sha256,"OCR package manifest changed");
+        if let Some(cfg)=&self.accelerator{cfg.binding()?;}
         Ok(b)
     }
 }
@@ -101,9 +103,16 @@ pub(crate) fn verify_page_files(page:&Value)->Result<()>{
     if let Some(record)=ev["ocr"].get("record"){validate_binding(record)?;}
     Ok(())
 }
-struct LazyOcr<'a>{options:Option<&'a OcrSettings>,engine:Option<ocr_backend::Engine>,error:Option<String>}
+struct LazyOcr<'a>{options:Option<&'a OcrSettings>,engine:Option<ocr_backend::Engine>,error:Option<String>,accelerated:crate::ocr_acceleration::JobState}
 impl LazyOcr<'_>{
     fn run(&mut self,png:&Path,render:&Value)->Result<Value>{
+        if let Some(o)=self.options{
+            if let Some(cfg)=&o.accelerator{
+                let mut result=self.accelerated.run(png,render["asset"]["sha256"].as_str().context("Raster digest required")?,
+                    &o.manifest,&o.sha256,&o.profile,&o.layout,cfg)?;
+                ocr_pdf::bind_pdf_coordinates(&mut result,render)?;return Ok(result);
+            }
+        }
         if let Some(e)=self.error.as_ref(){anyhow::bail!("{e}");}
         if self.engine.is_none(){
             let result=(||->Result<_>{
@@ -127,7 +136,7 @@ pub fn prepare_source(source:&Path,id:&str,root:&Path,dpi:u64,ocr:Option<&OcrSet
     let image_dir=root.join("image-objects");fs::create_dir(&image_dir)?;
     let mut pages=Vec::with_capacity(backend.len());
     let mut objects=BTreeMap::<(u32,u16),Value>::new();
-    let mut lazy=LazyOcr{options:ocr,engine:None,error:None};
+    let mut lazy=LazyOcr{options:ocr,engine:None,error:None,accelerated:Default::default()};
     for n in 1..=backend.len(){
         let page=n as u64;let prefix=format!("page-{n:04}");
         let png=root.join(format!("{prefix}.png"));

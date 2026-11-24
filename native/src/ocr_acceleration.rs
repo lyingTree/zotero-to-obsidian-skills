@@ -3,7 +3,7 @@
 //! attempts use exactly the same selected recognition model resources.
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
-use std::{fs,io::Read,path::Path,process::{Command,Stdio},thread,time::{Duration,Instant}};
+use std::{fs,io::Read,path::{Path,PathBuf},process::{Command,Stdio},thread,time::{Duration,Instant}};
 use crate::{check_ledger,files,ocr_backend,path,parse_json};
 const CPU:&str="CPUExecutionProvider";
 fn gpu_provider()->&'static str{
@@ -108,4 +108,64 @@ pub fn recognize(opt:Options<'_>)->Result<Value>{
         Ok(r)
     }else{Ok(json!({"schema_version":1,"source_image":img,"status":"ocr_acceleration_blocked","acceleration_attempts":attempts,
         "acceptance_ready":false,"source_fidelity":"not_assessed"}))}
+}
+
+
+#[derive(Clone)]
+pub struct Settings{pub mode:String,pub gpu:Option<(PathBuf,String)>,pub timeout:u64}
+impl Settings{
+    pub fn from_value(v:&Value)->Result<Option<Self>>{
+        if v.is_null(){return Ok(None);}
+        let m=v.as_object().context("Accelerator config must be an object")?;
+        ensure!(m.keys().all(|k|matches!(k.as_str(),"acceleration"|"gpu_package_manifest"|"expected_gpu_package_sha256"|"timeout_seconds")),"Unknown accelerator config field");
+        let mode=v.get("acceleration").map(|v|text(v,"acceleration")).transpose()?.unwrap_or("auto").to_owned();
+        let timeout=v.get("timeout_seconds").map(|v|v.as_u64().context("timeout must be integer")).transpose()?.unwrap_or(180);
+        ensure!(matches!(mode.as_str(),"auto"|"cpu"|"gpu_required")&&(5..=1800).contains(&timeout),"Invalid accelerator configuration");
+        let gpu=match(v.get("gpu_package_manifest").filter(|v|!v.is_null()),v.get("expected_gpu_package_sha256").filter(|v|!v.is_null())){
+            (None,None)=>None,
+            (Some(p),Some(h))=>{
+                let p=path(p)?;crate::check_write::no_link(&p)?;let p=files::canonical(&p)?;
+                let h=text(h,"GPU package SHA-256")?.to_owned();
+                ensure!(check_ledger::bind_file(&p)?["sha256"]==h,"GPU manifest hash differs");
+                Some((p,h))
+            },
+            _=>anyhow::bail!("GPU manifest and hash must be supplied together")
+        };
+        ensure!(mode!="gpu_required"||gpu.is_some(),"gpu_required needs a verified GPU package");
+        Ok(Some(Self{mode,gpu,timeout}))
+    }
+    pub fn binding(&self)->Result<Value>{
+        let gpu=if let Some((p,h))=&self.gpu{
+            let b=check_ledger::bind_file(p)?;ensure!(b["sha256"]==*h,"GPU manifest changed");b
+        }else{Value::Null};
+        Ok(json!({"acceleration":self.mode,"gpu_manifest":gpu,"timeout_seconds":self.timeout}))
+    }
+}
+// Reuse one resolved model profile throughout the job; after a real failure
+// do not repeatedly initialize a known-broken accelerator on every page.
+#[derive(Default)]
+pub struct JobState{resolved:Option<(String,String)>,gpu_failure:Option<Value>}
+impl JobState{
+    pub fn run(&mut self,png:&Path,image_sha:&str,cpu:&Path,cpu_sha:&str,profile:&str,layout:&str,cfg:&Settings)->Result<Value>{
+        cfg.binding()?;
+        if self.resolved.is_none(){
+            let report=ocr_backend::Package::load(cpu,cpu_sha,profile,layout)?.report();
+            self.resolved=Some((text(&report["hardware"]["profile"],"resolved profile")?.to_owned(),
+                if report["hardware"]["layout_enabled"]==true{"on".into()}else{"off".into()}));
+        }
+        let (profile,layout)=self.resolved.as_ref().unwrap();
+        let disabled=self.gpu_failure.is_some()&&cfg.mode=="auto";
+        let mode=if disabled{"cpu"}else{cfg.mode.as_str()};
+        let mut r=recognize(Options{image:png,image_sha,cpu,cpu_sha,gpu:cfg.gpu.as_ref().map(|(p,h)|(p.as_path(),h.as_str())),
+            profile,layout,acceleration:mode,timeout:cfg.timeout})?;
+        if disabled{
+            r["cpu_fallback_used"]=json!(true);r["prior_gpu_failure"]=self.gpu_failure.clone().unwrap();
+        }else if cfg.mode=="auto"{
+            if let Some(a)=r["acceleration_attempts"].as_array().and_then(|rows|rows.iter().find(|row|row["status"]=="failed_or_unavailable")){
+                self.gpu_failure=Some(a.clone());
+            }
+        }
+        if r["status"]=="ocr_acceleration_blocked"{anyhow::bail!("All OCR attempts blocked: {}",r["acceleration_attempts"]);}
+        cfg.binding()?;Ok(r)
+    }
 }

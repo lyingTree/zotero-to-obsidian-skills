@@ -287,3 +287,50 @@ jobs:
           name: minicpm-runtime-${{ matrix.target }}
           path: ${{ runner.temp }}/z2o-llama-runtime/runtime-evidence.json
           if-no-files-found: error
+
+  # Model-bearing tests independently check Linux and the Intel Mac alternate
+  # CPU backend. They must never qualify source acceptance or GPU throughput.
+  minicpm-model-smoke:
+    needs: [resolve-lock, ocr-cpu-smoke]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      Z2O_LLAMA_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ocr-cpu-smoke-evidence
+          path: ${{ runner.temp }}/z2o-shared-scan
+      - name: Configure model-bearing native test
+        shell: bash
+        run: |
+          echo "Z2O_LLAMA_FIXTURE_DIR=$RUNNER_TEMP/z2o-llama-models" >> "$GITHUB_ENV"
+          echo "Z2O_LLAMA_SHARED_SCAN=$RUNNER_TEMP/z2o-shared-scan" >> "$GITHUB_ENV"
+          echo "Z2O_LLAMA_NATIVE_BINARY=$(pwd)/native/target/release/z2o" >> "$GITHUB_ENV"
+          rustup toolchain install 1.95.0 --profile minimal --target ${{ matrix.target }}
+      - name: Build actual native model client
+        run: cargo +1.95.0 build --locked --release --manifest-path native/Cargo.toml
+      - name: Verify official engine distribution
+        run: python scripts/prepare_minicpm_ci.py
+      - name: Real bilingual OCR and official Jev examples using native CPU fallback
+        run: python scripts/qualify_minicpm_models.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: minicpm-model-smoke-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/z2o-llama-models/*.json
+            ${{ runner.temp }}/z2o-llama-models/*-stderr.txt
+          if-no-files-found: warn

@@ -144,6 +144,15 @@ fn recheck_record(record:&Value,root:&Path,job:&Value,page:u64)->Result<()>{
     let regions=record["ocr_regions"].as_array().context("Retain OCR regions")?;
     for r in regions{
         for key in ["render","recognition"]{ensure!(files.contains(&r[key]),"Completed page lost region evidence");}
+        let (actual,b)=read_bound_json(&path(&r["recognition"]["path"])?)?;
+        ensure!(b==r["recognition"]&&actual["source_image"]==r["render"]&&actual["acceptance_ready"]==false,"Saved OCR reading lost source binding");
+        if actual.get("acceleration_attempts").is_some(){
+            let package=&actual["model_package"];
+            let m=&package["manifest"];ensure!(check_ledger::bind_file(&path(&m["path"])?)?==*m,"Saved acceleration manifest changed");
+            for b in package["resources"].as_object().context("Saved OCR model resource bindings required")?.values(){
+                ensure!(check_ledger::bind_file(&path(&b["path"])?)?==*b,"Saved acceleration resource changed");
+            }
+        }
     }
     if record["status"]=="ocr_candidate_review_required"{ensure!(!regions.is_empty(),"Completed OCR page lacks actual recognition evidence");}
     if record["status"]=="hybrid_review_required"{ensure!(files.contains(&record["review_render"]),"Hybrid page lost its review raster");}
@@ -190,7 +199,10 @@ impl Lazy<'_>{
     }
 }
 
-pub fn prepare(source:&Path,output:&Path,opt:Options<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
+pub fn prepare(source:&Path,output:&Path,opt:Options<'_>,progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
+    prepare_with_accelerator(source,output,opt,None,progress)
+}
+pub fn prepare_with_accelerator(source:&Path,output:&Path,opt:Options<'_>,accelerator:Option<&crate::ocr_acceleration::Settings>,mut progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
     ensure!(matches!(opt.mode,"auto"|"all"),"mode must be auto or all");
     ensure!(matches!(opt.profile,"auto"|"tiny"|"small"|"medium"),"invalid OCR profile");
     ensure!(matches!(opt.layout,"auto"|"on"|"off"),"invalid layout policy");
@@ -206,16 +218,18 @@ pub fn prepare(source:&Path,output:&Path,opt:Options<'_>,mut progress:impl FnMut
     let root=safe_root(output)?;
     let job_path=root.join("job.json");
     let _lock=check_write::lock_target(&job_path)?;
-    let specification=json!({"schema_version":SCHEMA,"source_file":pdf.source_binding(),"page_count":pdf.len(),
+    let mut specification=json!({"schema_version":SCHEMA,"source_file":pdf.source_binding(),"page_count":pdf.len(),
         "package_manifest":package,"profile":opt.profile,"layout":opt.layout,"mode":opt.mode,"dpi":opt.dpi,
         "regions":opt.regions,"coordinate_system":coord(),"pdf_backend_revision":crate::pdfcraft_backend::PDFCRAFT_REV,
         "ocr_backend_revision":ocr_backend::OCR_REV,"source_fidelity":"not_assessed","boundary":BOUNDARY});
+    if let Some(cfg)=accelerator{specification["accelerator"]=cfg.binding()?;}
     let job=if job_path.exists()||job_path.is_symlink(){
         let (old,b)=read_bound_json(&job_path)?;
         ensure!(old==specification,"OCR job input/configuration changed; preserve this directory and start a new job");b
     }else{fresh(&job_path,&specification)?};
     let pages=pdf.len();
     let mut lazy=Lazy{options:&opt,engine:None,init_error:None};
+    let mut accelerated=crate::ocr_acceleration::JobState::default();
     let mut results=Vec::with_capacity(pages);
     for n in 1..=pages{
         let page=n as u64;
@@ -252,7 +266,12 @@ pub fn prepare(source:&Path,output:&Path,opt:Options<'_>,mut progress:impl FnMut
                     let raster=pdf.render(page,region,opt.dpi,&png)?;
                     let render_file=fresh(&attempt.join(format!("region-{i:03}-render.json")),&raster)?;
                     files.push(raster["asset"].clone());files.push(render_file.clone());
-                    let mut result=lazy.get()?.recognize_png(&png,raster["asset"]["sha256"].as_str())?;
+                    let mut result=if let Some(cfg)=accelerator{
+                        let package=opt.package_manifest.context("OCR_RESOURCES_REQUIRED: install the verified CPU fallback package")?;
+                        let hash=opt.package_sha.context("Actual OCR package hash required")?;
+                        accelerated.run(&png,raster["asset"]["sha256"].as_str().context("Actual raster hash required")?,
+                            package,hash,opt.profile,opt.layout,cfg)?
+                    }else{lazy.get()?.recognize_png(&png,raster["asset"]["sha256"].as_str())?};
                     bind_pdf_coordinates(&mut result,&raster)?;
                     let ocr_file=fresh(&attempt.join(format!("region-{i:03}-ocr.json")),&result)?;
                     files.push(ocr_file.clone());
@@ -289,6 +308,7 @@ pub fn prepare(source:&Path,output:&Path,opt:Options<'_>,mut progress:impl FnMut
     if let Some(p)=opt.package_manifest{
         ensure!(check_ledger::bind_file(p)?==package,"OCR package manifest changed during job");
     }
+    if let Some(cfg)=accelerator{ensure!(cfg.binding()?==specification["accelerator"],"Acceleration configuration changed during job");}
     let blocked=results.iter().filter(|r|r["status"]=="blocked").count();
     let report=json!({"schema_version":SCHEMA,"job":job,"source_file":pdf.source_binding(),"pages":results,
         "page_count":pages,"blocked_page_count":blocked,"processing_finished":blocked==0,

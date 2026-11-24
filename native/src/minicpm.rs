@@ -30,7 +30,7 @@ fn local(root:&Path,r:&str)->Result<PathBuf>{
 }
 fn bind(root:&Path,row:&Value,max:u64)->Result<Value>{
     let p=local(root,text(&row["path"],"asset path")?)?;let meta=no_link(&p)?;
-    ensure!(meta.is_file()&&meta.len()>0&&meta.len()<=max,"Model/engine asset exceeds size budget or is not a file");
+    ensure!(meta.is_file()&&meta.len()<=max,"Model/engine asset exceeds size budget or is not a file");
     let b=check_ledger::bind_file(&p)?;ensure!(b["sha256"]==hash(&row["sha256"])?,"Model/engine resource changed: {}",p.display());Ok(b)
 }
 fn verify(b:&Value)->Result<()>{let p=path(&b["path"])?;check_write::no_link(&p)?;ensure!(check_ledger::bind_file(&p)?==*b,"Bound input changed");Ok(())}
@@ -67,7 +67,7 @@ impl EngineFiles{
         }
         ensure!(found.len()==expected.len(),"Engine distribution incomplete");
         let exe=local(&dir,text(&v["executable"],"llama-server executable")?)?;
-        ensure!(expected.contains_key(&exe)&&exe.file_name().and_then(|s|s.to_str())==Some(if cfg!(windows){"llama-server.exe"}else{"llama-server"}),"Expected bound native llama-server executable");
+        ensure!(fs::metadata(&exe)?.len()>0&&expected.contains_key(&exe)&&exe.file_name().and_then(|s|s.to_str())==Some(if cfg!(windows){"llama-server.exe"}else{"llama-server"}),"Expected bound native llama-server executable");
         Ok(Self{root:dir,exe,files:expected.into_values().collect(),variant})
     }
     fn verify(&self)->Result<()>{for b in &self.files{verify(b)?;}Ok(())}
@@ -128,13 +128,14 @@ struct Server{child:Child,temp:tempfile::TempDir,addr:SocketAddr,token:String,of
 impl Drop for Server{fn drop(&mut self){let _=self.child.kill();let _=self.child.wait();}}
 fn command(e:&EngineFiles)->Command{
     let mut cmd=Command::new(&e.exe);
-    cmd.current_dir(&e.root).stdin(Stdio::null());
+    let dir=e.exe.parent().unwrap_or(&e.root);
+    cmd.current_dir(dir).stdin(Stdio::null());
     // Ignore inherited model/server overrides and proxies. GPU drivers may
     // still come from the platform's installed driver/runtime environment.
     for(k,_)in std::env::vars_os(){let s=k.to_string_lossy().to_ascii_uppercase();if s.starts_with("LLAMA_")||s.ends_with("_PROXY"){cmd.env_remove(k);}}
-    cmd.env("PATH",&e.root);
-    #[cfg(target_os="linux")]{cmd.env("LD_LIBRARY_PATH",&e.root);cmd.env_remove("LD_PRELOAD");}
-    #[cfg(target_os="macos")]{cmd.env("DYLD_LIBRARY_PATH",&e.root);cmd.env_remove("DYLD_INSERT_LIBRARIES");}
+    cmd.env("PATH",dir);
+    #[cfg(target_os="linux")]{cmd.env("LD_LIBRARY_PATH",dir);cmd.env_remove("LD_PRELOAD");}
+    #[cfg(target_os="macos")]{cmd.env("DYLD_LIBRARY_PATH",dir);cmd.env_remove("DYLD_INSERT_LIBRARIES");}
     cmd
 }
 fn log_offload(p:&Path)->Result<Option<(u64,u64)>>{

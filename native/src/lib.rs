@@ -1054,11 +1054,12 @@ pub fn invoke(request: Value) -> Result<Value> {
             let mode=string(&c.option("mode",json!("auto")),"mode")?;
             let dpi=c.option("dpi",json!(200)).as_u64().context("dpi must be an integer")?;
             let regions=c.option("regions",json!({}));let coordinate_system=c.option("coordinate_system",Value::Null);
+            let accelerator=ocr_acceleration::Settings::from_value(&c.option("accelerator",Value::Null))?;
             c.finish()?;
             let opt=ocr_pdf::Options{package_manifest:manifest.as_deref(),package_sha:package_sha.as_deref(),
                 profile:&profile,layout:&layout,mode:&mode,dpi,expected_source_sha:expected.as_deref(),
                 regions:&regions,coordinate_system:&coordinate_system};
-            json!(path_text(&ocr_pdf::prepare(&source,&dest,opt,|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
+            json!(path_text(&ocr_pdf::prepare_with_accelerator(&source,&dest,opt,accelerator.as_ref(),|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
         }
         "prepare_source_inventory.install_ocr_package" => {
             let manifest=path(&c.positional("package_manifest")?)?;
