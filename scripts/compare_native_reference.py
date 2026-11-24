@@ -14,6 +14,9 @@ sys.path.insert(0, str(ROOT.joinpath("literature-zotero2obsidian", "scripts")))
 import deterministic_stage_checks as reference
 import format_helpers as formatting
 import source_url_inventory as urls
+import render_note as renderer
+sys.path.insert(0, str(ROOT.joinpath('tests')))
+from test_render_note import fixture as render_fixture
 
 BINARY = ROOT.joinpath("native", "target", "debug", "z2o.exe" if sys.platform == "win32" else "z2o")
 
@@ -131,6 +134,30 @@ class ReferenceComparison(unittest.TestCase):
         self.assertEqual(self.invoke("source_url_inventory.scan_source_url_occurrences", inventory,
                                      excluded_blocks=["b2"]),
                          urls.scan_source_url_occurrences(inventory, excluded_blocks=["b2"]))
+
+
+    def test_full_render_reference_bytes_and_source_mapping(self):
+        plan, content = render_fixture()
+        self.assertEqual(self.invoke("render_note.content_template", plan), renderer.content_template(plan))
+        self.assertEqual(self.invoke("render_note.render_note", plan, content),
+                         renderer.render_note(plan, content))
+        for mutate in (
+            lambda p, c: c.pop("eq"),
+            lambda p, c: c["eq"].update(latex="tamper"),
+            lambda p, c: p["units"][4].update(anchor="fig-1"),
+            lambda p, c: p["units"][4].update(latex="a\n$\n## injected"),
+            lambda p, c: p["units"][2]["literals"].update(scale="# forged"),
+            lambda p, c: c["body"].update(text="{{link:unknown}}"),
+            lambda p, c: p["units"][1].update(level=4),
+        ):
+            plan, content = render_fixture()
+            mutate(plan, content)
+            expected = renderer.render_note(plan, content)
+            actual = self.invoke("render_note.render_note", plan, content)
+            self.assertEqual(actual["status"], expected["status"])
+            self.assertEqual(actual["text"], expected["text"])
+            self.assertEqual(actual["mapping"], expected["mapping"])
+            self.assertEqual(actual["findings"][0]["field"], expected["findings"][0]["field"])
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ pub mod metadata;
 pub mod naming;
 pub mod properties;
 pub mod tables;
+pub mod yaml_emit;
+pub mod render;
 pub mod source_urls;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
@@ -42,6 +44,9 @@ pub const OPERATIONS: &[&str] = &[
     "format_helpers.plan_supplement_figure_caption",
     "source_url_inventory.scan_source_url_occurrences",
     "source_url_inventory.source_url_coverage",
+    "render_note.content_template",
+    "render_note.render_note",
+    "format_helpers.build_rich_table_block",
 ];
 
 /// JSON object keys are unique at every depth. Serde's usual Value parser
@@ -285,6 +290,22 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             if op.ends_with("scan_source_url_occurrences"){source_urls::scan(&inventory,&blocks,&pages)?}
             else{source_urls::coverage(&inventory,&blocks,&pages)?}
+        }
+        "render_note.content_template" => {
+            let plan = c.positional("plan")?; c.finish()?;
+            render::content_template(&plan)?
+        }
+        "render_note.render_note" => {
+            let plan = c.positional("plan")?; let content = c.positional("content")?; c.finish()?;
+            render::render_note(&plan,&content)
+        }
+        "format_helpers.build_rich_table_block" => {
+            let data = c.positional("data")?;
+            let anchor = string(&c.required("anchor")?,"anchor")?;
+            let wrapped = c.option("wrapped",json!(true)).as_bool().context("wrapped must be bool")?;
+            let nl = c.option("newline",json!("\n"));
+            let nl = nl.as_str().ok_or_else(||anyhow!("newline must be LF or CRLF"))?;
+            c.finish()?; json!(yaml_emit::rich_table(&data,&anchor,wrapped,nl)?)
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

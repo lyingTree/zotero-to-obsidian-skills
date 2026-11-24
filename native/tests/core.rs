@@ -190,3 +190,86 @@ fn url_occurrences_preserve_unicode_offsets_and_one_to_one_mapping(){
     assert_eq!(result["recorded"][0]["unit"],"narrow");
     assert_eq!(result["recorded"][1]["unit"],"broad");
 }
+
+
+fn render_unit(uid:&str,kind:&str,scope:&str,extras:Value)->Value{
+    let mut v=json!({"unit_id":uid,"kind":kind,"scope":scope,"source":{"source_id":"article","locator":format!("box/{uid}")}});
+    v.as_object_mut().unwrap().extend(extras.as_object().unwrap().clone());v
+}
+fn render_fixture()->(Value,Value){
+    let units=vec![
+        render_unit("h","header","main",json!({"original_title":"Alpha_7","authors":[{"name":"A_B","numbers":["1"],"email":"a@test.example","corresponding":true}],"affiliations":[{"number":"1","name":"Institute"}],"translated":true})),
+        render_unit("section","heading","main",json!({"level":2})),
+        render_unit("body","paragraph","main",json!({"links":{"first":{"target":"r","label":"Example"}},"literals":{"scale":"$7.00$"}})),
+        render_unit("f","figure","main",json!({"anchor":"fig-1","label":"图1。","images":[{"target":"a#b.png","alt":"x[y]"}]})),
+        render_unit("eq","formula","main",json!({"latex":"a_b = 7.00\\tag{1}","anchor":"eq-1"})),
+        render_unit("tab","table","main",json!({"data":{"version":2,"locked":true,"theme":"grid","columns":["a"],"rows":[["07.00"]]},"anchor":"tbl-1"})),
+        render_unit("r","reference","main",json!({"source_text":"First entry_7.00"})),
+        render_unit("note","translator_note","supplement:A",json!({})),
+        render_unit("sr","bibliography","supplement:A",json!({"source_text":"Supplement 1."})),
+        render_unit("end","zotero_link","main",json!({"uri":"zotero://select/library/items/ABCDEFGH"})),
+    ];
+    let plan=json!({"schema_version":1,"units":units,"properties":{"tags":["example"],"year":2020}});
+    let mut content=z2o_native::render::content_template(&plan).unwrap();
+    content["h"]["translated_title"]=json!("甲");
+    content["section"]["text"]=json!("引言");
+    content["body"]["text"]=json!("含{{literal:scale}}，见{{link:first}}；保留{not_a_template}。");
+    content["f"]["caption"]=json!("图注。");
+    content["note"]["text"]=json!("图中未标出。");
+    (plan,content)
+}
+#[test]
+fn renderer_preserves_structure_and_unicode_mapping(){
+    let (plan,content)=render_fixture();
+    let report=z2o_native::render::render_note(&plan,&content);
+    assert_eq!(report["status"],"rendered","{report}");
+    let text=report["text"].as_str().unwrap();
+    assert!(text.contains("# Alpha\\_7\n甲\n\n[A\\_B](mailto:a@test.example)"));
+    assert!(text.contains("## 1 引言\n含$7.00$，见[Example](<#^ref-1>)"));
+    assert!(text.contains("rows:\n- - '07.00'"));
+    assert!(text.contains("1. Supplement 1. ^sref-1"));
+    assert!(text.contains("> 译注：图中未标出。"));
+    for row in report["mapping"].as_array().unwrap(){
+        let a=row["start_offset"].as_u64().unwrap() as usize;
+        let b=row["end_offset"].as_u64().unwrap() as usize;
+        let chunk:String=text.chars().skip(a).take(b-a).collect();
+        assert_eq!(files::digest(chunk.as_bytes()),row["sha256"].as_str().unwrap());
+        let line_a=row["start_line"].as_u64().unwrap() as usize-1;
+        let line_b=row["end_line"].as_u64().unwrap() as usize;
+        assert_eq!(chunk,text.lines().skip(line_a).take(line_b-line_a).collect::<Vec<_>>().join("\n"));
+    }
+    assert_eq!(report["source_fidelity"],"not_assessed");
+}
+#[test]
+fn renderer_blocks_invalid_contracts_without_partial_output(){
+    let (original_plan,original_content)=render_fixture();
+    let mut cases=Vec::new();
+    let mut p=original_plan.clone();p["units"][4]["anchor"]=json!("fig-1");cases.push((p,original_content.clone()));
+    let mut p=original_plan.clone();p["units"][4]["latex"]=json!("a\n$$\n## injected");cases.push((p,original_content.clone()));
+    let mut p=original_plan.clone();p["units"][1]["level"]=json!(4);cases.push((p,original_content.clone()));
+    let mut p=original_plan.clone();p["units"][2]["literals"]["scale"]=json!("# forged");cases.push((p,original_content.clone()));
+    let mut c=original_content.clone();c["eq"]["latex"]=json!("tamper");cases.push((original_plan.clone(),c));
+    let mut c=original_content.clone();c["body"]["text"]=json!("{{link:first}}{{link:first}}");cases.push((original_plan.clone(),c));
+    let mut c=original_content.clone();c["body"]["text"]=json!("{{link:unknown}}");cases.push((original_plan.clone(),c));
+    let mut c=original_content.clone();c["body"]["text"]=json!("one\ntwo");cases.push((original_plan.clone(),c));
+    for (p,c) in cases{
+        let report=z2o_native::render::render_note(&p,&c);
+        assert_eq!(report["status"],"blocked","{report}");
+        assert_eq!(report["text"],Value::Null);
+        assert_eq!(report["mapping"],json!([]));
+        assert_eq!(report["findings"][0]["code"],"RENDER_INVALID");
+    }
+}
+#[test]
+fn table_writer_roundtrip_and_fence_length(){
+    use z2o_native::yaml_emit;
+    let v=json!({"version":3,"sheets":[{"locked":true,"theme":"grid","columns":[{"id":"c","name":"列"}],
+        "rows":[{"cells":{"c":"\x60\x60\x60\x60 sample"}}],"footer":"2024-01-01"}]});
+    let block=yaml_emit::rich_table(&v,"^tbl-1",true,"\r\n").unwrap();
+    assert!(block.starts_with("\x60\x60\x60\x60\x60rich-table\r\n"));
+    let lines:Vec<_>=block.lines().collect();
+    let payload=lines[2..lines.len()-3].join("\n");
+    assert_eq!(properties::parse_yaml(payload.as_bytes()).unwrap(),v);
+    let mut invalid=v.clone();invalid["sheets"][0]["locked"]=json!(false);
+    assert!(yaml_emit::rich_table(&invalid,"tbl-1",true,"\n").is_err());
+}
