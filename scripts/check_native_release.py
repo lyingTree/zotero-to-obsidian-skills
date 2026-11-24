@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT.joinpath("native", "migration-status.json")
@@ -104,6 +103,10 @@ def evaluate(manifest, description, reference, version, crate_version, lock_comm
 
 
 def main():
+    # Native qualification CI uses Python 3.12. Import locally so the
+    # independent policy tests remain compatible with reference Python 3.10.
+    import tomllib
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT.joinpath("native", "target", "debug", "z2o.exe" if os.name == "nt" else "z2o"))
     parser.add_argument("--require-release", action="store_true")
