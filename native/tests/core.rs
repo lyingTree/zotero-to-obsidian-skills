@@ -701,3 +701,27 @@ fn native_machine_audit_binds_real_files_and_never_accepts_caller_report(){
     assert!(check_write::record_file_checks(&p,&a,opt()).is_err());
     assert_eq!(fs::read(&a).unwrap(),bytes);
 }
+
+
+#[test]
+fn scope_derivation_checks_candidate_visible_anchor_and_exact_line_bytes(){
+    use z2o_native::{check_scope,files};
+    let tmp=tempdir().unwrap();
+    let inventory=tmp.path().join("inventory.json");let candidate=tmp.path().join("candidate.md");
+    let input=json!({"sources":[{"id":"a","page_count":1}],"units":[{"id":"p1","source":"a","evidence":[{"page":1,"quote":"source text"}]}]});
+    fs::write(&inventory,serde_json::to_vec(&input).unwrap()).unwrap();
+    let deliveries=json!([{"unit":"p1","target":{"anchor":"present"}}]);
+    for text in ["# A\n\nMissing.\n","<!--\nHidden ^present\n-->\n","    Code ^present\n","First ^present\n\nSecond ^present\n",
+        "\x60\x60\x60rich-table\ntext: ^present\n\x60\x60\x60\n","$$\nx ^present\n$$\n","\x60Multi\nLine ^present\n\x60\n"]{
+        fs::write(&candidate,text).unwrap();
+        assert!(check_scope::from_deliveries(&inventory,&candidate,&deliveries,&json!(["p1"])).is_err(),"{text}");
+    }
+    let text="# A\n\n候选。 ^present\n";
+    fs::write(&candidate,format!("\u{feff}{}",text.replace('\n',"\r\n"))).unwrap();
+    let r=check_scope::from_deliveries(&inventory,&candidate,&deliveries,&json!(["p1"])).unwrap();
+    assert_eq!(r[0]["object_id"],"p1");
+    let target=json!([{"unit":"p1","target":{"lines":[1,3],"sha256":files::digest(text.as_bytes())}}]);
+    assert!(check_scope::from_deliveries(&inventory,&candidate,&target,&json!(["p1"])).is_ok());
+    let target=json!([{"unit":"p1","target":{"lines":[1,3],"sha256":"0"}}]);
+    assert!(check_scope::from_deliveries(&inventory,&candidate,&target,&json!(["p1"])).is_err());
+}

@@ -86,3 +86,5 @@ DOCX 原生适配器保留真实 XML 和媒体，禁止假造页号与裁剪结�
 ### 原生验收台账验证与写回
 
 新增 check_records.validate_check_records，按当前真实规则文件、原子声明、每条状态/范围、证据文件字节和定位逐项检查。PDF 页数由 lopdf 实际读取页树，图像像素区域由 image 读取实际尺寸，文本与 JSON 指针使用原文件内容并缓存；这不等价于 PDF 完整来源几何或视觉核验。原有历史台账反例复用作差分测试。新增 complete_workflow.record_check_batch、record_decision_rows、bind_candidate 及 deterministic_stage_checks.record_file_checks，使用同目录独占协作锁、旧哈希比较、临时文件同步与原子替换；保留每条之前的记录，拒绝篡改规则/类型、复用变更的证据 ID、同名不同字节报告和候选静默重绑定。程序不自动授予语义、执行或现场观察通过。协作锁保护本工具的写入者，不能替代外部编辑器的协作锁或保证跨多个文件的原子事务。完整 scope 派生、inventory 写回/覆盖以及完整工作流仍需迁移，状态保留 partial。
+
+新增 check_records.scopes_from_deliveries 直接复用 Rust 静态验收词法函数，检查候选稿真实可见锚点的唯一性、行范围哈希及唯一引文，保留用户明确选择的来源对象和顺序。对 DOCX 额外支持真实原生 XML 位置，不虚构页码；PDF 页号仍仅按清单声明的页范围校验，需后续真实来源交付验证。原有范围正反例纳入差分测试。

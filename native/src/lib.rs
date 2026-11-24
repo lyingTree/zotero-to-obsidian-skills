@@ -25,6 +25,7 @@ pub mod source_prepare;
 pub mod check_ledger;
 pub mod check_validate;
 pub mod check_write;
+pub mod check_scope;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -103,6 +104,7 @@ pub const OPERATIONS: &[&str] = &[
     "complete_workflow.pending_check_batch",
     "complete_workflow.pending_check_rows",
     "check_records.validate_check_records",
+    "check_records.scopes_from_deliveries",
     "complete_workflow.record_check_batch",
     "complete_workflow.record_decision_rows",
     "complete_workflow.bind_candidate",
@@ -593,6 +595,11 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             check_write::record_file_checks(&checks,&report,check_write::AuditOptions{stage:&stage,after:&after,
                 before:before.as_deref(),mode:mode.as_str(),item_type:item_type.as_str(),kind:kind.as_str()})?
+        }
+        "check_records.scopes_from_deliveries" => {
+            let inventory=path(&c.positional("inventory_path")?)?;let candidate=path(&c.positional("candidate_path")?)?;
+            let deliveries=c.positional("deliveries")?;let ids=c.required("unit_ids")?;c.finish()?;
+            check_scope::from_deliveries(&inventory,&candidate,&deliveries,&ids)?
         }
         _ => bail!("UNMIGRATED_OPERATION: {op}; no Python fallback"),
     };

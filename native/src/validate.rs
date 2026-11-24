@@ -136,7 +136,7 @@ fn load_yaml(payload:&str,start:usize,code:&'static str,findings:&mut Vec<Findin
         Err(e)=>{finding(findings,"error",code,start+e.line.saturating_sub(1),format!("YAML 无法安全解析：{}",e.message.lines().next().unwrap_or("invalid YAML")));None}
     }
 }
-fn frontmatter(lines:&[&str],findings:&mut Vec<Finding>)->usize{
+pub(crate) fn frontmatter(lines:&[&str],findings:&mut Vec<Finding>)->usize{
     if lines.first().is_none_or(|l|l.trim()!="---"){return 0;}
     let Some(end)=lines.iter().enumerate().skip(1).find(|(_,l)|matches!(l.trim(),"---"|"...")).map(|(i,_)|i)else{
         finding(findings,"error","FRONTMATTER_UNCLOSED",1,"起始 YAML 未闭合。");return lines.len();

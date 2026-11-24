@@ -686,6 +686,30 @@ class NativeAtomicValidatorComparison(check_records_suite.CheckRecordsTests):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+        original_scopes = check_records_suite.checker.scopes_from_deliveries
+
+        def scopes(inventory_path, candidate_path, deliveries, *, unit_ids):
+            payload = {"schema_version": 1, "operation": "check_records.scopes_from_deliveries",
+                       "args": [str(inventory_path), str(candidate_path), deliveries],
+                       "kwargs": {"unit_ids": unit_ids}}
+            with tempfile.TemporaryDirectory() as directory:
+                request = Path(directory).joinpath("scope.json")
+                request.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                actual = subprocess.run([str(BINARY), "invoke", str(request)], capture_output=True,
+                                        encoding="utf-8", timeout=90)
+                try:
+                    expected = original_scopes(inventory_path, candidate_path, deliveries, unit_ids=unit_ids)
+                except ValueError:
+                    self.assertNotEqual(actual.returncode, 0, actual.stdout)
+                    raise
+                self.assertEqual(actual.returncode, 0, actual.stderr)
+                self.assertEqual(json.loads(actual.stdout)["result"], expected)
+                return expected
+
+        scope_patch = patch.object(check_records_suite.checker, "scopes_from_deliveries", scopes)
+        scope_patch.start()
+        self.addCleanup(scope_patch.stop)
+
 class NativeAtomicWriterComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp
     invoke = ReferenceComparison.invoke
