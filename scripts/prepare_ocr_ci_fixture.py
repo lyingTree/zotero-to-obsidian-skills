@@ -14,13 +14,18 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
-import tarfile
+import stat
+import zipfile
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(os.environ["Z2O_OCR_FIXTURE_DIR"]).resolve()
-ORT_VERSION = "1.28.3"
+ORT_VERSION = "1.32.0"
+# Pinned checksum published on the exact official PyPI release file page.
+ORT_WHEEL_NAME = "onnxruntime-1.32.0-cp312-cp312-manylinux_2_28_x86_64.whl"
+ORT_WHEEL_SHA256 = "99e1074c4b2197accd5073052a465361be17b89c093b8ffb6e6bd8f986c52df8"
 HF_ORG = "PaddlePaddle"
 MAX_DOWNLOAD = 256 * 1024 * 1024
 HEX40 = re.compile(r"[0-9a-f]{40}")
@@ -57,49 +62,58 @@ def write(relative: str, content: bytes) -> dict:
 
 
 def official_cpu_runtime() -> tuple[dict, dict]:
-    url = f"https://api.github.com/repos/microsoft/onnxruntime/releases/tags/v{ORT_VERSION}"
-    release = metadata(url, github=True)
-    if release.get("tag_name") != f"v{ORT_VERSION}" or release.get("draft") or release.get("prerelease"):
-        raise ValueError("Use the actual published stable release.")
-    name = f"onnxruntime-linux-x64-{ORT_VERSION}.tgz"
-    assets = [row for row in release.get("assets", []) if row.get("name") == name]
-    if len(assets) != 1:
-        raise ValueError(f"Official Linux x64 CPU runtime is unavailable: {name}")
-    asset = assets[0]
-    digest = str(asset.get("digest", "")).removeprefix("sha256:")
-    if not HEX64.fullmatch(digest):
-        raise ValueError("Release does not publish an independently verifiable SHA-256.")
-    expected_url = f"https://github.com/microsoft/onnxruntime/releases/download/v{ORT_VERSION}/{name}"
-    if asset.get("browser_download_url") != expected_url:
-        raise ValueError("Unexpected runtime artifact source.")
-    archive = download(expected_url)
-    if sha256(archive).hexdigest() != digest or len(archive) != asset.get("size"):
-        raise ValueError("Runtime archive hash/size mismatch.")
+    # The v1.28.3 GitHub release API returned 404 in CI. Use Microsoft's
+    # stable CPU wheel as a native-library distribution container, not as a
+    # Python runtime dependency. ort rc.13 requests the backward-compatible
+    # C API 28; the real Rust smoke test must verify this combination.
+    metadata_url = f"https://pypi.org/pypi/onnxruntime/{ORT_VERSION}/json"
+    release = metadata(metadata_url)
+    info = release.get("info", {})
+    if info.get("name", "").lower() != "onnxruntime" or info.get("version") != ORT_VERSION:
+        raise ValueError("Unexpected official runtime package metadata.")
+    matches = [row for row in release.get("urls", []) if row.get("filename") == ORT_WHEEL_NAME]
+    if len(matches) != 1:
+        raise ValueError("Pinned CPU wheel is unavailable.")
+    asset = matches[0]
+    url = asset["url"]
+    parsed = urlparse(url)
+    if (asset.get("yanked") or parsed.scheme != "https" or parsed.netloc != "files.pythonhosted.org"
+            or PurePosixPath(parsed.path).name != ORT_WHEEL_NAME
+            or asset.get("digests", {}).get("sha256") != ORT_WHEEL_SHA256):
+        raise ValueError("Unexpected or modified pinned CPU wheel identity.")
+    archive = download(url)
+    if len(archive) != asset.get("size") or sha256(archive).hexdigest() != ORT_WHEEL_SHA256:
+        raise ValueError("Pinned CPU wheel size or SHA-256 mismatch.")
     records = {}
-    with tarfile.open(fileobj=BytesIO(archive), mode="r:gz") as tar:
-        # Extract only selected regular library files; never follow archive
-        # links, create arbitrary member paths, or execute packaged programs.
-        runtime_name = f"libonnxruntime.so.{ORT_VERSION}"
-        for member in tar.getmembers():
-            path = PurePosixPath(member.name)
-            if not member.isfile() or len(path.parts) != 3 or path.parts[1] != "lib":
+    runtime_name = f"libonnxruntime.so.{ORT_VERSION}"
+    permitted = {runtime_name, "libonnxruntime_providers_shared.so"}
+    with zipfile.ZipFile(BytesIO(archive)) as wheel:
+        # Only these native regular shared libraries are materialized. Never
+        # install/import a wheel, follow archive symlinks, or extract scripts.
+        for member in wheel.infolist():
+            path = PurePosixPath(member.filename)
+            if path.parts[:2] != ("onnxruntime", "capi") or len(path.parts) != 3 or path.name not in permitted:
                 continue
-            if path.name not in {runtime_name, "libonnxruntime_providers_shared.so"}:
-                continue
-            if path.name in records or member.size > MAX_DOWNLOAD:
-                raise ValueError("Duplicate or oversized runtime library.")
-            stream = tar.extractfile(member)
-            if stream is None:
-                raise ValueError("Missing runtime library.")
-            records[path.name] = write(f"runtime/{path.name}", stream.read())
+            mode = member.external_attr >> 16
+            if member.is_dir() or stat.S_ISLNK(mode) or (stat.S_IFMT(mode) not in (0, stat.S_IFREG)):
+                raise ValueError("CPU wheel library is not a regular file.")
+            if path.name in records or not 0 < member.file_size <= MAX_DOWNLOAD:
+                raise ValueError("Duplicate or oversized CPU library.")
+            with wheel.open(member) as stream:
+                data = stream.read(member.file_size + 1)
+            if len(data) != member.file_size:
+                raise ValueError("Truncated or oversized library.")
+            records[path.name] = write(f"runtime/{path.name}", data)
     if runtime_name not in records:
-        raise ValueError("Release does not contain the expected regular CPU library.")
+        raise ValueError("CPU wheel does not contain the expected standalone runtime library.")
     return (
         {"platform": "linux", "architecture": "x86_64", "version": ORT_VERSION,
          "file": records[runtime_name],
          "dependencies": [b for n, b in records.items() if n != runtime_name]},
-        {"release": release["tag_name"], "archive": expected_url, "archive_sha256": digest,
-         "libraries": records},
+        {"distribution": "Microsoft onnxruntime CPU wheel (native libraries only)",
+         "metadata": metadata_url, "wheel": ORT_WHEEL_NAME, "archive": url,
+         "archive_sha256": ORT_WHEEL_SHA256, "libraries": records,
+         "qualification": "candidate API-28 compatibility; real Rust inference required"},
     )
 
 

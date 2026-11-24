@@ -38,6 +38,7 @@ pub mod pdfcraft_backend;
 pub mod ocr_backend;
 pub mod ocr_pdf;
 pub mod ocr_table;
+pub mod ocr_quality;
 pub mod translation_validate;
 pub mod translation_writer;
 pub mod translation_tasks;
@@ -128,6 +129,9 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_source_inventory.recognize_ocr_png",
     "prepare_source_inventory.recognize_ocr_table_png",
     "prepare_source_inventory.recognize_pdf_table_region",
+    "prepare_source_inventory.audit_ocr_evidence",
+    "prepare_source_inventory.recognize_ocr_formula_png",
+    "prepare_source_inventory.recognize_pdf_formula_region",
     "prepare_source_inventory.prepare_pdf_ocr_evidence",
     "prepare_source_inventory.prepare_pdfcraft_evidence",
     "prepare_source_inventory.prepare_pdf_structure_evidence",
@@ -275,7 +279,7 @@ pub fn describe() -> Value {
         "schema_version": SCHEMA_VERSION, "engine": "rust-native", "engine_version": ENGINE_VERSION,
         "reference_version": REFERENCE_VERSION, "platform": std::env::consts::OS,
         "architecture": std::env::consts::ARCH, "system_python_required": false,
-        "python_fallback": false, "pdf_backend": {"name":"pdfcraft-render","revision":pdfcraft_backend::PDFCRAFT_REV,"qualification":"candidate"}, "ocr_backend":{"name":"ppocr-rs","revision":ocr_backend::OCR_REV,"policy":"cpu_first","dynamic_runtime":"1.28.x","gpu_required":false,"qualification":"candidate"}, "full_workflow_ready": blockers.is_empty(), "operations": OPERATIONS,
+        "python_fallback": false, "pdf_backend": {"name":"pdfcraft-render","revision":pdfcraft_backend::PDFCRAFT_REV,"qualification":"candidate"}, "ocr_backend":{"name":"ppocr-rs","revision":ocr_backend::OCR_REV,"policy":"cpu_first","dynamic_runtime":"ONNX API 28; 1.28.3 or 1.32.0 candidate","gpu_required":false,"qualification":"candidate"}, "full_workflow_ready": blockers.is_empty(), "operations": OPERATIONS,
         "release_target": manifest["release_target"], "module_status": modules,
         "required_targets": manifest["required_targets"], "release_blockers": blockers,
     })
@@ -775,6 +779,39 @@ pub fn invoke(request: Value) -> Result<Value> {
         }
         "mapping_rerun.compare_stable_projections" => {
             let a=c.positional("baseline")?;let b=c.positional("current")?;c.finish()?;mapping_compare::compare(&a,&b)?
+        }
+        "prepare_source_inventory.audit_ocr_evidence" => {
+            let primary=path(&c.positional("primary_record")?)?;
+            let sha=string(&c.required("expected_primary_sha256")?,"expected_primary_sha256")?;
+            let comparison=c.option("comparison_record",Value::Null);
+            let comparison_sha=c.option("expected_comparison_sha256",Value::Null);
+            let comparison=if comparison.is_null(){None}else{Some(path(&comparison)?)};
+            let comparison_sha=if comparison_sha.is_null(){None}else{Some(string(&comparison_sha,"expected_comparison_sha256")?)};
+            ensure!(comparison.is_some()==comparison_sha.is_some(),"Supply both comparison record and expected comparison SHA-256, or neither");
+            c.finish()?;
+            ocr_quality::audit(&primary,&sha,comparison.as_deref().zip(comparison_sha.as_deref()))?
+        }
+        "prepare_source_inventory.recognize_ocr_formula_png" | "prepare_source_inventory.recognize_pdf_formula_region" => {
+            let package=path(&c.required("package_manifest")?)?;
+            let sha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
+            if op.ends_with("recognize_ocr_formula_png"){
+                let png=path(&c.positional("image_path")?)?;
+                let expected=c.option("expected_image_sha256",Value::Null);
+                let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_image_sha256")?)};
+                c.finish()?;
+                ocr_backend::recognize_formula_png(&png,&package,&sha,expected.as_deref())?
+            }else{
+                let source=path(&c.positional("source_pdf")?)?;
+                let dest=path(&c.required("destination")?)?;
+                let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
+                let bbox=c.required("bbox")?;let coords=c.required("coordinate_system")?;
+                let dpi=c.option("dpi",json!(200)).as_u64().context("dpi must be an integer")?;
+                let expected=c.option("expected_source_sha256",Value::Null);
+                let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
+                c.finish()?;
+                let opt=ocr_pdf::FormulaOptions{page,bbox:&bbox,coordinate_system:&coords,dpi,package:&package,package_sha:&sha,expected_source_sha:expected.as_deref()};
+                json!(path_text(&ocr_pdf::recognize_formula_region(&source,&dest,opt)?)?)
+            }
         }
         "prepare_source_inventory.recognize_ocr_table_png" | "prepare_source_inventory.recognize_pdf_table_region" => {
             let package=path(&c.required("package_manifest")?)?;

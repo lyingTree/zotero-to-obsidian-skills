@@ -159,3 +159,11 @@ CI 修复：OCR smoke 的工作目录改为执行步骤从 RUNNER_TEMP 写入 GI
 ### 可选表格结构及单元格证据
 
 新增 `recognize_ocr_table_png` 和 `recognize_pdf_table_region`。显式传入表格截图或原始 PDF 的未旋转点坐标，使用经绑定的 `auxiliary.table_structure = {"architecture":"SLANet_plus","model":{path,sha256},"dictionary":{path,sha256}}`；可选择 `cell_mode="wired"|"wireless"` 使用独立 RT-DETR-L 单元格检测模型（`auxiliary.table_cells_wired` / `table_cells_wireless`）。默认 cell_mode=off，不自动加载表格模型。原始 HTML 仅作为数据，不执行或写入最终 Markdown；有限语法解析记录明确 rowspan/colspan、空位及上游可能省略的终止容器标签。缺失行/单元格、越界、非法属性、重叠 span 均阻断，不猜补。上游可能产生数量或位置不匹配的结构框，始终保留独立框数组，不按索引与结构单元格强配。RT-DETR-L 框只与完全且唯一包含的 OCR 行形成几何候选，跨格/未归属读法全部保留。PDF 接口同时映射独立结构框、检测框及正文到原始未旋转坐标。没有自动 Rich Table 输出、合并格匹配验收或真实模型测试通过的声明；表格模型本身须单独安装、实测和复核。
+
+### OCR 编译修复、独立复核与公式候选
+
+修正 PP-DocLayoutV3 的上游真实 API：`LayoutBox.class.semantic()`，同时保留原始 25 类标签和简化语义类。旧 CI run 45408421711 的失败原因是 `semantic_class()` 不存在，以及 Microsoft v1.28.3 GitHub release API 返回 404。CPU smoke 改用 Microsoft 官方 PyPI `onnxruntime-1.32.0-cp312-cp312-manylinux_2_28_x86_64.whl`，独立固定 PyPI 公布的 SHA-256 `99e1074c4b2197accd5073052a465361be17b89c093b8ffb6e6bd8f986c52df8`，仅提取经校验的原生 CPU .so，不安装/执行 Python wheel。允许明确列出的 1.28.3 或 1.32.0 CPU 候选运行库，Rust `ort` 仍请求 API 28；实际兼容性需要测试，不把候选称为已合格运行时。
+
+新增 `audit_ocr_evidence(primary_record, expected_primary_sha256=..., comparison_record=..., expected_comparison_sha256=...)`：重新读取并绑定原 PNG、源 PDF（存在时）、模型包及实际权重；仅比较同一实际栅格的候选，双向唯一几何匹配保留原始文字、分数、坐标，记录数值、希腊字母、正负号、上下标及低分，所有文本和特殊版面区域均生成待复核任务；不因两份结果一致而验收通过，不假装调用 Jev，未匹配文本不丢弃。当前接受原生 OCR 证据格式，独立增强模型还需要统一输出适配。
+
+新增显式 `recognize_ocr_formula_png`、`recognize_pdf_formula_region`，复用同一固定 ppocr-rs 的实验性 `PP-FormulaNet_plus-L` 识别器（`auxiliary.formula={architecture,model,tokenizer}`，架构值为 `PP-FormulaNet_plus-L`）。仅在用户/调用方显式选择一处公式时运行，不随正文自动加载；CPU 内存保护暂定总内存 16 GiB、可用内存 6 GiB，限制模型、词表及裁剪尺寸，要求真实 tokenizer 并禁止隐式 fallback。原始公式图、PDF 坐标、候选 LaTeX、模型分数及资源哈希分别记录；上游 decoder 最多 2560 步，终止完整性、线程限制、实际模型精度和运行时上限仍未验证，不执行或自动写入 LaTeX。该轻量集成是明确的可选备选方案，不替代尚待集成的 MiniCPM-OCR/Jev。

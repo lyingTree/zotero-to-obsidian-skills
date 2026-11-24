@@ -34,7 +34,7 @@
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "Native PDF/OCR page evidence, restart and optional table region hypotheses implemented; real CPU qualification, table-model accuracy, final source inventory/figure export/boundary parity remain"
+      "blocker": "Native page/region OCR, table hypotheses, opt-in experimental FormulaNet and deterministic bound OCR review; actual CPU/model and all-platform qualification plus legacy inventory/figure parity remain"
     },
     "docx_source_qualification": {
       "qualified": false,

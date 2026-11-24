@@ -7,7 +7,7 @@ fn fixture(root:&Path)->(std::path::PathBuf,String){
         json!({"path":name,"sha256":files::digest(name.as_bytes())})
     };
     let payload=json!({"schema_version":1,"engine":"ppocr-v6",
-        "runtime":{"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,"version":"1.28.2","file":record("runtime.bin")},
+        "runtime":{"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,"version":"1.32.0","file":record("runtime.bin")},
         "profiles":{"tiny":{"detector":record("det.onnx"),"recognizer":record("rec.onnx"),"dictionary":record("dict.txt")}}});
     let manifest=root.join("package.json");let raw=serde_json::to_vec_pretty(&payload).unwrap();
     fs::write(&manifest,&raw).unwrap();(manifest,files::digest(&raw))
@@ -175,5 +175,61 @@ fn explicit_table_model_resources_are_checked_before_runtime(){
     assert_eq!(inspected["resources"].as_object().unwrap().len(),4);
     fs::write(root.path().join("table.onnx"),b"changed").unwrap();
     assert!(ocr_backend::recognize_table_png(&root.path().join("missing.png"),&manifest,&files::digest(&bytes),"tiny","off",None).is_err());
+    assert!(ocr_backend::install_package(&manifest,&files::digest(&bytes),&root.path().join("other"),|_,_,_|{}).is_err());
+}
+
+
+#[test]
+fn ocr_quality_uses_actual_bound_raster_and_never_grants_acceptance(){
+    use z2o_native::{ocr_quality,check_ledger};
+    let root=tempfile::tempdir().unwrap();let (manifest,hash)=fixture(root.path());
+    let model=ocr_backend::inspect_package(&manifest,&hash,"tiny","off").unwrap();
+    let png=root.path().join("raster.png");image::RgbImage::from_pixel(100,100,image::Rgb([255,255,255])).save(&png).unwrap();
+    let asset=check_ledger::bind_file(&png).unwrap();
+    let block=|index:u32,text:&str,quad:serde_json::Value|json!({
+        "index":index,"text":text,"text_score":0.98,"box_score":0.99,
+        "location_valid":true,"original_pixel_quad":quad,"words":[]});
+    let b0=json!([[10,10],[60,10],[60,20],[10,20]]);
+    let b1=json!([[10,30],[60,30],[60,40],[10,40]]);
+    let primary=json!({"schema_version":1,"status":"ocr_candidate","source_fidelity":"not_assessed","acceptance_ready":false,
+        "source_image":asset,"source_image_size":[100,100],"model_package":model,
+        "layout_regions":[{"index":0,"class":"Equation","original_pixel_quad":b1}],
+        "blocks":[block(0,"−1.5 m",b0.clone()),block(1,"ocean",b1.clone())],"plain_text":"−1.5 m\nocean"});
+    let other=json!({"schema_version":1,"status":"ocr_candidate","source_fidelity":"not_assessed","acceptance_ready":false,
+        "source_image":asset,"source_image_size":[100,100],"model_package":model,
+        "layout_regions":[],"blocks":[block(0,"-1.5 m",b0),block(1,"ocean",b1)],"plain_text":"-1.5 m\nocean"});
+    let p=root.path().join("primary.json");let q=root.path().join("other.json");
+    fs::write(&p,serde_json::to_vec(&primary).unwrap()).unwrap();
+    fs::write(&q,serde_json::to_vec(&other).unwrap()).unwrap();
+    let ph=files::snapshot(&p).unwrap()["sha256"].as_str().unwrap().to_owned();
+    let qh=files::snapshot(&q).unwrap()["sha256"].as_str().unwrap().to_owned();
+    let out=ocr_quality::audit(&p,&ph,Some((&q,&qh))).unwrap();
+    assert_eq!(out["comparison_counts"]["different_text"],1);
+    assert_eq!(out["comparison_counts"]["exact_text_agreement"],1);
+    assert_eq!(out["same_recognition_assets"],true);
+    assert_eq!(out["independence_established"],false);
+    assert_eq!(out["acceptance_ready"],false);
+    assert_eq!(out["tasks"].as_array().unwrap().len(),3);
+    assert!(out["tasks"].as_array().unwrap().iter().all(|r|r["status"]=="pending"));
+    assert!(ocr_quality::audit(&p,&ph,Some((&p,&ph))).is_err());
+    fs::write(&png,b"changed").unwrap();
+    assert!(ocr_quality::audit(&p,&ph,Some((&q,&qh))).is_err());
+}
+
+#[test]
+fn formula_package_is_opt_in_and_all_assets_are_hash_checked(){
+    let root=tempfile::tempdir().unwrap();let (manifest,_)=fixture(root.path());
+    let mut data:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    fs::write(root.path().join("formula.onnx"),b"formula fixture").unwrap();
+    fs::write(root.path().join("tokenizer.json"),b"tokenizer fixture").unwrap();
+    data["auxiliary"]["formula"]=json!({"architecture":"PP-FormulaNet_plus-L",
+        "model":{"path":"formula.onnx","sha256":files::digest(b"formula fixture")},
+        "tokenizer":{"path":"tokenizer.json","sha256":files::digest(b"tokenizer fixture")}});
+    let bytes=serde_json::to_vec(&data).unwrap();fs::write(&manifest,&bytes).unwrap();
+    let installed=ocr_backend::install_package(&manifest,&files::digest(&bytes),&root.path().join("store"),|_,_,_|{}).unwrap();
+    assert_eq!(installed["resource_count"],6);
+    let inspected=ocr_backend::inspect_package(&manifest,&files::digest(&bytes),"tiny","off").unwrap();
+    assert_eq!(inspected["resources"].as_object().unwrap().len(),4);
+    fs::write(root.path().join("tokenizer.json"),b"changed").unwrap();
     assert!(ocr_backend::install_package(&manifest,&files::digest(&bytes),&root.path().join("other"),|_,_,_|{}).is_err());
 }

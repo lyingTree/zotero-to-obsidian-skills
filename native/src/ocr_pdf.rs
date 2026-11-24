@@ -321,6 +321,29 @@ pub fn recognize_table_region(source:&Path,output:&Path,opt:TableOptions<'_>)->R
     fresh(&destination,&result)?;Ok(destination)
 }
 
+pub struct FormulaOptions<'a>{
+    pub page:u64,pub bbox:&'a Value,pub coordinate_system:&'a Value,pub dpi:u64,
+    pub package:&'a Path,pub package_sha:&'a str,pub expected_source_sha:Option<&'a str>,
+}
+pub fn recognize_formula_region(source:&Path,output:&Path,opt:FormulaOptions<'_>)->Result<PathBuf>{
+    ensure!(*opt.coordinate_system==coord(),"Declare unrotated PDF-point coordinates");
+    ensure!((72..=600).contains(&opt.dpi),"Formula OCR dpi must be between 72 and 600");
+    let region=box4(opt.bbox)?;
+    let mut pdf=Backend::open(source,opt.expected_source_sha)?;
+    let root=safe_root(output)?;
+    let attempt=tempfile::Builder::new().prefix("formula-ocr-").tempdir_in(&root)?.keep();
+    let png=attempt.join("formula.png");
+    let render=pdf.render(opt.page,Some(region),opt.dpi,&png)?;
+    fresh(&attempt.join("render.json"),&render)?;
+    let mut result=ocr_backend::recognize_formula_png(&png,opt.package,opt.package_sha,render["asset"]["sha256"].as_str())?;
+    ensure!(result["source_image"]==render["asset"]&&result["source_image_size"]==json!([render["width"],render["height"]]),"Formula evidence differs from the source raster");
+    result["source_pdf"]=render["source_file"].clone();
+    result["page"]=json!(opt.page);result["bbox"]=json!(region);result["coordinate_system"]=coord();
+    result["render"]=render;pdf.verify()?;
+    let destination=attempt.join("formula-candidate.json");
+    fresh(&destination,&result)?;Ok(destination)
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;

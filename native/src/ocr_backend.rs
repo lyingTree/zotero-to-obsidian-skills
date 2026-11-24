@@ -4,7 +4,7 @@
 use anyhow::{anyhow,bail,ensure,Context,Result};
 use serde_json::{json,Map,Value};
 use std::{collections::HashSet,fs,io::Cursor,path::{Path,PathBuf},sync::Mutex,panic::{catch_unwind,AssertUnwindSafe}};
-use ppocr_rs::{OcrLite,OcrOptions,LayoutAnalyzer,DocOrientationClassifier,Point,TextBlock,TableStructureRecognizer,CellDetector};
+use ppocr_rs::{OcrLite,OcrOptions,LayoutAnalyzer,DocOrientationClassifier,Point,TextBlock,TableStructureRecognizer,CellDetector,FormulaRecognizer};
 use crate::{check_ledger,check_write,files,path,path_text,parse_json};
 
 pub const OCR_REV:&str="b87550b775206655acf84d7fc421ca5bdf745fd3";
@@ -120,8 +120,8 @@ fn package_records(data:&Value)->Result<Vec<(&str,&Value)>>{
     ensure!(runtime["platform"]==std::env::consts::OS&&runtime["architecture"]==std::env::consts::ARCH,
         "OCR_RUNTIME_PLATFORM_MISMATCH");
     let version=str_nonempty(&runtime["version"],"ONNX Runtime version")?;
-    ensure!(version.strip_prefix("1.28.").is_some_and(|v|!v.is_empty()&&v.bytes().all(|b|b.is_ascii_digit())),
-        "Package must name a qualified ONNX Runtime 1.28.x build");
+    ensure!(matches!(version,"1.28.3"|"1.32.0"),
+        "Use an explicitly supported CPU runtime candidate (ONNX Runtime 1.28.3 or 1.32.0; API 28); no unapproved version");
     let mut result=vec![("runtime",&runtime["file"])];
     if let Some(rows)=runtime.get("dependencies"){
         let rows=rows.as_array().filter(|r|r.len()<=64).context("runtime.dependencies must be an array of at most 64 resource records")?;
@@ -145,6 +145,14 @@ fn package_records(data:&Value)->Result<Vec<(&str,&Value)>>{
                     }
                 },
                 "table_cells_wired"|"table_cells_wireless"=>{if !v.is_null(){result.push(("table_cell_detector",v));}},
+                "formula"=>{
+                    if !v.is_null(){
+                        ensure!(v["architecture"]=="PP-FormulaNet_plus-L","Unsupported experimental formula model architecture");
+                        result.push(("formula_model",&v["model"]));
+                        result.push(("formula_tokenizer",&v["tokenizer"]));
+                    }
+                },
+
                 _=>bail!("Unknown OCR auxiliary model: {name}"),
             }
         }
@@ -284,8 +292,8 @@ impl Package{
         ensure!(runtime["platform"]==std::env::consts::OS&&runtime["architecture"]==std::env::consts::ARCH,
             "OCR_RUNTIME_PLATFORM_MISMATCH");
         let version=str_nonempty(&runtime["version"],"ONNX Runtime version")?;
-        ensure!(version.strip_prefix("1.28.").is_some_and(|v|!v.is_empty()&&v.bytes().all(|b|b.is_ascii_digit())),
-            "Package must name a qualified ONNX Runtime 1.28.x build");
+        ensure!(matches!(version,"1.28.3"|"1.32.0"),
+            "Use an explicitly supported CPU runtime candidate (ONNX Runtime 1.28.3 or 1.32.0; API 28); no unapproved version");
         let profiles=data["profiles"].as_object().context("OCR profiles must be an object")?;
         ensure!(!profiles.is_empty()&&profiles.keys().all(|s|matches!(s.as_str(),"tiny"|"small"|"medium")),"Invalid OCR profile names");
         let aux=&data["auxiliary"];
@@ -346,6 +354,49 @@ impl Package{
         // A caller-selected table crop is not a page. Do not auto-rotate it.
         p.resources.remove("orientation");p.policy["table_cell_mode"]=json!(cell_mode);
         p.verify()?;Ok(p)
+    }
+    fn for_formula(manifest_path:&Path,expected_sha:&str)->Result<Self>{
+        let (_,manifest,data,root)=verified_manifest(manifest_path,expected_sha)?;
+        // The experimental formula decoder is expensive. Never load the
+        // ordinary detector/recognizer, layout, or GPU for a formula crop.
+        package_records(&data)?;
+        let (total,free,cores)=available();
+        ensure!(total>=16*GIB&&free>=6*GIB,"Experimental formula recognition requires the conservative 16 GiB / 6 GiB available memory budget");
+        let runtime=&data["runtime"];
+        let model=&data["auxiliary"]["formula"];
+        ensure!(model["architecture"]=="PP-FormulaNet_plus-L","Install an explicitly bound PP-FormulaNet_plus-L formula model");
+        let mut resources=Map::new();
+        resources.insert("runtime".into(),resource(&root,&runtime["file"],"runtime")?);
+        if let Some(rows)=runtime.get("dependencies"){
+            for (i,row) in rows.as_array().context("Invalid runtime dependency list")?.iter().enumerate(){
+                resources.insert(format!("runtime_dependency_{i}"),resource(&root,row,"runtime dependency")?);
+            }
+        }
+        for (name,key) in [("formula_model","model"),("formula_tokenizer","tokenizer")]{
+            let b=resource(&root,&model[key],name)?;
+            ensure!(resources.values().all(|v|v["path"]!=b["path"]),"Formula model resources must be distinct");
+            resources.insert(name.into(),b);
+        }
+        // Avoid upstream fallback tokenizer and unbounded vocabulary IDs.
+        let tokenizer=path(&resources["formula_tokenizer"]["path"])?;
+        let (raw,bound)=read_small(&tokenizer,32*1024*1024)?;
+        ensure!(bound==resources["formula_tokenizer"],"Formula tokenizer changed");
+        let tok=parse_json(std::str::from_utf8(&raw)?)?;
+        let vocab=tok["model"]["vocab"].as_object().or_else(||tok["vocab"].as_object())
+            .filter(|v|!v.is_empty()&&v.len()<=100_000).context("Require the actual supported BPE formula vocabulary")?;
+        let mut ids=HashSet::new();
+        for id in vocab.values(){
+            let id=id.as_u64().filter(|i|*i<100_000).context("Invalid formula tokenizer ID")?;
+            ensure!(ids.insert(id),"Duplicate formula tokenizer ID");
+        }
+        for id in [0,1,2]{ensure!(ids.contains(&id),"Missing formula special-token IDs");}
+        let model_path=path(&resources["formula_model"]["path"])?;
+        ensure!(fs::metadata(&model_path)?.len()<=2*GIB,"Formula model exceeds explicit resource budget");
+        let policy=json!({"policy":"cpu_first","execution_provider":"CPUExecutionProvider","gpu_required":false,
+            "profile":"experimental_formula_only","total_memory_bytes":total,"available_memory_bytes":free,
+            "logical_parallelism":cores,"memory_budget_available":true,"page_parallelism":1,
+            "boundary":"Opt-in experimental crop inference, not qualified minimum hardware; the upstream decoder may run up to 2560 steps."});
+        let p=Self{manifest,resources,policy};p.verify()?;Ok(p)
     }
     fn verify(&self)->Result<()>{
         for b in std::iter::once(&self.manifest).chain(self.resources.values()){
@@ -440,7 +491,7 @@ impl Engine{
                 let right=r.x.checked_add(r.w).context("Layout width overflow")?;
                 let bottom=r.y.checked_add(r.h).context("Layout height overflow")?;
                 let quad=[[r.x,r.y],[right,r.y],[right,bottom],[r.x,bottom]];
-                regions.push(json!({"index":i,"class":format!("{:?}",r.semantic_class()),
+                regions.push(json!({"index":i,"class":format!("{:?}",r.class.semantic()),"layout_class":format!("{:?}",r.class),
                     "score":finite_score(r.score),"reading_order":r.reading_order,
                     "upright_pixel_bbox":[r.x,r.y,right,bottom],
                     "original_pixel_quad":map_quad(&quad,angle,w,h,true)}));
@@ -576,6 +627,34 @@ pub fn recognize_table_png(png:&Path,manifest:&Path,hash:&str,profile:&str,cell_
             "structure_model_boxes":raw_boxes,"detected_cells":cells,"cell_mode":cell_mode,
             "box_identity_verified":false,"cell_association":association,"status":"table_candidate_review_required",
             "source_fidelity":"not_assessed","acceptance_ready":false,"evidence_boundary":crate::ocr_table::BOUNDARY}))
+    })
+}
+
+/// Optional experimental native formula model, one explicitly selected crop.
+/// The pinned ppocr-rs decoder is disabled by default upstream. We enable it
+/// only here, never during ordinary OCR, and never write a final equation.
+pub fn recognize_formula_png(png:&Path,manifest:&Path,hash:&str,expected:Option<&str>)->Result<Value>{
+    guarded(||{
+        let package=Package::for_formula(manifest,hash)?;
+        let (img,source)=read_rgb(png,expected)?;
+        let (w,h)=img.dimensions();
+        ensure!(u64::from(w)*u64::from(h)<=4_000_000,"Formula crop exceeds the explicit four-million-pixel budget");
+        package.verify()?;
+        init_cpu(&package)?;
+        let model=package.get("formula_model")?;
+        let tokenizer=package.get("formula_tokenizer")?;
+        let mut recognizer=FormulaRecognizer::from_paths(&model,Some(&tokenizer))?;
+        recognizer.decoder_enabled=true;
+        let result=recognizer.recognize(&img)?;
+        drop(recognizer);
+        let text=result.latex;
+        ensure!(text.len()<=256*1024,"Formula hypothesis exceeds text budget");
+        package.verify()?;ensure!(binding(png)?==source,"Formula crop changed during inference");
+        Ok(json!({"schema_version":1,"status":if text.trim().is_empty(){"formula_unresolved"}else{"formula_candidate_review_required"},
+            "source_image":source,"source_image_size":[w,h],"model_package":package.report(),
+            "backend":"PP-FormulaNet_plus-L (experimental ppocr-rs decoder)","latex_candidate":text,"raw_model_score":finite_score(result.score),
+            "decoder_completion_verified":false,"latex_semantics_verified":false,"source_fidelity":"not_assessed","acceptance_ready":false,
+            "evidence_boundary":"Actual experimental formula inference, not a validated equation. Upstream token decoding and termination are unqualified; the candidate may omit, reorder or hallucinate mathematical symbols. Do not execute LaTeX or write it into the final note before independent source review."}))
     })
 }
 
