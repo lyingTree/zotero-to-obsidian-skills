@@ -418,6 +418,13 @@ pub fn write(inventory:&Path,candidate:&Path,deliveries:&Value,paths:&Value,expe
 }
 // Check every generated field against independently re-derived records.
 // Manual merged/compact historical maps are not treated as equivalent.
+/// Some historical maps omit nonrequired empty collections.  A missing
+/// field is not the same as a present null or malformed collection, and it
+/// must not mask any independently derived rows.
+fn check_collection(actual:&Value,expected:&Value,group:&str,key:&str,name:&str,allow_omitted_empty:bool)->Result<()>{
+    if allow_omitted_empty&&actual.get(group).is_none()&&expected[group].as_array().is_some_and(Vec::is_empty){return Ok(());}
+    check_rows(&actual[group],&expected[group],key,&format!("{name}.{group}"))
+}
 fn check_rows(actual:&Value,expected:&Value,key:&str,name:&str)->Result<()>{
     let a=index(actual,key)?;let b=index(expected,key)?;
     ensure!(a.keys().eq(b.keys()),"MAP_COLLECTION_COVERAGE: {name}");
@@ -524,13 +531,17 @@ pub(crate) fn validate_full(inventory:&Path,candidate:&Path,paths:&Value,expecte
             ensure!(aliases.insert(id.clone(),group).is_none(),"MAP_BLOCK_ID: duplicate view identity {id}");
         }
         for(group,key)in [("sources","id"),("units","unit"),("metadata","unit"),("objects","unit"),("references","unit"),("citations","unit")]{
-            check_rows(&got[group],&want[group],key,&format!("{name}.{group}"))?;
+            let optional_empty=group=="metadata"||(name=="si_map"&&matches!(group,"objects"|"references"|"citations"));
+            check_collection(got,want,group,key,name,optional_empty)?;
         }
     }
     let got=&actual["link_map"];let want=&docs["link_map"];
     ensure!(got["source_fidelity"]=="not_assessed"&&nonempty(&got["status"])&&nonempty(&got["review_status"]),"MAP_RECORD_STATUS: link_map");
-    for group in ["anchors","unresolved"]{check_rows(&got[group],&want[group],"id",&format!("link_map.{group}"))?;}
-    for group in LINKS{check_link_origins(&got[*group],&want[*group],&aliases,&format!("link_map.{group}"))?;}
+    for group in ["anchors","unresolved"]{check_collection(got,want,group,"id","link_map",false)?;}
+    for &group in LINKS{
+        if matches!(group,"external_links"|"resource_links")&&got.get(group).is_none()&&want[group].as_array().is_some_and(Vec::is_empty){continue;}
+        check_link_origins(&got[group],&want[group],&aliases,&format!("link_map.{group}"))?;
+    }
     c.bindings.verify()?;Ok(VerifiedMaps{docs:Value::Object(actual),checked,bindings:c.bindings})
 }
 pub fn validate(inventory:&Path,candidate:&Path,paths:&Value,expected:&Value,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{

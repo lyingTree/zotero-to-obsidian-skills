@@ -1365,6 +1365,36 @@ class NativeHandoffGenerationComparison(unittest.TestCase):
         self.assertTrue(rerun["mapping_equal"], rerun)
 
 
+    def test_historical_optional_empty_handoff_collections(self):
+        import test_handoff_maps as suite
+        fixture = suite.Fixture(self.root.joinpath("fixture"), candidate_eol="\r\n")
+        original = fixture.write()
+        self.assertTrue(original.records_ready, original.as_dict())
+        for name, groups in (("si_map", ("objects", "references", "citations")),
+                             ("link_map", ("external_links", "resource_links"))):
+            path = fixture.paths[name]
+            view = suite.read(path)
+            for group in groups:
+                self.assertEqual(view.pop(group), [])
+            suite.save(path, view)
+        paths = {name: str(path) for name, path in fixture.paths.items()}
+
+        def compare(expected):
+            reference_report = fixture.validate()
+            rust_report = self.invoke("handoff_maps.validate_handoff_maps",
+                                      str(fixture.inventory_path), str(fixture.candidate), paths,
+                                      expected_source_bindings=fixture.expected)
+            self.assertIs(reference_report.records_ready, expected, reference_report.as_dict())
+            self.assertIs(rust_report["records_ready"], expected, rust_report)
+
+        compare(True)
+        path = fixture.paths["link_map"]
+        view = suite.read(path)
+        view["external_links"] = None
+        suite.save(path, view)
+        compare(False)
+
+
 class NativePublicHelperComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp
     invoke = ReferenceComparison.invoke

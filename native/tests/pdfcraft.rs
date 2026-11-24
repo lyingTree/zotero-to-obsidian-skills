@@ -219,3 +219,111 @@ fn source_preflight_rejects_ambiguous_roles_and_case_conflicting_ids(){
         assert!(!work.exists());
     }
 }
+
+fn inventory_fixture_docx(path:&Path,text:&str){
+    use std::io::Write;
+    let mut archive=zip::ZipWriter::new(fs::File::create(path).unwrap());
+    let options=zip::write::SimpleFileOptions::default();
+    archive.start_file("[Content_Types].xml",options).unwrap();
+    archive.write_all(br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#).unwrap();
+    archive.start_file("word/document.xml",options).unwrap();
+    archive.write_all(text.as_bytes()).unwrap();
+    archive.finish().unwrap();
+}
+const GOOD_DOCX:&str=r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Supplement evidence</w:t></w:r></w:p></w:body></w:document>"#;
+
+fn inventory_cli(work:&Path,request_file:&Path,primary:&Path,supplement:&Path,glossary:&Path)->std::process::Output{
+    let req=json!({"schema_version":1,"operation":"prepare_source_inventory.prepare_sources",
+        "args":[{"a_main":primary,"z_supplement":supplement},work],
+        "kwargs":{"source_roles":{"a_main":"main","z_supplement":"supplement"},"glossary_path":glossary,"dpi":72}});
+    fs::write(request_file,serde_json::to_vec(&req).unwrap()).unwrap();
+    std::process::Command::new(env!("CARGO_BIN_EXE_z2o")).arg("invoke").arg(request_file).output().unwrap()
+}
+
+#[test]
+fn cli_preflights_later_docx_before_writing_any_evidence_and_retries(){
+    let temp=tempfile::tempdir().unwrap();let dir=temp.path();
+    let pdf=dir.join("primary.pdf");fixture(&pdf);
+    let docx=dir.join("supplement.docx");inventory_fixture_docx(&docx,"<not-a-word-document>");
+    let glossary=dir.join("terms.md");fs::write(&glossary,"wave = 波").unwrap();
+    let work=dir.join("not-made");let req=dir.join("request.json");
+    let out=inventory_cli(&work,&req,&pdf,&docx,&glossary);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("z_supplement: accessible DOCX required"));
+    assert!(!work.exists(),"failed input preflight must not create the work tree");
+    inventory_fixture_docx(&docx,GOOD_DOCX);
+    let out=inventory_cli(&work,&req,&pdf,&docx,&glossary);
+    assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+    let result:serde_json::Value=serde_json::from_slice(&out.stdout).unwrap();
+    let inventory_path=Path::new(result["result"].as_str().unwrap());
+    let inv=z2o_native::pipeline::read_json(inventory_path).unwrap();
+    assert_eq!(inv["sources"][0]["role"],"main");
+    assert_eq!(inv["sources"][0]["page_count"],2);
+    assert_eq!(inv["sources"][1]["role"],"supplement");
+    assert_eq!(inv["sources"][1]["native_blocks"][0]["text"],"Supplement evidence");
+    assert_eq!(inv["units"],json!([]));
+    assert_eq!(inv["sources"][0]["header_fields"]["title"]["status"],"pending");
+    assert_eq!(work.join("terminology.json").canonicalize().unwrap(),Path::new(inv["terminology_path"].as_str().unwrap()));
+    let baseline=fs::read(inventory_path).unwrap();
+    let rerun=inventory_cli(&work,&req,&pdf,&docx,&glossary);
+    assert!(!rerun.status.success());
+    assert_eq!(fs::read(inventory_path).unwrap(),baseline);
+}
+
+#[test]
+fn cli_checks_later_pdf_geometry_without_writing_earlier_docx(){
+    let temp=tempfile::tempdir().unwrap();let dir=temp.path();
+    let docx=dir.join("first.docx");inventory_fixture_docx(&docx,GOOD_DOCX);
+    let pdf=dir.join("oversized.pdf");fixture(&pdf);
+    let mut document=Document::load(&pdf).unwrap();
+    let page=*document.get_pages().get(&2).unwrap();
+    document.get_object_mut(page).unwrap().as_dict_mut().unwrap()
+        .set("MediaBox",vec![Object::Integer(0),Object::Integer(0),Object::Integer(60_000),Object::Integer(60_000)]);
+    document.save(&pdf).unwrap();
+    let glossary=dir.join("terms.md");fs::write(&glossary,"wave = 波").unwrap();
+    let work=dir.join("not-made");let req=dir.join("request.json");
+    let out=inventory_cli(&work,&req,&docx,&pdf,&glossary);
+    assert!(!out.status.success());
+    let error=String::from_utf8_lossy(&out.stderr);
+    assert!(error.contains("z_supplement: PDF page raster preflight failed")&&error.contains("PDF page 2"),"{error}");
+    assert!(!work.exists(),"raster geometry preflight must not create the work tree");
+}
+
+#[test]
+fn preflight_binding_prevents_a_changed_later_attachment_from_emitting_evidence(){
+    use z2o_native::source_prepare::prepare_sources;
+    let temp=tempfile::tempdir().unwrap();let dir=temp.path();
+    let pdf=dir.join("first.pdf");fixture(&pdf);
+    let docx=dir.join("second.docx");inventory_fixture_docx(&docx,GOOD_DOCX);
+    let work=dir.join("work");
+    let mut changed=false;
+    let result=prepare_sources(&json!({"a_main":pdf,"z_supplement":docx}),&work,&json!(null),None,72,None,|_,_,label|{
+        if !changed && label=="PDF/DOCX sources"{
+            inventory_fixture_docx(&docx,&GOOD_DOCX.replace("Supplement evidence","New attachment bytes"));
+            changed=true;
+        }
+    });
+    let error=format!("{:#}",result.unwrap_err());
+    assert!(changed&&error.contains("z_supplement: source evidence preparation failed")&&error.contains("DOCX source changed since selection"),"{error}");
+    assert!(!work.join("source-evidence/z_supplement").exists());
+    assert!(!work.join("source-inventory.json").exists());
+}
+
+#[test]
+fn cooperative_source_inventory_writers_do_not_share_an_incomplete_work_tree(){
+    use z2o_native::source_prepare::prepare_sources;
+    let tmp=tempfile::tempdir().unwrap();let root=tmp.path();
+    let source=root.join("first.docx");inventory_fixture_docx(&source,GOOD_DOCX);
+    let work=root.join("work");let sources=json!({"main":source});
+    let mut checked=false;
+    let inventory=prepare_sources(&sources,&work,&json!(null),None,72,None,|_,_,label|{
+        if !checked&&label=="main native block 1"{
+            let contender=prepare_sources(&sources,&work,&json!(null),None,72,None, |_,_,_|{});
+            let error=format!("{:#}",contender.unwrap_err());
+            assert!(error.contains("Another native process is updating this ledger"),"{error}");
+            assert!(!work.join("source-inventory.json").exists());
+            checked=true;
+        }
+    }).unwrap();
+    assert!(checked&&inventory.is_file());
+}

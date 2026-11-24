@@ -344,7 +344,11 @@ fn scan(z:&mut ZipArchive<File>,id:&str,mut progress:impl FnMut(usize,usize,&str
         "native_boundary":"XML order and embedded bytes are provenance, not figure numbering, pagination, displayed appearance or semantic acceptance."}),document_bytes))
 }
 pub fn read_docx(path:&Path,id:&str,progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    read_bound_docx(path,id,None,progress)
+}
+pub(crate) fn read_bound_docx(path:&Path,id:&str,expected:Option<&str>,progress:impl FnMut(usize,usize,&str))->Result<Value>{
     let p=files::canonical(path)?;let before=files::snapshot(&p)?;
+    if let Some(expected)=expected{ensure!(before["sha256"]==expected,"DOCX source changed since selection");}
     let (result,_)=scan(&mut open(&p)?,id,progress)?;
     ensure!(files::snapshot(&p)?==before,"DOCX source changed during inventory");Ok(result)
 }
@@ -357,10 +361,17 @@ fn exclusive(directory:&Path,name:&str,data:&[u8])->Result<Value>{
     Ok(json!({"path":observed["path"],"sha256":observed["sha256"]}))
 }
 pub fn prepare_docx_source(path:&Path,id:&str,directory:&Path,progress:impl FnMut(usize,usize,&str))->Result<Value>{
-    let p=files::canonical(path)?;let before=files::snapshot(&p)?;let mut z=open(&p)?;
+    prepare_bound_docx_source(path,id,directory,None,progress)
+}
+pub(crate) fn prepare_bound_docx_source(path:&Path,id:&str,directory:&Path,expected:Option<&str>,progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    let p=files::canonical(path)?;let before=files::snapshot(&p)?;
+    if let Some(expected)=expected{ensure!(before["sha256"]==expected,"DOCX source changed since selection");}
+    let mut z=open(&p)?;
     let (mut result,xml)=scan(&mut z,id,progress)?;
+    ensure!(files::snapshot(&p)?==before,"DOCX source changed during inventory");
     ensure!(!directory.is_symlink(),"Refusing a symlink evidence directory");
-    fs::create_dir_all(directory)?;let directory=files::canonical(directory)?;
+    if expected.is_some(){fs::create_dir(directory)?;}else{fs::create_dir_all(directory)?;}
+    let directory=files::canonical(directory)?;
     let mut media_names=Vec::new();
     for(i,m)in result["native_media"].as_array().unwrap().iter().enumerate(){
         let ext=extension(m["part"].as_str().unwrap());

@@ -79,36 +79,46 @@ pub fn scan_links(text:&str)->Vec<Link>{
         result.push(Link{start,end:consumed,label_start:open+1,label_end:close,image,href});
     }result
 }
-pub fn reference_definition_end(text:&str,rows:&[Line],start:usize)->Option<usize>{
+pub(crate) struct ReferenceDefinition<'a>{
+    pub label:&'a str,
+    pub href:String,
+    pub end:usize,
+}
+pub(crate) fn reference_definition<'a>(text:&'a str,rows:&[Line],start:usize)->Option<ReferenceDefinition<'a>>{
     static DEFINITION:OnceLock<Regex>=OnceLock::new();
     static DESTINATION:OnceLock<Regex>=OnceLock::new();
     let captures=DEFINITION.get_or_init(||Regex::new(r"^ {0,3}\[(?P<label>(?:\\.|[^\]\\\r\n])+)\]:[ \t]*(?P<payload>.*)$").unwrap()).captures(body(text,rows[start]))?;
-    let label=&captures["label"];
+    let label=captures.name("label")?.as_str();
     if label.trim().is_empty()||label.starts_with('^'){return None;}
     let mut end=start;let mut payload=captures.name("payload")?.as_str().trim_start();
     if payload.is_empty()&&end+1<rows.len(){end+=1;payload=body(text,rows[end]).trim_start();}
     let destination=DESTINATION.get_or_init(||Regex::new(r"^(?:<(?:\\.|[^\\<>\r\n])*>|(?:\\.|[^\s])+)").unwrap()).find(payload)?;
     let target=destination.as_str();let synthetic=format!("[reference]({target})");
-    let links=scan_links(&synthetic);
+    let mut links=scan_links(&synthetic);
     if links.len()!=1||links[0].end!=synthetic.len(){return None;}
+    let href=links.pop()?.href;
     let mut tail=payload[destination.end()..].trim_start();
     let same_line=!tail.is_empty();let dest_end=end;
     if tail.is_empty()&&end+1<rows.len(){end+=1;tail=body(text,rows[end]).trim_start();}
-    let fallback=if same_line{None}else{Some(dest_end)};
-    let Some(first)=tail.chars().next().filter(|c|matches!(c,'\''|'"'|'('))else{return fallback;};
+    let definition=|end|ReferenceDefinition{label,href:href.clone(),end};
+    let fallback=||(!same_line).then(||definition(dest_end));
+    let Some(first)=tail.chars().next().filter(|c|matches!(c,'\''|'"'|'('))else{return fallback();};
     let closing=if first=='(' {')'}else{first};let mut parts=Vec::new();let mut cursor=1;
     loop{
         if let Some((i,_))=tail[cursor..].char_indices().map(|(i,c)|(i+cursor,c)).find(|(i,c)|*c==closing&&!escaped(tail,*i)){
-            if !tail[i+1..].trim().is_empty(){return fallback;}
+            if !tail[i+1..].trim().is_empty(){return fallback();}
             parts.push(&tail[..i+1]);
             let synthetic=format!("[reference]({target} {})",parts.join("\n"));
             let links=scan_links(&synthetic);
-            return if links.len()==1&&links[0].end==synthetic.len(){Some(end)}else{fallback};
+            return if links.len()==1&&links[0].end==synthetic.len(){Some(definition(end))}else{fallback()};
         }
         parts.push(tail);end+=1;
-        if end>=rows.len()||body(text,rows[end]).trim().is_empty(){return fallback;}
+        if end>=rows.len()||body(text,rows[end]).trim().is_empty(){return fallback();}
         tail=body(text,rows[end]);cursor=0;
     }
+}
+pub fn reference_definition_end(text:&str,rows:&[Line],start:usize)->Option<usize>{
+    reference_definition(text,rows,start).map(|definition|definition.end)
 }
 pub fn standalone_image(line:&str)->bool{
     static IMAGE:OnceLock<Regex>=OnceLock::new();

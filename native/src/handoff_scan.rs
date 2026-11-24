@@ -17,7 +17,7 @@ impl Span{
 pub struct Occurrence{pub span:Span,pub locator:Value,pub href:String,pub label:String,pub image:bool,pub syntax:&'static str}
 #[derive(Clone,Copy)]
 struct Table{first:usize,last:usize,span:Span,body:Span}
-struct Visible{prose:String,target:String,tables:Vec<Table>}
+struct Visible{prose:String,target:String,tables:Vec<Table>,definitions:BTreeMap<String,String>,definition_spans:Vec<Span>}
 fn blank(data:&mut[u8],a:usize,b:usize){for c in &mut data[a..b]{if !matches!(*c,b'\r'|b'\n'){*c=b' ';}}}
 fn delimiters(s:&str,mark:u8)->String{
     let bytes=s.as_bytes();let mut data=bytes.to_vec();let mut i=0;let mut open=None;
@@ -54,7 +54,7 @@ fn comments(raw:&str,p:&mut[u8],a:usize,b:usize,state:&mut Option<&'static str>)
 }
 fn visible(raw:&str)->Result<Visible>{
     let rows=syntax::lines(raw);let mut p=raw.as_bytes().to_vec();let mut t=p.clone();
-    let mut tables=Vec::new();let mut opened:Option<(u8,usize,bool,usize)>=None;let mut comment=None;
+    let mut tables=Vec::new();let mut indented=Vec::new();let mut opened:Option<(u8,usize,bool,usize)>=None;let mut comment=None;
     let mut front=rows.first().is_some_and(|r|syntax::body(raw,*r).trim()=="---");
     for(i,r)in rows.iter().enumerate(){
         let body=syntax::body(raw,*r);
@@ -75,13 +75,23 @@ fn visible(raw:&str)->Result<Visible>{
         let safe=std::str::from_utf8(&p[r.start..r.body_end])?;
         if let Some((mark,n,lang))=fence(safe){opened=Some((mark,n,lang=="rich-table",i));blank(&mut p,r.start,r.end);blank(&mut t,r.start,r.end);continue;}
         let indent=safe.chars().take_while(|c|matches!(c,' '|'\t')).fold(0usize,|n,c|if c=='\t'{n+4-n%4}else{n+1});
-        if indent>=4{blank(&mut p,r.start,r.end);blank(&mut t,r.start,r.end);}
+        if indent>=4{indented.push(Span{start:r.start,end:r.end});}
     }
     ensure!(!front&&opened.is_none()&&comment.is_none(),"MAP_UNCLOSED_MARKUP: finish frontmatter/fences/comments");
+    // A valid reference definition can contain an indented destination or
+    // title. Read its structure before treating unrelated indented rows as code.
+    // Still respect frontmatter, fenced code, comments and delimited spans.
+    let mut ordinary=p.clone();
+    for &Span{start,end} in &indented{blank(&mut ordinary,start,end);}
+    let eligible=delimiters(&delimiters(&String::from_utf8(ordinary)?,96),b'$');
+    let (definitions,definition_spans)=definitions(std::str::from_utf8(&p)?,&eligible,&rows)?;
+    for Span{start,end} in indented.into_iter().chain(definition_spans.iter().copied()){
+        blank(&mut p,start,end);blank(&mut t,start,end);
+    }
     let prose=delimiters(&delimiters(&String::from_utf8(p)?,96),b'$');
     let mut target=delimiters(&String::from_utf8(t)?,96).into_bytes();
     for f in &tables{target[f.body.start..f.body.end].copy_from_slice(&raw.as_bytes()[f.body.start..f.body.end]);}
-    Ok(Visible{prose,target:String::from_utf8(target)?,tables})
+    Ok(Visible{prose,target:String::from_utf8(target)?,tables,definitions,definition_spans})
 }
 #[derive(Clone)]
 struct Hit{span:Span,href:String,label:String,image:bool,syntax:&'static str}
@@ -89,20 +99,18 @@ fn key(s:&str)->String{
     use unicode_casefold::UnicodeCaseFold;
     s.split_whitespace().collect::<Vec<_>>().join(" ").case_fold().collect()
 }
-fn definitions(text:&str)->Result<(BTreeMap<String,String>,Vec<Span>)>{
-    let re=Regex::new(r"^ {0,3}\[([^\]\r\n]+)\]:[ \t]*(?:<([^>\r\n]+)>|([^\s]+))")?;
-    let lines=syntax::lines(text);let mut out=BTreeMap::new();let mut spans=Vec::new();
-    for(i,r)in lines.iter().enumerate(){
-        if let Some(c)=re.captures(syntax::body(text,*r)){
-            if c[1].starts_with('^'){continue;}
-            let href=c.get(2).or_else(||c.get(3)).unwrap().as_str();
-            ensure!(out.insert(key(&c[1]),syntax::decode_destination(href)).is_none(),"MAP_LINK_DEFINITION_DUPLICATE");
-            let end=syntax::reference_definition_end(text,&lines,i).unwrap_or(i);
-            spans.push(Span{start:r.start,end:lines[end].end});
-        }else if syntax::reference_definition_end(text,&lines,i).is_some(){
-            anyhow::bail!("MAP_LINK_DEFINITION_UNSUPPORTED: multiline definition");
-        }
-    }Ok((out,spans))
+fn definitions(text:&str,eligible:&str,lines:&[syntax::Line])->Result<(BTreeMap<String,String>,Vec<Span>)>{
+    let mut out=BTreeMap::new();let mut spans=Vec::new();
+    let mut i=0;
+    while i<lines.len(){
+        if !syntax::body(eligible,lines[i]).trim_start_matches(' ').starts_with('['){i+=1;continue;}
+        if let Some(d)=syntax::reference_definition(text,lines,i){
+            ensure!(out.insert(key(d.label),d.href).is_none(),"MAP_LINK_DEFINITION_DUPLICATE");
+            spans.push(Span{start:lines[i].start,end:lines[d.end].end});
+            i=d.end+1;
+        }else{i+=1;}
+    }
+    Ok((out,spans))
 }
 fn add(hits:&mut Vec<Hit>,used:&mut[u8],hit:Hit)->Result<()>{
     let s=hit.span;
@@ -209,9 +217,8 @@ impl Candidate{
                 if full!=title{headings.entry(full).or_default().push(span);}
             }
         }
-        let (defs,excluded)=definitions(&visible.prose)?;
         let mut result=Self{raw,lf:String::from_utf8(lf)?,lf_to_raw:map,visible,offsets,anchors,headings,links:vec![]};
-        for h in hits(&result.raw,&result.visible.prose,&defs,&excluded)?{
+        for h in hits(&result.raw,&result.visible.prose,&result.visible.definitions,&result.visible.definition_spans)?{
             let locator=result.locator(h.span)?;
             result.links.push(Occurrence{span:h.span,locator,href:h.href,label:h.label,image:h.image,syntax:h.syntax});
         }
@@ -228,7 +235,7 @@ impl Candidate{
             }
             for(ptr,value)in strings{
                 let mask=delimiters(&delimiters(&value,96),b'$');let offsets=syntax::Offsets::new(&value);
-                for h in hits(&value,&mask,&defs,&[])?{
+                for h in hits(&value,&mask,&result.visible.definitions,&[])?{
                     let snippet=&value[h.span.start..h.span.end];let mut matches=body.match_indices(snippet);
                     // A repeated/escaped YAML spelling cannot establish an
                     // exact serialized span. Keep the actual scalar pointer
@@ -320,6 +327,67 @@ mod tests{
         assert_eq!(c.locator(s).unwrap()["start"],raw[..s.start].chars().count());
         assert_eq!(c.links.len(),1);
         assert!(c.resolve(&json!({"anchor":"p"}),"paragraph").unwrap().contains(c.links[0].span));
+    }
+    #[test]
+    fn multiline_reference_definition_binds_visible_occurrence_only(){
+        let raw=concat!(
+            "中文 [链接][Straße] and ![图][image]\r\n\r\n",
+            "[STRASSE]:\r\n",
+            "    <https://example.net/status?a=1&amp;b=2>\r\n",
+            "    \"multiline title with https://not-a-link.example\r\n",
+            "    and [not live](https://still-not-a-link.example)\"\r\n",
+            "[image]:\r\n",
+            "  assets/figure.png\r\n",
+            "    \"caption title\"\r\n",
+            "\r\n",
+            "~~~markdown\r\n",
+            "[image]: https://code.example/\r\n",
+            "~~~\r\n",
+        );
+        let c=Candidate::new(raw.as_bytes()).unwrap();
+        let snippets=["[链接][Straße]","![图][image]"];
+        assert_eq!(c.links.len(),snippets.len());
+        for (link,snippet) in c.links.iter().zip(snippets){
+            let start=raw.find(snippet).unwrap();
+            assert_eq!(link.locator["start"],raw[..start].chars().count());
+            assert_eq!(link.locator["end"],raw[..start+snippet.len()].chars().count());
+            assert_eq!(link.locator["sha256"],files::digest(snippet.as_bytes()));
+            assert_eq!(link.syntax,"reference_markdown");
+        }
+        assert_eq!(c.links[0].href,"https://example.net/status?a=1&b=2");
+        assert_eq!(c.links[1].href,"assets/figure.png");
+        assert!(c.links[1].image);
+        assert!(c.resolve(&json!({"quote":"<https://example.net/status?a=1&amp;b=2>"}),"paragraph").is_err());
+    }
+    #[test]
+    fn multiline_reference_definitions_reject_duplicates_and_leave_malformed_prose_visible(){
+        let duplicate="[Straße]:\n  <https://one.example/>\n\n[STRASSE]: https://two.example/\n";
+        let err=Candidate::new(duplicate.as_bytes()).err().unwrap();
+        assert!(format!("{err:#}").contains("MAP_LINK_DEFINITION_DUPLICATE"));
+        let ordinary=concat!(
+            "[missing]\n\n",
+            "[missing]:\n\n",
+            "[^footnote]: https://footnote.example/\n",
+            "[label]: https://broken.example/ unexpected prose\n",
+        );
+        let c=Candidate::new(ordinary.as_bytes()).unwrap();
+        assert_eq!(c.links.iter().map(|l|l.href.as_str()).collect::<Vec<_>>(),
+            ["https://footnote.example/","https://broken.example/"]);
+        assert!(c.links.iter().all(|l|l.syntax=="bare_url"));
+    }
+    #[test]
+    fn unrelated_indented_code_does_not_hide_definitions(){
+        let raw=concat!(
+            "    \x60code\n\n",
+            "[link]\n\n",
+            "[link]:\n",
+            "    https://works.example/\n\n",
+            "    unmatched \x60 delimiter\n",
+        );
+        let c=Candidate::new(raw.as_bytes()).unwrap();
+        assert_eq!(c.links.len(),1);
+        assert_eq!(c.links[0].href,"https://works.example/");
+        assert_eq!(c.links[0].syntax,"reference_markdown");
     }
     #[test]
     fn rich_table_actual_scalar_pointer(){

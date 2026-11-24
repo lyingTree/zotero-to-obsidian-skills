@@ -38,6 +38,8 @@
 
 后续 `translation_review_tasks.next_review_task`、`translation_review_tasks.require_unit_records`、`translation_review_writer.ReviewWriter.*`、`translation_review_writer.UnitReview.*`、`translation_review_writer.TermReview.*` 均使用实际 prepared_path 和完整 decisions 数组作为前两个参数（首次未有决定可使用空数组）。每次选择/记录必须由实际来源支持，按对应原生操作传入命名参数；保留返回的真实决定记录及选区，不手造完整台账。`require_unit_records` 另需 `kwargs.unit_id`。选择源/候选位置使用 `translation_review_writer.select_source` / `select_candidate`，另需 unit_id 和 selector；追加决定使用 `append_decision` 的 command。
 
+如果一个原样片段在允许范围内重复，先用行段缩小范围，再显式填写从 1 开始的 `selector.occurrence`。原生工具将候选原样片段与 `char_range: [start, end]` 一起记录；此范围用全文从 0 开始的 Unicode 码点（不含结尾），不是 UTF-8 字节，不能手写或改动它来迁移旧结论。保存或回读时，原生验证器会按实际文件重新核对字符、行段和所属单元。后续判断传回选择结果中的 `selector`，不要把 `locator` 或渲染后的译文当作原文选择条件。
+
 使用 `translation_review_writer.save_decision_draft`（kwargs.output_path）保存增量，`restore_decision_draft`（args: 实际 draft_path）恢复；`translation_review_writer.save_review`（kwargs.output_path，可选 terminology_path）保存审阅。最后 `validate_translation_review.validate_translation_review` 接收实际审阅路径及可选 inventory_path、candidate_path。逐方法参数与证据内容以实际原生实现及原有证据约定为准；未覆盖或不兼容时保持待核。
 
 ## 其余机械操作

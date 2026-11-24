@@ -89,24 +89,83 @@ impl Cache{
         for(p,h)in &self.hashes{ensure!(files::snapshot(p)?["sha256"]==h.as_str(),"Bound bytes changed during validation: {}",p.display());}Ok(())
     }
 }
-pub fn text_range(text:&str,loc:&Value)->Result<(usize,usize)>{
-    ensure!(loc.is_object(),"Use an actual text locator");
-    let kind=loc["kind"].as_str();ensure!(loc["kind"].is_null()||matches!(kind,Some("lines"|"quote")),"Unsupported text locator kind");
-    if loc.get("lines").is_some()||kind==Some("lines"){
-        let bounds=loc.get("lines").cloned().unwrap_or_else(||json!([loc["start"],loc["end"]]));
-        let a=bounds.as_array().filter(|a|a.len()==2).context("Use lines: [start, end], with positive integer line numbers.")?;
-        let (start,end)=a[0].as_u64().zip(a[1].as_u64()).context("Use lines: [start, end], with positive integer line numbers.")?;
-        let lines=syntax::lines(text);
-        ensure!(start>0&&start<=end&&end<=lines.len() as u64,"Line range is outside the actual UTF-8 file.");
-        let begin=lines[start as usize-1].start;let finish=lines[end as usize-1].end;
-        let end=begin+text[begin..finish].trim_end_matches(['\r','\n']).len();
-        if let Some(q)=loc.get("quote"){ensure!(string(q).is_some_and(|s|text[begin..end].contains(s)),"The supplied exact quote is absent from its recorded lines.");}
-        return Ok((begin,end))
+fn text_line_range(text: &str, bounds: &Value) -> Result<(usize, usize)> {
+    let a = bounds.as_array().filter(|a| a.len() == 2)
+        .context("Use lines: [start, end], with positive integer line numbers.")?;
+    let (start, end) = a[0].as_u64().zip(a[1].as_u64())
+        .context("Use lines: [start, end], with positive integer line numbers.")?;
+    let lines = syntax::lines(text);
+    ensure!(start > 0 && start <= end && end <= lines.len() as u64,
+        "Line range is outside the actual UTF-8 file.");
+    let begin = lines[start as usize - 1].start;
+    let finish = lines[end as usize - 1].end;
+    Ok((begin, begin + text[begin..finish].trim_end_matches(['\r', '\n']).len()))
+}
+
+fn unique_quote_range(text: &str, quote: &str) -> Result<(usize, usize)> {
+    const AMBIGUOUS: &str = "Quote-only location must occur exactly once; add explicit lines for repeated text.";
+    let start = text.find(quote).context(AMBIGUOUS)?;
+    // Count overlapping literal matches as well, as the reference does.
+    let following = start + text[start..].chars().next().context(AMBIGUOUS)?.len_utf8();
+    ensure!(!text[following..].contains(quote), "{}", AMBIGUOUS);
+    Ok((start, start + quote.len()))
+}
+
+fn text_char_range(text: &str, raw: &Value) -> Result<(usize, usize)> {
+    let range = raw.as_array().filter(|a| a.len() == 2)
+        .context("Use char_range: [start, end] with zero-based character offsets.")?;
+    let (start, end) = range[0].as_u64().zip(range[1].as_u64())
+        .context("Use char_range: [start, end] with zero-based character offsets.")?;
+    ensure!(start < end, "Character range is empty or reversed.");
+    let start = usize::try_from(start)?;
+    let end = usize::try_from(end)?;
+    let mut iter = text.char_indices().map(|(index, _)| index).chain(std::iter::once(text.len()));
+    let begin = iter.nth(start).context("Character range is outside the actual UTF-8 file.")?;
+    let finish = iter.nth(end - start - 1).context("Character range is outside the actual UTF-8 file.")?;
+    Ok((begin, finish))
+}
+
+pub fn text_range(text: &str, loc: &Value) -> Result<(usize, usize)> {
+    ensure!(loc.is_object(), "Use an actual text locator");
+    let kind = loc["kind"].as_str();
+    ensure!(loc["kind"].is_null() || matches!(kind, Some("lines" | "quote")), "Unsupported text locator kind");
+    let lines = if loc.get("lines").is_some() || kind == Some("lines") {
+        let bounds = loc.get("lines").cloned().unwrap_or_else(|| json!([loc["start"], loc["end"]]));
+        Some(text_line_range(text, &bounds)?)
+    } else {
+        None
+    };
+    if let Some(raw) = loc.get("char_range") {
+        let (begin, end) = text_char_range(text, raw)?;
+        let quote = string(&loc["quote"]).context("An exact character range needs a nonempty quote.")?;
+        if let Some((a, b)) = lines {
+            ensure!(a <= begin && end <= b, "Character range lies outside its recorded lines.");
+        }
+        if let Some(source_lines) = loc.get("source_lines") {
+            let (a, b) = text_line_range(text, source_lines)?;
+            ensure!(a <= begin && end <= b, "Character range lies outside its recorded source_lines.");
+        }
+        let expected = if let Some(selected) = loc.get("selected_quote") {
+            // Historical writer output used a unique parent quote when a
+            // repeated selection lay inside an inline candidate unit.
+            let (a, b) = unique_quote_range(text, quote)?;
+            ensure!(a <= begin && end <= b, "Character range lies outside its recorded containing quote.");
+            string(selected).context("Use a nonempty selected_quote.")?
+        } else {
+            quote
+        };
+        ensure!(&text[begin..end] == expected, "The exact quote does not match its recorded character range.");
+        return Ok((begin, end));
     }
-    let q=string(&loc["quote"]).context("Use a line range or a unique exact quote, not an unlocated claim.")?;
-    let mut matches=text.match_indices(q);let start=matches.next().context("Quote-only location must occur exactly once; add explicit lines for repeated text.")?.0;
-    ensure!(matches.next().is_none(),"Quote-only location must occur exactly once; add explicit lines for repeated text.");
-    Ok((start,start+q.len()))
+    if let Some((begin, end)) = lines {
+        if let Some(q) = loc.get("quote") {
+            ensure!(string(q).is_some_and(|s| text[begin..end].contains(s)),
+                "The supplied exact quote is absent from its recorded lines.");
+        }
+        return Ok((begin, end));
+    }
+    let q = string(&loc["quote"]).context("Use a line range or a unique exact quote, not an unlocated claim.")?;
+    unique_quote_range(text, q)
 }
 impl Cache{
     pub fn location(&mut self,p:&Path,v:&Value)->Result<Option<(usize,usize)>>{

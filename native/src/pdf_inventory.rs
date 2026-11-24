@@ -164,11 +164,17 @@ impl LazyOcr<'_>{
         ocr_pdf::bind_pdf_coordinates(&mut result,render)?;Ok(result)
     }
 }
-pub fn prepare_source(source:&Path,id:&str,root:&Path,dpi:u64,ocr:Option<&OcrSettings>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+pub fn prepare_source(source:&Path,id:&str,root:&Path,dpi:u64,ocr:Option<&OcrSettings>,progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    prepare_bound_source(source,id,root,dpi,ocr,None,progress)
+}
+pub(crate) fn prepare_bound_source(source:&Path,id:&str,root:&Path,dpi:u64,ocr:Option<&OcrSettings>,expected:Option<&str>,
+    mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
     ensure!((72..=600).contains(&dpi),"dpi must be between 72 and 600");
     ensure!(id.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)&&id.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'_'|b'-')),"Invalid source ID");
-    let mut backend=Backend::open(source,None)?;
+    let mut backend=Backend::open(source,expected)?;
     let before=backend.source_binding().clone();
+    ensure!(!root.is_symlink(),"Refusing a symlink evidence directory");
+    if expected.is_some(){fs::create_dir(root)?;}
     let root=files::canonical(root)?;ensure!(root.is_dir(),"Source evidence directory required");
     let image_dir=root.join("image-objects");fs::create_dir(&image_dir)?;
     let mut pages=Vec::with_capacity(backend.len());

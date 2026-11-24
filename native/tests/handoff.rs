@@ -163,3 +163,81 @@ fn rerun_checks_explicit_original_source_scope_before_writing(){
     assert!(mapping_compare::record_mapping_rerun(&f.run,&f.deliveries,&output,|_,_,_|{}).is_err());
     assert!(!output.exists());
 }
+
+#[test]
+fn rerun_validates_legacy_empty_view_omissions_without_weakening_coverage(){
+    let f=Fixture::new();assert_eq!(f.write()["records_ready"],true);
+    let mut source=pipeline::read_json(&f.map("source_map")).unwrap();
+    source.as_object_mut().unwrap().remove("metadata");
+    save(&f.map("source_map"),&source);
+    let mut si=pipeline::read_json(&f.map("si_map")).unwrap();
+    for key in ["metadata","objects","references","citations"]{
+        assert_eq!(si.as_object_mut().unwrap().remove(key),Some(json!([])));
+    }
+    save(&f.map("si_map"),&si);
+    let mut link=pipeline::read_json(&f.map("link_map")).unwrap();
+    for key in ["external_links","resource_links"]{
+        assert_eq!(link.as_object_mut().unwrap().remove(key),Some(json!([])));
+    }
+    save(&f.map("link_map"),&link);
+    let old=fs::read(f.map("si_map")).unwrap();
+    let r=f.validate();assert_eq!(r["records_ready"],true,"{r}");
+    let p=mapping_compare::record_mapping_rerun(&f.run,&f.deliveries,&f.root.path().join("legacy-empty-rerun"),|_,_,_|{}).unwrap();
+    let r=pipeline::read_json(&p).unwrap();
+    assert_eq!(r["actual_rerun_performed"],true);
+    assert_eq!(r["mapping_equal"],true);
+    assert_eq!(r["acceptance_status_written"],false);
+    assert_eq!(fs::read(f.map("si_map")).unwrap(),old);
+
+    let mut malformed=link.clone();
+    malformed["external_links"]=Value::Null;
+    save(&f.map("link_map"),&malformed);
+    let r=f.validate();assert_eq!(r["records_ready"],false,"{r}");
+    save(&f.map("link_map"),&link);
+    source.as_object_mut().unwrap().remove("objects");
+    save(&f.map("source_map"),&source);
+    let r=f.validate();assert_eq!(r["records_ready"],false,"{r}");
+}
+
+#[test]
+fn historical_omission_cannot_hide_an_actual_external_link(){
+    let f=Fixture::new();
+    let candidate=fs::read_to_string(&f.candidate).unwrap().replace(
+        "补充材料 ^si-body","补充材料 [source](https://example.invalid) ^si-body");
+    fs::write(&f.candidate,candidate).unwrap();
+    let mut inventory=pipeline::read_json(&f.inventory).unwrap();
+    let si=inventory["units"].as_array_mut().unwrap().iter_mut().find(|v|v["id"]=="si-body").unwrap();
+    si["display_text"]=json!("Source link");
+    save(&f.inventory,&inventory);
+    let r=f.write();assert_eq!(r["records_ready"],true,"{r}");
+    let mut link=pipeline::read_json(&f.map("link_map")).unwrap();
+    let removed=link.as_object_mut().unwrap().remove("external_links").unwrap();
+    assert_eq!(removed.as_array().unwrap().len(),1);
+    save(&f.map("link_map"),&link);
+    let r=f.validate();
+    assert_eq!(r["records_ready"],false,"{r}");
+    assert!(r["findings"][0]["message"].as_str().unwrap().contains("MAP_COLLECTION"),"{r}");
+}
+
+#[test]
+fn writes_validates_and_reruns_multiline_reference_links(){
+    let f=Fixture::new();
+    let raw=fs::read_to_string(&f.candidate).unwrap().replace("[1](#^ref-a)","[1][引用]")
+        +"\r\n[引用]:\r\n    <#^ref-a>\r\n    \"title https://hidden.example/\r\n    continued\"\r\n";
+    fs::write(&f.candidate,&raw).unwrap();
+    let mut deliver=f.deliveries.clone();
+    deliver[1]["target"]=json!({"quote":"[1][引用]"});
+    let r=maps::write(&f.inventory,&f.candidate,&deliver,&f.paths,&f.expected,|_,_,_|{}).unwrap();
+    assert_eq!(r["records_ready"],true,"{r}");
+    let links=pipeline::read_json(&f.map("link_map")).unwrap();
+    assert_eq!(links["internal_links"].as_array().unwrap().len(),1);
+    assert_eq!(links["external_links"],json!([]));
+    let link=&links["internal_links"][0];
+    assert_eq!(link["syntax"],"reference_markdown");
+    assert_eq!(link["href"],"#^ref-a");
+    assert_eq!(link["origin_unit"],"call");
+    assert_eq!(link["target_unit"],"reference");
+    assert_eq!(f.validate()["records_ready"],true);
+    let path=mapping_compare::record_mapping_rerun(&f.run,&deliver,&f.root.path().join("reference-rerun"),|_,_,_|{}).unwrap();
+    assert_eq!(pipeline::read_json(&path).unwrap()["mapping_equal"],true);
+}

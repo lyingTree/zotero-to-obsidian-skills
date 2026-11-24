@@ -62,6 +62,7 @@ fn choose<T:Clone>(items:&[T],which:&Value,id:&str)->Result<T>{
 pub fn range(text:&str,loc:&Value)->Result<(usize,usize)>{
     ensure!(loc.as_object().is_some_and(|m|!m.is_empty()),"TRW_LOCATION: Use an actual text locator.");
     ensure!(loc["kind"].is_null()||matches!(loc["kind"].as_str(),Some("lines"|"quote")),"TRW_LOCATION: unsupported candidate locator");
+    if loc.get("char_range").is_some(){return tv::text_range(text,loc);}
     let mut start=0;let mut end=text.len();
     let line_location=loc.get("lines").is_some()||loc["kind"]=="lines";
     if line_location{
@@ -80,6 +81,21 @@ fn bounds(v:&Value)->Option<[f64;4]>{
     (b.iter().all(|x|x.is_finite())&&b[0]<b[2]&&b[1]<b[3]).then_some(b)
 }
 fn within(a:[f64;4],b:[f64;4])->bool{a[0]<=b[0]&&b[2]<=a[2]&&a[1]<=b[1]&&b[3]<=a[3]}
+const SOURCE_SELECTOR: &[&str] = &["quote", "page", "bbox", "block_id", "occurrence", "observation_basis"];
+const CANDIDATE_SELECTOR: &[&str] = &["quote", "lines", "occurrence", "comparison_text", "interpretation_basis"];
+
+fn validate_selector(selector: &Value, fields: &[&str]) -> Result<()> {
+    let supplied = selector.as_object().context("TRW_LOCATION: selector must be an object")?;
+    ensure!(supplied.keys().all(|key| fields.contains(&key.as_str())),
+        "TRW_LOCATION: unknown selector field");
+    for name in ["block_id", "observation_basis", "comparison_text", "interpretation_basis"] {
+        let value = &selector[name];
+        ensure!(value.is_null() || value.as_str().is_some_and(|text| !text.trim().is_empty()),
+            "TRW_LOCATION: invalid {name}");
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 struct Selection{locator:Value,reading:String,raw:Option<String>,basis:Value}
 fn hit(v:&Value)->Value{json!({"entry_id":v["id"],"glossary_locator":{"lines":[v["line"],v["line"]]},"excerpt":v["raw_line"]})}
@@ -185,6 +201,7 @@ impl Writer{
         locations.iter().map(|v|range(&self.candidate_text,v)).collect()
     }
     fn source(&mut self,id:&str,selector:&Value)->Result<Selection>{
+        validate_selector(selector, SOURCE_SELECTOR)?;
         let quote=text(&selector["quote"],"source quote")?.to_owned();
         let row=self.data["units"][id].clone();
         let sid=text(&row["source_id"],"source ID")?;
@@ -228,6 +245,7 @@ impl Writer{
         Ok(Selection{locator,reading:quote.clone(),raw:Some(quote),basis:Value::Null})
     }
     fn candidate(&self,id:&str,selector:&Value)->Result<Selection>{
+        validate_selector(selector, CANDIDATE_SELECTOR)?;
         let quote=text(&selector["quote"],"candidate quote")?;let text_=&self.candidate_text;
         let ranges=self.ranges(id)?;
         let limits=if selector["lines"].is_null(){(0,text_.len())}else{range(text_,&json!({"lines":selector["lines"]}))?};
@@ -235,17 +253,22 @@ impl Writer{
         let (begin,end)=choose(&positions.into_iter().collect::<Vec<_>>(),&selector["occurrence"],id)?;
         let reading=if selector["comparison_text"].is_null(){ensure!(selector["interpretation_basis"].is_null(),"TRW_RENDERED_BASIS: basis requires comparison text");quote}
         else{text(&selector["interpretation_basis"],"interpretation_basis")?;text(&selector["comparison_text"],"comparison_text")?};
-        let start_line=text_.as_bytes()[..begin].iter().filter(|b|**b==b'\n').count()+1;
-        let end_line=text_.as_bytes()[..end-1].iter().filter(|b|**b==b'\n').count()+1;
-        let chars=[text_[..begin].chars().count(),text_[..end].chars().count()];
-        let mut loc=json!({"lines":[start_line,end_line],"quote":quote,"char_range":chars});
-        let (a,b)=range(text_,&json!({"lines":[start_line,end_line]}))?;
-        if !ranges.iter().any(|(x,y)|*x<=a&&b<=*y){
-            if matches(text_,quote,0,text_.len()).len()==1{loc=json!({"quote":quote,"source_lines":[start_line,end_line],"char_range":chars});}
-            else{
-                let (a,b)=ranges.iter().copied().find(|(a,b)|*a<=begin&&end<=*b&&matches(text_,&text_[*a..*b],0,text_.len()).len()==1)
-                    .context("TRW_LOCATION: repeated inline fragment needs explicit lines or a unique containing source span")?;
-                loc=json!({"quote":&text_[a..b],"selected_quote":quote,"source_lines":[start_line,end_line],"char_range":chars});
+        let lines = syntax::lines(text_);
+        let start_line = syntax::row_at(&lines, begin) + 1;
+        let end_line = syntax::row_at(&lines, end - 1) + 1;
+        let chars = [text_[..begin].chars().count(), text_[..end].chars().count()];
+        // Keep the legacy inline shape when a globally unique anchor exists.
+        // If both the selection and its containing text repeat, the exact
+        // character range still identifies the occurrence on this line.
+        let mut loc = json!({"lines":[start_line,end_line],"quote":quote,"char_range":chars});
+        let (a,b) = range(text_, &json!({"lines":[start_line,end_line]}))?;
+        if !ranges.iter().any(|(x,y)| *x <= a && b <= *y) {
+            if matches(text_, quote, 0, text_.len()).len() == 1 {
+                loc = json!({"quote":quote,"source_lines":[start_line,end_line],"char_range":chars});
+            } else if let Some((a,b)) = ranges.iter().copied()
+                .find(|(a,b)| *a <= begin && end <= *b && matches(text_, &text_[*a..*b], 0, text_.len()).len() == 1)
+            {
+                loc = json!({"quote":&text_[a..b],"selected_quote":quote,"source_lines":[start_line,end_line],"char_range":chars});
             }
         }
         Ok(Selection{locator:loc,reading:reading.into(),raw:Some(quote.into()),basis:selector["interpretation_basis"].clone()})
@@ -257,18 +280,14 @@ impl Writer{
         ensure!(self.selected.iter().any(|s|s==id),"TRW_UNIT: use selected prepared unit");
         self.ranges(id)?;
         let fields:&[&str]=match side{
-            "source"=>&["quote","page","bbox","block_id","occurrence","observation_basis"],
-            "candidate"=>&["quote","lines","occurrence","comparison_text","interpretation_basis"],
+            "source"=>SOURCE_SELECTOR,
+            "candidate"=>CANDIDATE_SELECTOR,
             _=>return Err(anyhow!("TRW_SELECTION_UNIT: unknown selection side")),
         };
-        let supplied=selector.as_object().context("TRW_LOCATION: selector must be an object")?;
-        ensure!(supplied.keys().all(|k|fields.contains(&k.as_str())),"TRW_LOCATION: unknown selector field");
+        validate_selector(selector, fields)?;
         let mut normalized=Map::new();
         for key in fields{normalized.insert((*key).to_owned(),selector[*key].clone());}
         let selector=Value::Object(normalized);
-        for key in ["block_id","observation_basis","comparison_text","interpretation_basis"]{
-            ensure!(selector[key].is_null()||selector[key].is_string(),"TRW_LOCATION: invalid {key}");
-        }
         self.verify()?;
         let selected=match side{"source"=>self.source(id,&selector)?,"candidate"=>self.candidate(id,&selector)?,_=>unreachable!()};
         self.verify()?;

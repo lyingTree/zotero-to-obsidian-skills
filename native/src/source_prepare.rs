@@ -37,57 +37,96 @@ fn prepare_impl(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dp
     let map=sources.as_object().filter(|m|!m.is_empty()).context("Provide at least one source PDF or DOCX")?;
     ensure!((72..=600).contains(&dpi),"dpi must be between 72 and 600");
     ensure!(roles.is_null()||roles.is_object(),"source_roles must be an object");
-    let mut ids=Vec::with_capacity(map.len());
+    // Cheap no-work rejection for a completed prior run. Repeat under the
+    // writer lock after validating all selected inputs.
+    no_existing(&root.join("source-inventory.json"))?;
+    if glossary.is_some(){no_existing(&root.join("terminology.json"))?;}
+    #[derive(Clone, Copy)]
+    enum Format { Docx, Pdf }
     let mut portable_ids=std::collections::BTreeSet::new();
     let mut actual_sources=std::collections::BTreeSet::new();
     if let Some(roles)=roles.as_object(){ensure!(roles.keys().all(|id|map.contains_key(id)),"Source role names an absent source");}
-    let mut bound=Vec::with_capacity(map.len());
-    // Reject non-native inputs before creating any evidence output.
+    let mut inputs=Vec::with_capacity(map.len());
     for (id,v) in map{
         ensure!(id_ok(id)&&portable_ids.insert(id.to_ascii_lowercase()),"Invalid or case-conflicting source ID: {id}");
         let p=files::canonical(&path(v)?)?;
         ensure!(actual_sources.insert(p.clone()),"Duplicate actual source attachment: {id}");
         let extension=p.extension().and_then(|s|s.to_str()).unwrap_or("").to_ascii_lowercase();
-        if docx_only{ensure!(extension=="docx","UNMIGRATED_PDF_INVENTORY: {id}; this entrypoint is DOCX-only");}
-        else{ensure!(matches!(extension.as_str(),"docx"|"pdf"),"Unsupported source format: {id}");}
-        if extension=="pdf"{crate::pdf_structure::Pdf::open(&p).with_context(||format!("{id}: accessible PDF required"))?;}
+        let format=match extension.as_str(){
+            "docx"=>Format::Docx,
+            "pdf" if docx_only=>anyhow::bail!("UNMIGRATED_PDF_INVENTORY: {id}; this entrypoint is DOCX-only"),
+            "pdf"=>Format::Pdf,
+            _=>anyhow::bail!("Unsupported source format: {id}"),
+        };
         let role=roles.get(id).cloned().unwrap_or(json!("pending"));
         ensure!(matches!(role.as_str(),Some("main"|"supplement"|"pending")),"Source role must be main, supplement or pending");
-        ids.push((id,p.clone(),role));bound.push(binding(&p)?);
+        let record=binding(&p)?;
+        inputs.push((id,p,role,format,record));
     }
     if let Some(o)=ocr{o.binding()?;}
-    let glossary=match glossary{Some(p)=>Some(binding(p)?),None=>None};
+    let glossary=glossary.map(binding).transpose()?;
+
+    // Read-only preflight for the entire batch. A malformed later DOCX or
+    // oversized later PDF page must not strand an earlier source's evidence.
+    // Process one attachment at a time instead of retaining all parsed PDFs
+    // and XML/media indexes while waiting to write.
+    for (id,p,_,format,record) in &inputs{
+        let sha=record["sha256"].as_str().context("Source digest required")?;
+        match format{
+            Format::Docx=>{
+                docx::read_bound_docx(p,id,Some(sha),|_,_,_|{})
+                    .with_context(||format!("{id}: accessible DOCX required"))?;
+            }
+            Format::Pdf=>{
+                let pdf=crate::pdfcraft_backend::Backend::open(p,Some(sha))
+                    .with_context(||format!("{id}: accessible PDF required"))?;
+                pdf.preflight_whole_pages(dpi)
+                    .with_context(||format!("{id}: PDF page raster preflight failed"))?;
+            }
+        }
+    }
     let root=safe_dir(root)?;
     let output=root.join("source-inventory.json");let terminology=root.join("terminology.json");
+    let _lock=crate::check_write::lock_target(&output)?;
     no_existing(&output)?;if glossary.is_some(){no_existing(&terminology)?;}
     let evidence=safe_dir(&root.join("source-evidence"))?;
     ensure!(evidence.starts_with(&root),"source evidence directory escapes work root");
     // Preflight all destinations, including pre-existing partial preparations.
-    for (id,_,_) in &ids{no_existing(&evidence.join(id))?;}
-    let mut rows=Vec::with_capacity(ids.len());
-    for (i,(id,p,role)) in ids.iter().enumerate(){
+    for (id,_,_,_,_) in &inputs{no_existing(&evidence.join(id))?;}
+    let verify_inputs=|| -> Result<()> {
+        for (id,p,_,_,record) in &inputs{
+            ensure!(binding(p)?==*record,"{id}: source changed before inventory publication");
+        }
+        if let Some(o)=ocr{o.binding()?;}
+        Ok(())
+    };
+    let mut rows=Vec::with_capacity(inputs.len());
+    for (i,(id,p,role,format,record)) in inputs.iter().enumerate(){
         let destination=evidence.join(id);
-        fs::create_dir(&destination)?;
-        let mut native=if p.extension().and_then(|s|s.to_str()).is_some_and(|s|s.eq_ignore_ascii_case("docx")){
-            docx::prepare_docx_source(p,id,&destination,|n,total,label|progress(n,total,label))?
-        }else{crate::pdf_inventory::prepare_source(p,id,&destination,dpi,ocr,|n,total,label|progress(n,total,label))?};
-        ensure!(binding(p)?==bound[i],"{id}: source changed during evidence preparation");
+        let sha=record["sha256"].as_str().context("Source digest required")?;
+        // The backend compares the actual input against this snapshot again
+        // before writing bytes, not just after completion.
+        let mut native=match format{
+            Format::Docx=>docx::prepare_bound_docx_source(p,id,&destination,Some(sha),&mut progress),
+            Format::Pdf=>crate::pdf_inventory::prepare_bound_source(p,id,&destination,dpi,ocr,Some(sha),&mut progress),
+        }.with_context(||format!("{id}: source evidence preparation failed"))?;
+        ensure!(binding(p)?==*record,"{id}: source changed during evidence preparation");
         native["id"]=json!(id);native["role"]=role.clone();
-        native["path"]=bound[i]["path"].clone();native["sha256"]=bound[i]["sha256"].clone();
+        native["path"]=record["path"].clone();native["sha256"]=record["sha256"].clone();
         let headers:Map<String,Value>=["title","authors","affiliations","publication_date"].iter().map(|key|((*key).into(),json!({"status":"pending"}))).collect();
         native["header_fields"]=json!(headers);rows.push(native);
-        progress(i+1,ids.len(),if docx_only{"DOCX sources"}else{"PDF/DOCX sources"});
+        progress(i+1,inputs.len(),if docx_only{"DOCX sources"}else{"PDF/DOCX sources"});
     }
     let mut inventory=json!({"schema_version":1,"evidence_boundary":"Rendered files do not prove that a model viewed or understood them.",
         "sources":rows,"units":[],"excluded_blocks":[],"excluded_pages":[]});
+    verify_inputs()?;
     if let Some(g)=glossary{
         ensure!(binding(Path::new(g["path"].as_str().unwrap()))?==g,"glossary changed during inventory preparation");
         let value=json!({"schema_version":1,"glossary":g,"review_status":"pending","covered_units":[],"adopted":[],"unlisted":[],
             "no_unlisted_reason":null,"evidence_boundary":"A ledger records decisions; it does not prove translation correctness."});
         exclusive(&terminology,&value)?;inventory["terminology_path"]=json!(path_text(&terminology)?);
+        verify_inputs()?;
     }
-    for (i,(_,p,_)) in ids.iter().enumerate(){ensure!(binding(p)?==bound[i],"source changed before inventory publication");}
-    if let Some(o)=ocr{o.binding()?;}
     exclusive(&output,&inventory)?;
     Ok(output)
 }

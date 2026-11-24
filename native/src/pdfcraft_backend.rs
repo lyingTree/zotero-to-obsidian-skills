@@ -159,6 +159,24 @@ impl Backend{
             "warnings":warnings,"inspection_warnings":self.inspection_warnings,
             "source_fidelity":"not_assessed","evidence_boundary":BOUNDARY}))
     }
+    fn validate_whole_dimensions(w:u32,h:u32)->Result<()>{
+        ensure!(w>0&&h>0&&w as f32<=pdfcraft_render::MAX_SIDE&&h as f32<=pdfcraft_render::MAX_SIDE&&
+            u64::from(w)*u64::from(h)<=pdfcraft_render::MAX_PIXELS as u64,
+            "Requested whole-page raster exceeds PdfCraft limits; no silent downscaling");
+        Ok(())
+    }
+    /// Check geometry and raster dimensions without rendering or writing files.
+    pub(crate) fn preflight_whole_pages(&self,dpi:u64)->Result<()>{
+        ensure!((72..=1200).contains(&dpi),"dpi must be an integer between 72 and 1200");
+        let scale=dpi as f32/72.;
+        for page in 1..=self.len() as u64{
+            let (index,_,_,_)=self.geometry(page)?;
+            let info=&self.pages[index];
+            Self::validate_whole_dimensions(device_pixels(info.width,scale),device_pixels(info.height,scale))
+                .with_context(||format!("PDF page {page}"))?;
+        }
+        self.verify()
+    }
     pub(crate) fn raster(&mut self,page:u64,region:Option<[f64;4]>,dpi:u64)->Result<(Vec<u8>,Value)>{
         ensure!((72..=1200).contains(&dpi),"dpi must be an integer between 72 and 1200");
         let (index,geometry,bounds,m)=self.geometry(page)?;
@@ -178,9 +196,7 @@ impl Backend{
             ensure!(x1-x0<=MAX_TILE&&y1-y0<=MAX_TILE,"PdfCraft tile exceeds 4096 pixels on one side; lower DPI or select a smaller region");
             (b,Some(Tile{x:x0,y:y0,w:x1-x0,h:y1-y0}),[x0,y0,x1,y1])
         }else{
-            ensure!(w as f32<=pdfcraft_render::MAX_SIDE&&h as f32<=pdfcraft_render::MAX_SIDE&&
-                u64::from(w)*u64::from(h)<=pdfcraft_render::MAX_PIXELS as u64,
-                "Requested whole-page raster exceeds PdfCraft limits; no silent downscaling");
+            Self::validate_whole_dimensions(w,h)?;
             (bounds,None,[0,0,w,h])
         };
         let result=self.renderer.render(RenderRequest{page:index,kind:RequestKind::Pixels,tile,scale,tag:0,preview:false});
