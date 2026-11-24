@@ -75,3 +75,129 @@ pub fn prepare_docx_sources(sources:&Value,root:&Path,roles:&Value,glossary:Opti
     exclusive(&output,&inventory)?;
     Ok(output)
 }
+
+
+// Edge observations are explicit caller decisions, not inferred pixel checks.
+const FIGURE_EDGES: &[&str] = &["left", "right", "top", "bottom"];
+const EDGE_STATUSES: &[&str] = &["pending", "pass", "fail", "blocked", "not_tested", "ambiguous"];
+
+fn figure_reference(record: &Value, base: &Path, label: &str) -> Result<Value> {
+    ensure!(record.is_object(), "{label}: a file record is required");
+    let raw = record["path"].as_str().filter(|s| !s.trim().is_empty())
+        .with_context(|| format!("{label}: a file path is required"))?;
+    let sha = record["sha256"].as_str().filter(|s| s.len() == 64 &&
+        s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        .with_context(|| format!("{label}: a lowercase SHA-256 is required"))?;
+    let p = base.join(raw);
+    let actual = binding(&p)?;
+    ensure!(actual["sha256"] == sha, "{label}: the file changed after its inventory record");
+    Ok(actual)
+}
+
+pub fn record_figure_edges(
+    review_path: &Path, unit_id: &str, asset_index: usize,
+    source_location_indices: &Value, observations: &Value,
+) -> Result<PathBuf> {
+    use std::collections::HashSet;
+    crate::check_write::no_link(review_path)?;
+    let review_path = files::canonical(review_path)?;
+    let _lock = crate::check_write::lock_target(&review_path)?;
+    let (raw, previous) = files::read_bound(&review_path)?;
+    let mut ledger = crate::parse_json(std::str::from_utf8(&raw)?)?;
+    ensure!(ledger.is_object() && ledger["schema_version"].as_u64() == Some(2),
+        "Explicit edge recording requires figure-review schema_version 2");
+    let base = review_path.parent().context("figure review parent")?;
+    let figures = ledger["figures"].as_array_mut().context("figures must be an array of objects")?;
+    let row_index = {
+        let mut ids = HashSet::new();
+        let mut found = None;
+        for (i, row) in figures.iter().enumerate() {
+            ensure!(row.is_object(), "figures must contain objects");
+            let id = row["unit"].as_str().filter(|s| !s.trim().is_empty())
+                .context("figures requires nonempty unit values")?;
+            ensure!(ids.insert(id), "Duplicate figures unit: {id}");
+            if id == unit_id { found = Some(i); }
+        }
+        found.context("Choose an actual figure unit from this ledger")?
+    };
+    let row = &mut figures[row_index];
+    let assets = row["final_assets"].as_array().context("This figure needs final assets")?;
+    let asset_count = assets.len();
+    ensure!(asset_index < asset_count, "asset_index must identify this figure's final image");
+    let locations = row["source_locations"].as_array()
+        .context("This figure needs complete source-page location records")?;
+    ensure!(locations.iter().all(Value::is_object), "This figure needs complete source-page location records");
+    let indices = source_location_indices.as_array().filter(|a| !a.is_empty())
+        .context("Explicitly choose the source-page locations used for this asset")?;
+    let obs = observations.as_object().filter(|o| !o.is_empty())
+        .context("Supply explicit observations keyed by left, right, top, or bottom")?;
+    ensure!(obs.keys().all(|k| FIGURE_EDGES.contains(&k.as_str())),
+        "Supply explicit observations keyed by left, right, top, or bottom");
+    for supplied in obs.values() {
+        let fields = supplied.as_object().context("Each edge needs explicit status and observation fields")?;
+        ensure!(fields.len() == 2 && fields.contains_key("status") && fields.contains_key("observation"),
+            "Each edge needs explicit status and observation fields");
+        ensure!(supplied["status"].as_str().is_some_and(|s| EDGE_STATUSES.contains(&s)),
+            "An edge status must be explicit; geometrical edges are not inapplicable");
+        ensure!(supplied["observation"].as_str().is_some_and(|s| !s.trim().is_empty()),
+            "Record the actual comparison observation for each supplied edge");
+    }
+
+    let source = figure_reference(&row["source_file"], base, &format!("{unit_id}:source"))?;
+    let asset = figure_reference(&assets[asset_index], base, &format!("{unit_id}:final-asset"))?;
+    let mut seen = HashSet::new();
+    let mut selected = Vec::with_capacity(indices.len());
+    let mut evidence = vec![source.clone(), asset.clone()];
+    for index in indices {
+        let i = index.as_u64().and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n < locations.len())
+            .context("Source-page indices must identify source_locations")?;
+        ensure!(seen.insert(i), "Source-page indices must be distinct");
+        let mut location = locations[i].as_object().unwrap().clone();
+        let file_key = if location.contains_key("native_locator") { "source_media" } else { "page_render" };
+        let b = figure_reference(&locations[i][file_key], base, &format!("{unit_id}:source-location-{i}"))?;
+        location.insert(file_key.into(), b.clone());
+        evidence.push(b);
+        // Preserve source location fields exactly, including the reference merge order.
+        let mut selected_location = Map::new();
+        selected_location.insert("index".into(), json!(i));
+        selected_location.extend(location);
+        selected.push(Value::Object(selected_location));
+    }
+
+    let entries = row["edge_reviews"].as_array_mut().context("Retain every generated edge-review slot")?;
+    let slots_count = asset_count.checked_mul(FIGURE_EDGES.len()).context("Too many edge slots")?;
+    ensure!(entries.len() == slots_count, "Retain exactly four edge-review slots for every final asset");
+    let mut slots = vec![None; slots_count];
+    for (i, entry) in entries.iter().enumerate() {
+        ensure!(entry.is_object(), "Retain every generated edge-review slot");
+        let index = entry["asset_index"].as_u64().and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n < asset_count).context("Each edge slot needs its actual asset index")?;
+        let side = entry["edge"].as_str().and_then(|s| FIGURE_EDGES.iter().position(|e| *e == s))
+            .context("Each edge slot needs one of the four sides")?;
+        ensure!(slots[index * FIGURE_EDGES.len() + side].replace(i).is_none(),
+            "Do not duplicate an asset's edge-review slot");
+    }
+    ensure!(slots.iter().all(Option::is_some), "Retain exactly four edge-review slots for every final asset");
+    let selected = Value::Array(selected);
+    for (side, supplied) in obs {
+        let side_index = FIGURE_EDGES.iter().position(|s| *s == side.as_str()).unwrap();
+        let entry = &mut entries[slots[asset_index * FIGURE_EDGES.len() + side_index].unwrap()];
+        entry["status"] = supplied["status"].clone();
+        entry["observation"] = supplied["observation"].clone();
+        entry["source_file"] = source.clone();
+        entry["final_asset"] = asset.clone();
+        entry["source_locations"] = selected.clone();
+    }
+
+    // A second independent byte binding prevents changed evidence from being
+    // published as a new observation; no visual outcome is certified here.
+    for record in &evidence {
+        ensure!(figure_reference(record, base, "figure evidence before publication")? == *record,
+            "Figure evidence changed before publication");
+    }
+    let mut bytes = serde_json::to_vec_pretty(&ledger)?;
+    bytes.push(b'\n');
+    crate::check_write::replace_bytes(&review_path, previous["sha256"].as_str().context("ledger SHA-256")?, &bytes)?;
+    Ok(review_path)
+}

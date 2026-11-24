@@ -935,6 +935,64 @@ class NativeDeliveryPreparationComparison(unittest.TestCase):
 
 
 
+class NativeFigureEdgeComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_record_figure_edges_against_reference(self):
+        import prepare_source_inventory as source
+        source_path = self.root.joinpath("source.pdf")
+        render_path = self.root.joinpath("page.png")
+        media_path = self.root.joinpath("native.png")
+        asset_path = self.root.joinpath("figure.png")
+        for path in (source_path, render_path, media_path, asset_path):
+            path.write_bytes(path.name.encode("utf-8"))
+        bound_source = source.file_record(source_path)
+        bound_asset = source.file_record(asset_path)
+        locations = [
+            {"page": 1, "page_render": source.file_record(render_path)},
+            {"native_locator": {"part": "word/document.xml"}, "source_media": source.file_record(media_path)},
+        ]
+        data = {"schema_version": 2, "figures": [{
+            "unit": "fig", "source_file": bound_source,
+            "final_assets": [bound_asset], "source_locations": locations,
+            "edge_reviews": [
+                {"asset_index": 0, "edge": side, "status": "pending", "observation": "",
+                 "source_file": bound_source, "final_asset": bound_asset, "source_locations": []}
+                for side in ("left", "right", "top", "bottom")
+            ],
+        }]}
+        py = self.root.joinpath("reference-figure-reviews.json")
+        rs = self.root.joinpath("native-figure-reviews.json")
+        for path in (py, rs):
+            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        observations = {"left": {"status": "pass", "observation": "显式观察"},
+                        "bottom": {"status": "ambiguous", "observation": "需复查"}}
+        kwargs = {"source_location_indices": [1, 0], "observations": observations}
+        source.record_figure_edges(py, "fig", 0, **kwargs)
+        self.assertEqual(Path(self.invoke("prepare_source_inventory.record_figure_edges",
+                                          str(rs), "fig", 0, **kwargs)), rs.resolve())
+        self.assertEqual(json.loads(py.read_text(encoding="utf-8")),
+                         json.loads(rs.read_text(encoding="utf-8")))
+        original = rs.read_bytes()
+        for invalid in (
+            {"source_location_indices": [0, 0], "observations": observations},
+            {"source_location_indices": [2], "observations": observations},
+            {"source_location_indices": [0], "observations": {"top": {"status": "not_applicable", "observation": "bad"}}},
+        ):
+            with self.assertRaises(ValueError):
+                source.record_figure_edges(py, "fig", 0, **invalid)
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("prepare_source_inventory.record_figure_edges", str(rs), "fig", 0, **invalid)
+            self.assertEqual(rs.read_bytes(), original)
+        asset_path.write_bytes(b"changed")
+        with self.assertRaises(ValueError):
+            source.record_figure_edges(py, "fig", 0, **kwargs)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("prepare_source_inventory.record_figure_edges", str(rs), "fig", 0, **kwargs)
+        self.assertEqual(rs.read_bytes(), original)
+
+
 class NativeTranslationLifecycleComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp
     invoke = ReferenceComparison.invoke
