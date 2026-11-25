@@ -97,7 +97,14 @@ def extract(spec: dict, dest: Path, release: str) -> dict:
         folded.add(name.casefold())
         target = dest.joinpath(*safe(name).parts)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        with target.open("wb") as out:
+            if os.uname().sysname == "Darwin" if hasattr(os, "uname") else False:
+                import fcntl
+                try:
+                    fcntl.fcntl(out.fileno(), getattr(fcntl, "F_NOCACHE", 48), 1)
+                except OSError:
+                    pass
+            out.write(data)
         if os.name != "nt":
             target.chmod(0o755 if mode & 0o111 else 0o644)
         rows.append({"path": name, "sha256": digest(data)})
@@ -105,6 +112,10 @@ def extract(spec: dict, dest: Path, release: str) -> dict:
     matches = [name for name in files if PurePosixPath(name).name == exe]
     if len(matches) != 1:
         raise ValueError("No unique native llama-server in official archive.")
+    files.clear()
+    del raw
+    import gc
+    gc.collect()
     return {"directory": dest.name, "executable": matches[0], "variant": "cpu", "files": rows}
 
 def prepare(catalog: dict, kind: str, folder: str, report: str) -> None:

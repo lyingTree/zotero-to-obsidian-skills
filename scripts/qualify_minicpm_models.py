@@ -164,11 +164,14 @@ def main():
     require(file_sha(scan) == json.loads(manifest.read_text(encoding="utf-8"))["provenance"]["fixtures"]["fixture.png"]["sha256"], "Shared scan hash mismatch")
     require(TARGET in OCR_WEIGHTS, f"No qualified model smoke fixture for {TARGET}")
     ocr_model = OCR_WEIGHTS[TARGET]
-    ocr = make_package("minicpm-ocr", weights(OCR_REPOSITORY, [ocr_model, OCR_PROJECTOR], OCR_REVISION), runtime)
+    ocr_rows = weights(OCR_REPOSITORY, [ocr_model, OCR_PROJECTOR], OCR_REVISION)
+    ocr = make_package("minicpm-ocr", ocr_rows, runtime)
     result = invoke("minicpm-bilingual", scan, ocr, "text")
     require(result["status"] == "minicpm_candidate_review_required", f"MiniCPM inference blocked: {result}")
     normalized = re.sub(r"\s+", "", result["result"]["candidate_text"]).upper()
     require("NATIVEOCRTEST12345" in normalized and "海洋重力波2026" in normalized, f"Bilingual transcription mismatch: {normalized}")
+    for row in ocr_rows:
+        ROOT.joinpath(row["path"]).unlink(missing_ok=True)
     jev_rows = weights(JEV_REPOSITORY, JEV_WEIGHTS.keys(), JEV_REVISION, JEV_WEIGHTS)
     jev = make_package("jev", jev_rows, jev_runtime)
     scores = {}

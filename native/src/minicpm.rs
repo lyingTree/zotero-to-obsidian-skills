@@ -41,9 +41,16 @@ fn local(root:&Path,r:&str)->Result<PathBuf>{
 fn bind(root:&Path,row:&Value,max:u64)->Result<Value>{
     let p=local(root,text(&row["path"],"asset path")?)?;let meta=no_link(&p)?;
     ensure!(meta.is_file()&&meta.len()<=max,"Model/engine asset exceeds size budget or is not a file");
-    let b=check_ledger::bind_file(&p)?;ensure!(b["sha256"]==hash(&row["sha256"])?,"Model/engine resource changed: {}",p.display());Ok(b)
+    let b=files::snapshot_model_weight(&p,max)?;
+    ensure!(b["sha256"]==hash(&row["sha256"])?,"Model/engine resource changed: {}",p.display());
+    Ok(json!({"path":b["path"],"sha256":b["sha256"]}))
 }
-fn verify(b:&Value)->Result<()>{let p=path(&b["path"])?;check_write::no_link(&p)?;ensure!(check_ledger::bind_file(&p)?==*b,"Bound input changed");Ok(())}
+fn verify(b:&Value)->Result<()>{
+    let p=path(&b["path"])?;check_write::no_link(&p)?;
+    let actual=files::snapshot_model_weight(&p,2*GIB)?;
+    ensure!(json!({"path":actual["path"],"sha256":actual["sha256"]})==*b,"Bound input changed");
+    Ok(())
+}
 fn weight_binding(p:&Path)->Result<Value>{
     check_write::no_link(p)?;
     let b=files::snapshot_model_weight(p,8*GIB)?;
@@ -263,13 +270,35 @@ fn require_model_memory(available_bytes:u64,weight_bytes:u64,gpu:bool)->Result<(
     }
     Ok(())
 }
+fn host_available_memory()->u64{
+    #[cfg(target_os="macos")]
+    unsafe{
+        let page_size=libc::sysconf(libc::_SC_PAGESIZE);
+        if page_size>0{
+            #[allow(deprecated)]
+            let port=libc::mach_host_self();
+            let mut count:u32=libc::HOST_VM_INFO64_COUNT as _;
+            let mut stat=std::mem::zeroed::<libc::vm_statistics64>();
+            if libc::host_statistics64(port,libc::HOST_VM_INFO64,&mut stat as *mut libc::vm_statistics64 as *mut _,&mut count)==libc::KERN_SUCCESS{
+                // In XNU vm_statistics64, free_count already includes speculative_count,
+                // and inactive_count includes file-backed/purgeable pages. Unlike sysinfo,
+                // do not subtract purgeable_count or compressor_page_count (which is already
+                // excluded from free_count and inactive_count) a second time.
+                return u64::from(stat.free_count)
+                    .saturating_add(u64::from(stat.inactive_count))
+                    .saturating_mul(page_size as u64);
+            }
+        }
+    }
+    let mut sys=sysinfo::System::new();sys.refresh_memory();
+    sys.available_memory()
+}
 impl Server{
     fn start(p:&Package,e:&EngineFiles,gpu:bool,timeout:Duration)->Result<Self>{
         p.verify_models()?;e.verify()?;
         let weight_bytes=fs::metadata(path(&p.model["path"])?)?.len()+fs::metadata(path(&p.projector["path"])?)?.len()+
             p.draft.as_ref().map(|b|fs::metadata(path(&b["path"])?).map(|m|m.len()).map_err(anyhow::Error::from)).transpose()?.unwrap_or(0);
-        let mut sys=sysinfo::System::new();sys.refresh_memory();
-        require_model_memory(sys.available_memory(),weight_bytes,gpu)?;
+        require_model_memory(host_available_memory(),weight_bytes,gpu)?;
         let temp=tempfile::Builder::new().prefix("z2o-llama-").tempdir()?;
         let a=tempfile::NamedTempFile::new_in(temp.path())?;
         let b=tempfile::NamedTempFile::new_in(temp.path())?;
