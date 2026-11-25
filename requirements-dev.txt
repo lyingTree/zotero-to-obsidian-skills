@@ -1,1 +1,0 @@
--r literature-zotero2obsidian/requirements.txt

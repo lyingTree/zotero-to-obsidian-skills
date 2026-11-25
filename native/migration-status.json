@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "reference_version": "1.1.0",
-  "release_target": "2.0.0",
+  "release_target": "2.0.1",
   "module_status": {
     "accept_note": "qualified",
     "docx_source_inventory": "qualified",
