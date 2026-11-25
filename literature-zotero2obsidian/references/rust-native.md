@@ -273,3 +273,7 @@ Color-key arrays, placement-dependent stencil images, resampling, compound masks
 ### Apple Silicon 大模型文件校验
 
 在 macOS 上逐块校验 GGUF 权重时，对当前文件描述符使用 Apple 的 [F_NOCACHE](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html) 缓存提示；CI 权重下载也使用该提示，避免预检和测试准备产生不必要的文件缓存。文件系统不支持提示时仍执行原样的全量哈希。没有改变权重、哈希、进程前后校验、2 GiB 安全余量或真实推理验收条件。具体可用内存与推理结果须由 Apple Silicon CI 验证。
+
+图件审阅建档和最终交付审计共用同一套 PDF 定位校验：只能用页内的标准坐标框或原图 XRef 定位，不能用引文代替。原生清单的 XRef 必须是真实页面调用；旧清单保留资源字典匹配规则。即使改写清单、审阅快照和哈希，也不能把仅含引文的人工账本当作物理位置证据。该检查不改变视觉审阅仍需人工记录的要求。
+
+真实 Jev 推理测试固定到此前通过的官方权重修订，同时在验收记录中保留模型和投影器的 SHA-256 和大小，避免上游默认分支变化后混用结果。

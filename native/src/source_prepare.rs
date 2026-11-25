@@ -308,11 +308,8 @@ pub fn prepare_figure_reviews(inventory_path:&Path,final_assets:&Value,work_dire
     let assets=final_assets.as_object().context("final_assets must map figure unit IDs to image path lists")?;
     ensure!(assets.len()==figures.len()&&figures.iter().all(|u|assets.contains_key(u["id"].as_str().unwrap())),
         "final_assets must cover exactly the inventory's figure unit IDs");
-    let coordinates=json!({"space":"pdf_page","unit":"pt","origin":"top_left",
-        "x_axis":"right","y_axis":"down","rotation":"unrotated"});
     let mut pdfs:HashMap<String,Pdf>=HashMap::new();
     let mut source_files:HashMap<String,Value>=HashMap::new();
-    let mut image_xrefs:HashMap<(String,u64),HashSet<u32>>=HashMap::new();
     let mut evidence:HashMap<String,Value>=HashMap::new();
     fn remember(evidence:&mut HashMap<String,Value>,b:&Value)->Result<()>{
         let key=b["path"].as_str().context("evidence path")?.to_owned();
@@ -349,28 +346,10 @@ pub fn prepare_figure_reviews(inventory_path:&Path,final_assets:&Value,work_dire
             ensure!(pages.len()==pdf.len()&&pages.iter().enumerate().all(|(j,v)|v.is_object()&&v["page"].as_u64()==Some((j+1) as u64)),
                 "{sid}: record every actual PDF page once in source order");
             for location in locs{
-                let page=location["page"].as_u64().filter(|n|*n>=1&&*n<=pdf.len() as u64)
-                    .with_context(||format!("{id}: unknown source page"))?;
                 ensure!(location["basis"]=="visual","{id}: figure locations require visible-page evidence");
-                let mut locator=json!({"page":page});
-                ensure!(!location["bbox"].is_null()||!location["image_xref"].is_null(),
-                    "{id}: locate the figure with a bbox or image_xref");
-                if !location["bbox"].is_null(){
-                    ensure!(location["coordinate_system"]==coordinates,
-                        "{id}: declare unrotated PDF points with a top-left origin and right/down axes");
-                    ensure!(pdf.contains_bbox(page,&location["bbox"])?,
-                        "{id}: bbox must be a finite nonempty PDF-point rectangle inside its page");
-                    locator["bbox"]=location["bbox"].clone();
-                    locator["coordinate_system"]=coordinates.clone();
-                }
-                if !location["image_xref"].is_null(){
-                    let xref=location["image_xref"].as_u64().and_then(|n|u32::try_from(n).ok())
-                        .with_context(||format!("{id}: image_xref must name an image on this source page"))?;
-                    let key=(sid.to_owned(),page);
-                    if !image_xrefs.contains_key(&key){image_xrefs.insert(key.clone(),pdf.resource_image_xrefs(page)?);}
-                    ensure!(image_xrefs[&key].contains(&xref),"{id}: image_xref must name an image on this source page");
-                    locator["image_xref"]=json!(xref);
-                }
+                let mut locator=pdf.figure_review_locator(location,source["inventory_backend"]==crate::pdf_inventory::BACKEND)
+                    .with_context(||format!("{id}: invalid figure source location"))?;
+                let page=locator["page"].as_u64().unwrap();
                 let b=figure_reference(&pages[page as usize-1]["render"],base,&format!("{id}:page-{page}"))?;
                 remember(&mut evidence,&b)?;locator["page_render"]=b;locations.push(locator);
             }

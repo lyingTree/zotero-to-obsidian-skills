@@ -371,6 +371,7 @@ fn figures(a:&mut Audit,inv:&Value,manifest:&Value,ledger:&Value,ledger_path:&Pa
     let rows=index(&ledger["figures"],"unit")?;
     let wanted:BTreeSet<_>=units.iter().filter(|(_,v)|v["kind"]=="figure").map(|(k,_)|k.as_str()).collect();
     ensure!(rows.keys().map(String::as_str).collect::<BTreeSet<_>>()==wanted,"Figure review unit coverage differs");
+    let mut pdfs=BTreeMap::<String,Pdf>::new();
     for(id,row)in rows{
         let r=(||->Result<()>{
             let u=units[&id];let sid=u["source"].as_str().context("Figure source")?;let s=*sources.get(sid).context("Unknown figure source")?;
@@ -389,8 +390,12 @@ fn figures(a:&mut Audit,inv:&Value,manifest:&Value,ledger:&Value,ledger_path:&Pa
                     let mut y=loc.clone();y["source_media"]=a.file(&loc["source_media"],base)?;
                     ensure!(x==y,"Native media source locator differs");
                 }else{
-                    for k in ["page","bbox","coordinate_system","image_xref"]{ensure!(loc[k]==original[k],"Figure source locator differs: {k}");}
-                    let page=loc["page"].as_u64().context("Figure page")?;
+                    ensure!(original["basis"]=="visual","Figure review needs visible-page evidence");
+                    if !pdfs.contains_key(sid){pdfs.insert(sid.to_owned(),Pdf::open(&path(&source["path"])?)?);}
+                    let pdf=&pdfs[sid];
+                    let actual=pdf.figure_review_locator(original,s["inventory_backend"]==crate::pdf_inventory::BACKEND)?;
+                    for k in ["page","bbox","coordinate_system","image_xref"]{ensure!(loc[k]==actual[k],"Figure source locator differs: {k}");}
+                    let page=actual["page"].as_u64().unwrap();
                     let matching:Vec<_>=list(&s["pages"],"pages")?.iter().filter(|p|p["page"].as_u64()==Some(page)).collect();
                     ensure!(matching.len()==1&&a.file(&loc["page_render"],base)?==a.file(&matching[0]["render"],ib)?,"Wrong bound source page");
                 }

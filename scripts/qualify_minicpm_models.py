@@ -19,6 +19,14 @@ UPSTREAM = "c21a3ca524263ef8166cb6d350864b10c3056b61"
 OCR_REPOSITORY = "openbmb/MiniCPM-OCR-1.0-gguf"
 OCR_REVISION = "0133ad8db635210441a55dcf421e25bfb9915142"
 OCR_PROJECTOR = "mmproj-model-f16-4x.gguf"
+JEV_REPOSITORY = "openbmb/MiniCPM-OCR-Jev-gguf"
+# Exact model/projector used by the successful Linux x64 reference job.
+JEV_REVISION = "6bd2b4b932bbab92de97cea4cc6a754db96fc848"
+JEV_WEIGHTS = {
+    "MiniCPM-OCR-Jev-Q4_K_M.gguf": ("f4921483b445b32c25c4c77ddca9f86e707b0f505ecc3dfef31e041dff6f4edb", 1274405248),
+    "mmproj-model-f16.gguf": ("cad9364b900f79a90c12e371aa07a7cb901966c9f673262379c31b051eeb313a", 671372416),
+}
+
 # Standard Apple Silicon hosted runners have only 7 GB total. The official
 # Q4_K_M tier uses 282,491,616 fewer bytes than Q8_0, with the same projector.
 # This changes the CI fixture, not the native runtime's memory reservation;
@@ -50,15 +58,12 @@ def get(url, limit):
     require(len(result) <= limit, "Response exceeds budget")
     return result
 
-def weights(repo, names, pinned_revision=None):
-    endpoint = f"https://huggingface.co/api/models/{repo}"
-    if pinned_revision is not None:
-        require(re.fullmatch(r"[0-9a-f]{40}", pinned_revision), "Invalid pinned model revision")
-        endpoint += f"/revision/{pinned_revision}"
+def weights(repo, names, pinned_revision, pinned_lfs=None):
+    require(re.fullmatch(r"[0-9a-f]{40}", pinned_revision), "Invalid pinned model revision")
+    endpoint = f"https://huggingface.co/api/models/{repo}/revision/{pinned_revision}"
     info = json.loads(get(endpoint + "?blobs=true", 16 * 1024**2))
     revision = info["sha"]
-    require(info["id"].casefold() == repo.casefold() and re.fullmatch(r"[0-9a-f]{40}", revision)
-            and (pinned_revision is None or revision == pinned_revision), "Invalid model identity")
+    require(info["id"].casefold() == repo.casefold() and revision == pinned_revision, "Invalid model identity")
     directory = ROOT.joinpath("weights", repo.split("/")[-1])
     directory.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -68,6 +73,8 @@ def weights(repo, names, pinned_revision=None):
         expected = lfs["sha256"]
         size = lfs["size"]
         require(re.fullmatch(r"[0-9a-f]{64}", expected) and 0 < size <= 8 * 1024**3, "Invalid LFS binding")
+        require(pinned_lfs is None or pinned_lfs.get(name) == (expected, size),
+                f"Upstream LFS metadata does not match the pinned identity: {name}")
         url = f"https://huggingface.co/{repo}/resolve/{revision}/{name}"
         destination = directory.joinpath(name)
         tmp = destination.with_suffix(".part")
@@ -154,8 +161,8 @@ def main():
     require(result["status"] == "minicpm_candidate_review_required", f"MiniCPM inference blocked: {result}")
     normalized = re.sub(r"\s+", "", result["result"]["candidate_text"]).upper()
     require("NATIVEOCRTEST12345" in normalized and "海洋重力波2026" in normalized, f"Bilingual transcription mismatch: {normalized}")
-    jev = make_package("jev", weights("openbmb/MiniCPM-OCR-Jev-gguf",
-        ["MiniCPM-OCR-Jev-Q4_K_M.gguf", "mmproj-model-f16.gguf"]), jev_runtime)
+    jev_rows = weights(JEV_REPOSITORY, JEV_WEIGHTS.keys(), JEV_REVISION, JEV_WEIGHTS)
+    jev = make_package("jev", jev_rows, jev_runtime)
     scores = {}
     for name in EXAMPLES:
         case, candidate, candidate_path, dest = example(name)
@@ -174,6 +181,7 @@ def main():
         "bilingual_cpu_inference": True, "jev_reference_discrimination": True,
         "scores": scores, "ocr_runtime_release": runtime["release"], "jev_runtime_release": jev_runtime["release"],
         "ocr_model_file": ocr_model, "ocr_model_revision": OCR_REVISION,
+        "jev_weights": jev_rows, "jev_model_revision": JEV_REVISION,
         "gpu_hardware_verified": False, "source_acceptance": False}, indent=2) + "\n", encoding="utf-8")
 
 if __name__ == "__main__":

@@ -147,6 +147,31 @@ impl Pdf{
         }
         Ok(matches)
     }
+    /// Canonical structural locator for figure review preparation and final
+    /// review. A quote alone cannot locate the image on the rendered page.
+    pub(crate) fn figure_review_locator(&self,loc:&Value,native:bool)->Result<Value>{
+        let page=loc["page"].as_u64().filter(|n|*n>=1&&*n<=self.len() as u64).context("Unknown figure source page")?;
+        let bounds=&loc["bbox"];
+        let xref=&loc["image_xref"];
+        ensure!(!bounds.is_null()||!xref.is_null(),"Locate the figure with a bbox or image_xref");
+        let mut result=json!({"page":page});
+        if !bounds.is_null(){
+            let coord=json!({"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"});
+            ensure!(loc["coordinate_system"]==coord,"Declare unrotated PDF points with a top-left origin and right/down axes");
+            ensure!(self.contains_bbox(page,bounds)?,"Figure bbox must be a finite nonempty PDF-point rectangle inside its page");
+            result["bbox"]=bounds.clone();
+            result["coordinate_system"]=coord;
+        }else{
+            ensure!(loc["coordinate_system"].is_null(),"Figure coordinate system requires a bbox");
+        }
+        if !xref.is_null(){
+            let x=u32::try_from(xref.as_u64().context("Figure image_xref must be a positive integer")?)?;
+            ensure!(x>0&&self.matches_image_locator(page,x,native)?,"Figure image_xref is not {} on this page",
+                if native{"actually invoked"}else{"a registered resource"});
+            result["image_xref"]=json!(x);
+        }
+        Ok(result)
+    }
     pub fn contains_bbox(&self,n:u64,bbox:&Value)->Result<bool>{
         Ok(valid_pdf_bbox(bbox,&json!(self.bounds(n)?)))
     }

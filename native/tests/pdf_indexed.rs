@@ -306,3 +306,69 @@ fn pdf_figure_locators_validate_actual_calls_in_the_native_cli(){
         assert!(findings.iter().any(|f|f["code"]=="NATIVE_DELIVERY_PARITY_PENDING"));
     }
 }
+
+#[test]
+fn figure_review_writer_and_audit_share_physical_pdf_locators(){
+    use std::process::Command;
+    use z2o_native::{check_ledger,delivery_prepare};
+    let temp=tempfile::tempdir().unwrap();let root=temp.path();
+    let pdf=root.join("figure.pdf");let mut doc=Document::with_version("1.5");
+    let rgb=Object::Name(b"DeviceRGB".to_vec());
+    let painted=stream(&mut doc,image(1,1,8,rgb.clone()),vec![0,88,199]);
+    let unused=stream(&mut doc,image(1,1,8,rgb),vec![199,0,88]);
+    write_pdf(doc,&pdf,&[("Painted",painted),("Unused",unused)],"q 20 0 0 20 10 10 cm /Painted Do Q");
+    let inventory=source_prepare::prepare_sources(&json!({"main":pdf}),&root.join("evidence"),&json!({"main":"main"}),
+        None,72,None,|_,_,_|{}).unwrap();
+    let mut inv=pipeline::read_json(&inventory).unwrap();
+    let png=root.join("figure.png");export(&pdf,painted.0,&png).unwrap();
+    let save=|p:&Path,v:&Value|fs::write(p,serde_json::to_vec(v).unwrap()).unwrap();
+    let request=root.join("request.json");
+    let exe=std::env::var_os("Z2O_FIGURE_TEST_CLI").unwrap_or_else(||env!("CARGO_BIN_EXE_z2o").into());
+    let run=|operation:&str,args:Value|{
+        save(&request,&json!({"schema_version":1,"operation":operation,"args":args}));
+        Command::new(&exe).arg("invoke").arg(&request).env("PATH","").env_remove("PYTHONPATH").output().unwrap()
+    };
+    let mut location=json!({"basis":"visual","page":1,"image_xref":painted.0});
+    inv["units"]=json!([{"id":"fig","source":"main","kind":"figure","original_number":"1",
+        "contains_table":false,"evidence":[location]}]);
+    for (extra,error) in [
+        (json!({"image_xref":unused.0}),"not actually invoked"),
+        (json!({"quote":"not a physical locator"}),"bbox or image_xref"),
+        (json!({"bbox":[0,0,10,10],"coordinate_system":{"unit":"px"}}),"unrotated PDF points")
+    ]{
+        let mut bad=json!({"basis":"visual","page":1});
+        bad.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        inv["units"][0]["evidence"]=json!([bad]);save(&inventory,&inv);
+        let before=fs::read(&inventory).unwrap();let folder=root.join("rejected");
+        let report=run("prepare_source_inventory.prepare_figure_reviews",json!([inventory,{"fig":[png]},folder]));
+        assert!(!report.status.success()&&String::from_utf8_lossy(&report.stderr).contains(error),"{}",String::from_utf8_lossy(&report.stderr));
+        assert_eq!(fs::read(&inventory).unwrap(),before);assert!(!folder.exists());
+    }
+    inv["units"][0]["evidence"]=json!([location]);save(&inventory,&inv);
+    let folder=root.join("ready");
+    let out=run("prepare_source_inventory.prepare_figure_reviews",json!([inventory,{"fig":[png]},folder]));
+    assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+    let ledger=folder.join("figure-reviews.json");
+    let mut l=pipeline::read_json(&ledger).unwrap();
+    assert_eq!(l["figures"][0]["source_locations"][0]["image_xref"],painted.0);
+    assert_eq!(l["figures"][0]["checks"][0]["status"],"pending");
+    let snap=folder.join("figure-inventory-snapshot.json");
+    // Simulate a manually authored/rehash-bound ledger with only a quote.
+    location=json!({"basis":"visual","page":1,"quote":"not a physical locator"});
+    inv["units"][0]["evidence"]=json!([location]);save(&snap,&inv);
+    inv["figure_reviews_path"]=json!(ledger);save(&inventory,&inv);
+    l["inventory"]=check_ledger::bind_file(&snap).unwrap();
+    l["figures"][0]["source_locations"][0].as_object_mut().unwrap().remove("image_xref");
+    save(&ledger,&l);
+    let candidate=root.join("candidate.md");fs::write(&candidate,"![Figure 1](figure.png)\n\nFigure 1 ^fig1\n").unwrap();
+    let manifest=root.join("manifest.json");
+    delivery_prepare::manifest(&inventory,&candidate,&json!([{"unit":"fig","target":{"anchor":"fig1"},"assets":[{"path":png}]}]),
+        &manifest,Some(root),None,true).unwrap();
+    let out=run("validate_delivery.validate_delivery",json!([manifest]));
+    assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+    let reply=serde_json::from_slice::<Value>(&out.stdout).unwrap();
+    let findings=reply["result"]["findings"].as_array().unwrap();
+    assert!(findings.iter().any(|f|f["code"]=="FIG_REVIEW_RECORD"&&f["object_id"]=="fig"&&
+        f["message"].as_str().unwrap().contains("bbox or image_xref")),"{reply}");
+    assert!(findings.iter().any(|f|f["code"]=="NATIVE_DELIVERY_PARITY_PENDING"));
+}
