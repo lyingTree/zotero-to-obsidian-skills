@@ -99,3 +99,50 @@ fn citation_preview_grammar_applies_to_unmapped_delivery_objects_and_calls() {
     assert!(has(&custom,"OUTPUT_CITATION_UNMAPPED","shared-reading-note"),"{custom}");
     assert!(!has(&custom,"OUTPUT_OBJECT_UNMAPPED","shared-reading-note"));
 }
+
+#[test]
+fn bound_delivery_manifests_reject_unknown_versions_and_report_malformed_edge_policy(){
+    let tmp=tempfile::tempdir().unwrap();
+    let root=tmp.path();
+    let source=root.join("source.docx");
+    docx(&source);
+    let inventory=source_prepare::prepare_sources(&json!({"main":source}),&root.join("evidence"),
+        &json!({"main":"main"}),None,72,None,|_,_,_|{}).unwrap();
+    let candidate=root.join("candidate.md");
+    fs::write(&candidate,"Text.\n").unwrap();
+    let manifest=root.join("manifest.json");
+    let request=root.join("request.json");
+    let save=|p:&Path,v:&Value|fs::write(p,serde_json::to_vec(v).unwrap()).unwrap();
+    delivery_prepare::manifest(&inventory,&candidate,&json!([]),&manifest,Some(root),None,false).unwrap();
+    let baseline=pipeline::read_json(&manifest).unwrap();
+    save(&request,&json!({"schema_version":1,"operation":"validate_delivery.validate_delivery","args":[manifest]}));
+    let exe=std::env::var_os("Z2O_DELIVERY_TEST_CLI").unwrap_or_else(||env!("CARGO_BIN_EXE_z2o").into());
+    for (version,edges,valid_version,valid_edges) in [
+        (Some(json!(1)),None,true,true),(None,None,false,true),
+        (Some(json!(2)),Some(json!("true")),false,false),
+        (Some(json!(1.0)),Some(json!(1)),false,false),
+        (Some(json!(true)),Some(json!(null)),false,false),
+        (Some(json!(1)),Some(json!(false)),true,true),
+        (Some(json!(1)),Some(json!("false")),true,false),
+    ]{
+        let mut current=baseline.clone();
+        for (key,v) in [("schema_version",version),("figure_edge_reviews_required",edges)]{
+            if let Some(v)=v{current[key]=v;}else{current.as_object_mut().unwrap().remove(key);}
+        }
+        save(&manifest,&current);
+        let before=fs::read(&manifest).unwrap();
+        let out=Command::new(&exe).arg("invoke").arg(&request).env("PATH","").env_remove("PYTHONPATH").output().unwrap();
+        assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+        assert_eq!(fs::read(&manifest).unwrap(),before);
+        let report=serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone();
+        let findings=report["findings"].as_array().unwrap();
+        assert_eq!(findings.iter().any(|x|x["code"]=="MANIFEST_VERSION"),!valid_version,"{report}");
+        assert_eq!(findings.iter().any(|x|x["code"]=="MANIFEST_EDGES_TYPE"),!valid_edges,"{report}");
+        if valid_version{
+            assert_eq!(report["stage_reports"]["source_provenance"]["inventory"],baseline["inventory"],"{report}");
+        }else{
+            assert!(report["stage_reports"]["source_provenance"].is_null(),"{report}");
+        }
+        assert!(findings.iter().any(|x|x["code"]=="NATIVE_DELIVERY_PARITY_PENDING"));
+    }
+}

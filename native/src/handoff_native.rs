@@ -47,9 +47,13 @@ impl Bindings{
         let(raw,actual)=files::read_bound(&p)?;
         ensure!(actual==b&&raw.len() as u64<=max,"MAP_INPUT_CHANGED: {}",p.display());Ok((raw,b))
     }
-    pub fn json(&mut self,p:&Path)->Result<(Value,Value)>{
+    pub(crate) fn json_value(&mut self,p:&Path)->Result<(Value,Value)>{
         let(raw,b)=self.read(p,128*1024*1024)?;
         let v=crate::parse_json(std::str::from_utf8(&raw)?.trim_start_matches('\u{feff}'))?;
+        Ok((v,b))
+    }
+    pub fn json(&mut self,p:&Path)->Result<(Value,Value)>{
+        let(v,b)=self.json_value(p)?;
         ensure!(v.is_object()&&v["schema_version"].as_u64()==Some(1),"MAP_SCHEMA_VERSION");Ok((v,b))
     }
     pub(crate) fn all(&self)->Vec<Value>{self.files.values().cloned().collect()}

@@ -364,8 +364,12 @@ fn figures(a:&mut Audit,inv:&Value,manifest:&Value,ledger:&Value,ledger_path:&Pa
     ensure!(files::canonical(&base.join(path(&ledger["inventory_path"])?))?==inventory_path,"Figure ledger belongs to another inventory");
     let snap=a.file(&ledger["inventory"],base)?;let p=path(&snap["path"])?;
     ensure!(p!=inventory_path,"Independent immutable figure inventory snapshot required");
-    let (mut snapshot,b)=a.bindings.json(&p)?;ensure!(b==snap,"Figure snapshot changed");
-    let mut live=inv.clone();for k in ["checks_path","terminology_path","figure_reviews_path"]{snapshot.as_object_mut().unwrap().remove(k);live.as_object_mut().unwrap().remove(k);}
+    let (mut snapshot,b)=a.bindings.json_value(&p)?;ensure!(b==snap,"Figure snapshot changed");
+    ensure!(snapshot["schema_version"].as_u64()==Some(1),"Expected source inventory snapshot schema_version 1");
+    let mut live=inv.clone();
+    let frozen=snapshot.as_object_mut().context("Figure snapshot must be an object")?;
+    let current=live.as_object_mut().context("Live inventory must be an object")?;
+    for k in ["checks_path","terminology_path","figure_reviews_path"]{frozen.remove(k);current.remove(k);}
     ensure!(snapshot==live,"Figure inventory content changed after review");
     let units=index(&inv["units"],"id")?;let sources=index(&inv["sources"],"id")?;let deliveries=index(&manifest["deliveries"],"unit")?;
     let rows=index(&ledger["figures"],"unit")?;
@@ -476,7 +480,15 @@ pub fn validate_delivery(manifest_path:&Path,mut progress:impl FnMut(usize,usize
     let mut a=Audit{findings:vec![],bindings:Bindings::new(),svg_assets:BTreeMap::new(),svg_bytes:0};
     let mut stages=Map::new();
     let result=(||->Result<()>{
-        let (manifest,m)=a.bindings.json(manifest_path)?;
+        let (manifest,m)=a.bindings.json_value(manifest_path)?;
+        ensure!(manifest.is_object(),"Delivery manifest must be a JSON object");
+        if manifest.get("figure_edge_reviews_required").is_some_and(|v|!v.is_boolean()){
+            a.fail("MANIFEST_EDGES_TYPE","manifest","figure_edge_reviews_required must be a JSON boolean.");
+        }
+        if manifest["schema_version"].as_u64()!=Some(1){
+            a.fail("MANIFEST_VERSION","manifest","Expected delivery manifest schema_version 1.");
+            return Ok(());
+        }
         let mp=path(&m["path"])?;let mb=mp.parent().context("Manifest directory")?;
         let ib=a.file(&manifest["inventory"],mb)?;let cb=a.file(&manifest["candidate"],mb)?;
         let ip=path(&ib["path"])?;let cp=path(&cb["path"])?;

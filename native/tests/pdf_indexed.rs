@@ -371,4 +371,16 @@ fn figure_review_writer_and_audit_share_physical_pdf_locators(){
     assert!(findings.iter().any(|f|f["code"]=="FIG_REVIEW_RECORD"&&f["object_id"]=="fig"&&
         f["message"].as_str().unwrap().contains("bbox or image_xref")),"{reply}");
     assert!(findings.iter().any(|f|f["code"]=="NATIVE_DELIVERY_PARITY_PENDING"));
+
+    // A hash-bound but malformed snapshot must yield a finding, not panic.
+    save(&snap,&json!(["invalid snapshot"]));
+    l["inventory"]=check_ledger::bind_file(&snap).unwrap();save(&ledger,&l);
+    let manifest=root.join("manifest-bad-snapshot.json");
+    delivery_prepare::manifest(&inventory,&candidate,&json!([{"unit":"fig","target":{"anchor":"fig1"},"assets":[{"path":png}]}]),
+        &manifest,Some(root),None,true).unwrap();
+    let out=run("validate_delivery.validate_delivery",json!([manifest]));
+    assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+    let reply=serde_json::from_slice::<Value>(&out.stdout).unwrap();
+    assert!(reply["result"]["findings"].as_array().unwrap().iter().any(|f|f["code"]=="FIG_REVIEW_REQUIRED"&&
+        f["message"].as_str().unwrap().contains("snapshot schema_version")),"{reply}");
 }
