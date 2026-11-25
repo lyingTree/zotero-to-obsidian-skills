@@ -1,0 +1,382 @@
+name: Rust native migration
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-native-${{ github.workflow }}-${{ github.ref }}
+  # Keep a started five-platform qualification run intact; avoid duplicate
+  # branch push + pull_request jobs and repeated cancellation on new commits.
+  cancel-in-progress: false
+
+env:
+  RUST_TOOLCHAIN: '1.95.0'
+
+jobs:
+  resolve-lock:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Verify the committed dependency graph
+        shell: bash
+        run: |
+          cargo +"$RUST_TOOLCHAIN" metadata --locked --format-version 1 --manifest-path native/Cargo.toml > /dev/null
+          git diff --exit-code HEAD -- native/Cargo.lock
+          echo Z2O_CARGO_LOCK_BEGIN
+          cat native/Cargo.lock
+          echo Z2O_CARGO_LOCK_END
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: resolved-native-cargo-lock
+          path: native/Cargo.lock
+          if-no-files-found: error
+  native:
+    needs: resolve-lock
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: resolved-native-cargo-lock
+          path: native
+      - name: Install Rust development toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --target ${{ matrix.target }}
+      - name: Check the actual runner target
+        run: rustc +1.95.0 -vV
+      - name: Native target tests (including no-Python-PATH process tests)
+        run: cargo +1.95.0 test --locked --target ${{ matrix.target }}
+      - name: Build release executable for the exact target
+        run: cargo +1.95.0 build --locked --release --target ${{ matrix.target }}
+      - name: Build and install actual repository candidate with precompiled executable
+        shell: bash
+        run: |
+          set -eu
+          suffix=""
+          if [[ "$RUNNER_OS" == "Windows" ]]; then suffix=".exe"; fi
+          exe="$(pwd)/target/${{ matrix.target }}/release/z2o${suffix}"
+          bundle="$RUNNER_TEMP/z2o-native-candidate-bundle"
+          installed="$RUNNER_TEMP/z2o native candidate 中文"
+          "$exe" package .. "$bundle"
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest="$(sha256sum < "$bundle/package.json" | awk '{print $1}' | tr -d '\r')"
+          else
+            digest="$(shasum -a 256 < "$bundle/package.json" | awk '{print $1}' | tr -d '\r')"
+          fi
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          PATH="" "$exe" install "$bundle/package.json" "$digest" "$installed" > "$RUNNER_TEMP/z2o-install-receipt.json"
+          export Z2O_INSTALLED_SKILLS="$installed"
+          export Z2O_INSTALL_MANIFEST="$bundle/package.json"
+          export Z2O_INSTALL_RECEIPT="$RUNNER_TEMP/z2o-install-receipt.json"
+          export Z2O_WORKFLOW_RECEIPT="$RUNNER_TEMP/z2o-installed-workflow-receipt.json"
+          cargo +"$RUST_TOOLCHAIN" test --locked --target ${{ matrix.target }} \
+            --test installed_workflow installed_mixed_source_workflow_without_path -- --ignored --exact
+      - name: Retain native candidate installation and workflow receipts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-install-receipt-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/z2o-install-receipt.json
+            ${{ runner.temp }}/z2o-installed-workflow-receipt.json
+          if-no-files-found: error
+      - name: Bind the same release binary for the model smoke job
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$(pwd)/target/${{ matrix.target }}/release/z2o"
+          dest="$RUNNER_TEMP/z2o-model-smoke-client"
+          mkdir -p "$dest"
+          cp "$src" "$dest/z2o"
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest="$(sha256sum < "$dest/z2o" | awk '{print $1}')"
+          else
+            digest="$(shasum -a 256 < "$dest/z2o" | awk '{print $1}')"
+          fi
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" '${{ matrix.target }}' "$digest" > "$dest/identity"
+      - name: Retain ephemeral binary only for same-run model smoke
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: model-smoke-client-${{ matrix.target }}
+          path: ${{ runner.temp }}/z2o-model-smoke-client/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+      # No release asset or installable distribution is published here.
+
+  differential:
+    needs: resolve-lock
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: resolved-native-cargo-lock
+          path: native
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install reference-only dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Build optimized Rust reference-comparison target
+        run: cargo +1.95.0 build --release --locked --manifest-path native/Cargo.toml
+      - name: Record resolved dependency lockfile
+        run: |
+          echo Z2O_CARGO_LOCK_BEGIN
+          cat native/Cargo.lock
+          echo Z2O_CARGO_LOCK_END
+      - name: Compare Python 1.1.0 and native operations (unchanged deadline)
+        env:
+          Z2O_REFERENCE_BINARY: native/target/release/z2o
+        run: python scripts/compare_native_reference.py
+      - name: Check native release qualification policy
+        run: |
+          python -m unittest discover -s tests -p test_native_release_gate.py
+          python scripts/check_native_release.py --binary native/target/release/z2o --report-path native-module-progress.json
+      - name: Retain actual compiled report for each of the 23 original modules
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-module-progress
+          path: native-module-progress.json
+          if-no-files-found: warn
+
+  # Real weights and the official CPU runtime are test-only resources. The
+  # regular five-platform jobs require neither an OCR model nor a GPU SDK.
+  ocr-cpu-smoke:
+    needs: resolve-lock
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+      HIP_VISIBLE_DEVICES: ""
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install pinned Rust development toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Establish fixture directory in runner step context
+        shell: bash
+        run: echo "Z2O_OCR_FIXTURE_DIR=$RUNNER_TEMP/z2o-ocr-fixture" >> "$GITHUB_ENV"
+      - name: Install fixture-only tools (not runtime requirements)
+        run: |
+          python -m pip install -r requirements-dev.txt
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+      - name: Prepare provenance-checked official CPU runtime and Tiny models
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/prepare_ocr_ci_fixture.py
+      - name: Real offline CPU inference from a bilingual image-only PDF
+        run: cargo +1.95.0 test --locked --manifest-path native/Cargo.toml --test ocr actual_cpu_ocr_scan_with_verified_package -- --ignored --exact --nocapture
+      - name: Retain actual resource provenance and inference evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ocr-cpu-smoke-evidence
+          path: |
+            ${{ runner.temp }}/z2o-ocr-fixture/package.json
+            ${{ runner.temp }}/z2o-ocr-fixture/package.sha256
+            ${{ runner.temp }}/z2o-ocr-fixture/fallback-evidence.json
+            ${{ runner.temp }}/z2o-ocr-fixture/fixture.pdf
+            ${{ runner.temp }}/z2o-ocr-fixture/fixture.png
+            ${{ runner.temp }}/z2o-ocr-fixture/ocr-evidence/**
+          if-no-files-found: warn
+
+  # Cross-platform qualification consumes the same original scan and exact
+  # model revisions from the successful Linux x64 reference run.
+  ocr-cpu-platforms:
+    needs: [resolve-lock, ocr-cpu-smoke]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      Z2O_OCR_TARGET: ${{ matrix.target }}
+      CUDA_VISIBLE_DEVICES: ""
+      HIP_VISIBLE_DEVICES: ""
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ocr-cpu-smoke-evidence
+          path: ${{ runner.temp }}/z2o-shared-scan
+      - name: Configure exact target and fixture directories
+        shell: bash
+        run: |
+          echo "Z2O_OCR_FIXTURE_DIR=$RUNNER_TEMP/z2o-ocr-fixture" >> "$GITHUB_ENV"
+          echo "Z2O_OCR_SHARED_FIXTURE_DIR=$RUNNER_TEMP/z2o-shared-scan" >> "$GITHUB_ENV"
+          rustup toolchain install 1.95.0 --profile minimal --target ${{ matrix.target }}
+      - name: Verify exact target CPU runtime and shared model identities
+        run: python scripts/prepare_ocr_ci_fixture.py
+      - name: Real CPU inference using actual target binary and unchanged test
+        run: cargo +1.95.0 test --locked --manifest-path native/Cargo.toml --target ${{ matrix.target }} --test ocr actual_cpu_ocr_scan_with_verified_package -- --ignored --exact --nocapture
+      - name: Retain platform-specific actual evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ocr-cpu-evidence-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/z2o-ocr-fixture/package.json
+            ${{ runner.temp }}/z2o-ocr-fixture/package.sha256
+            ${{ runner.temp }}/z2o-ocr-fixture/fallback-evidence.json
+            ${{ runner.temp }}/z2o-ocr-fixture/ocr-evidence/**
+          if-no-files-found: warn
+
+  minicpm-native-runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      Z2O_LLAMA_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - name: Establish fixture path
+        shell: bash
+        run: echo "Z2O_LLAMA_FIXTURE_DIR=$RUNNER_TEMP/z2o-llama-runtime" >> "$GITHUB_ENV"
+      - name: Check out exact llama.cpp b11901 source for Ubuntu 22.04 ARM64
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ggml-org/llama.cpp
+          ref: 5320c87ff0d994845b44ce7976f10055ec697447
+          path: llama-b11901-source
+          persist-credentials: false
+      - name: Build and verify pinned CPU engine on Ubuntu 22.04 ARM64
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: python scripts/qualify_llama_jammy_arm64.py --source llama-b11901-source --destination "$Z2O_LLAMA_FIXTURE_DIR"
+      - name: Verify official platform archive and launch native llama-server
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        run: python scripts/prepare_minicpm_ci.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: minicpm-runtime-${{ matrix.target }}
+          path: ${{ runner.temp }}/z2o-llama-runtime/runtime-evidence.json
+          if-no-files-found: error
+
+  # Model-bearing tests independently check Linux x64 and Apple Silicon
+  # CPU inference. They must never qualify source acceptance or GPU throughput.
+  minicpm-model-smoke:
+    needs: [native, ocr-cpu-smoke]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      Z2O_LLAMA_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ocr-cpu-smoke-evidence
+          path: ${{ runner.temp }}/z2o-shared-scan
+      - name: Download same-run native release binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: model-smoke-client-${{ matrix.target }}
+          path: ${{ runner.temp }}/z2o-model-smoke-client
+      - name: Verify and configure the prebuilt model client
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/z2o-model-smoke-client"
+          exe="$dir/z2o"
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest="$(sha256sum < "$exe" | awk '{print $1}')"
+          else
+            digest="$(shasum -a 256 < "$exe" | awk '{print $1}')"
+          fi
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$Z2O_LLAMA_TARGET" "$digest" | cmp - "$dir/identity"
+          chmod u+x "$exe"
+          echo "Z2O_LLAMA_FIXTURE_DIR=$RUNNER_TEMP/z2o-llama-models" >> "$GITHUB_ENV"
+          echo "Z2O_LLAMA_SHARED_SCAN=$RUNNER_TEMP/z2o-shared-scan" >> "$GITHUB_ENV"
+          echo "Z2O_LLAMA_NATIVE_BINARY=$exe" >> "$GITHUB_ENV"
+          echo "Z2O_LLAMA_NATIVE_BINARY_SHA256=$digest" >> "$GITHUB_ENV"
+      - name: Verify both model-specific engine distributions
+        env:
+          Z2O_LLAMA_PREPARE_JEV: "1"
+        run: python scripts/prepare_minicpm_ci.py
+      - name: Real bilingual OCR and official Jev examples using native CPU fallback
+        run: python scripts/qualify_minicpm_models.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: minicpm-model-smoke-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/z2o-llama-models/*.json
+            ${{ runner.temp }}/z2o-llama-models/*-stderr.txt
+          if-no-files-found: warn

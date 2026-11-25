@@ -5,6 +5,8 @@ description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已�
 
 # 规划目录与提交笔记
 
+本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+
 每条规则的 ID 用于定位对应证据。
 
 ## 必要输入
@@ -16,12 +18,12 @@ description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已�
 
 WRITE-A04 与 WRITE-A05 直接运行 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 audit_write_readback，针对独立待提交文件与实际回读文件；实际资源路径与可读字节可由 inspect_relative_files 核对。未列出的资源及版本身份不由该函数认证。
 
-1. plan 先完成[运行预检](../literature-zotero2obsidian/references/project-profile.md#运行预检)，核实目标库目录、文献根、附件根及库外工作/备份根。
+1. plan 先完成[运行预检](../literature-zotero2obsidian/references/project-profile.md#运行预检)，核实目标库目录、文献根、附件根及库外工作/备份根。原生运行器提供 `vault_publish.plan`，在已有候选及 run.json 时核对真实目标路径、现有哈希及嵌入资源，并明确报告未完成门禁；此接口只读，不能当作实际 commit 回执。
 2. plan 按集合层级和命名计划列出本次涉及的文件、资源、入链及目标预期哈希或“不存在”。
 3. commit 核对授权、候选验收记录、源与目标的写前条件。解析 `final.md` 起始 YAML；若存在 `库内参考文献` 键，先交[属性技能](../literature-note-properties/SKILL.md)修正并重验候选。新增笔记或本次涉及书目时，写前按[第 8 步](../literature-body-format/SKILL.md#验收标准)核对 `final.md` 的书目标题与节序号。新增笔记或本次涉及书目、书目锚点或引文时，写前须通过[第 9 步书目锚点验收](../literature-internal-links/SKILL.md#验收标准)。
 4. commit 将已有 MD、受影响文件及操作计划备份到库外。
 5. 持有条目及目标路径独占写入权时，先写必要资源，再写引用它们的笔记。资源归属与字节哈希均一致才复用，不同哈希改用已规划的新路径，不覆盖旧资源。
-6. 直接读取实际写入的 Markdown 和资源文件，按候选验收范围核对内容，记录实际状态。
+6. 机械提交使用 `vault_publish.commit_markdown`，仅在实际授权、范围及所有写前条件满足时执行；需要撤销已核定的事务使用 `vault_publish.rollback`。直接读取实际写入的 Markdown 和资源文件，按候选验收范围核对内容，记录实际状态。完整文献交付不得以 standalone_markdown 范围绕过门禁。
 
 ## 约束
 
@@ -107,3 +109,7 @@ WRITE-A04 与 WRITE-A05 直接运行 [确定性阶段辅助](../literature-zoter
 - [ ] [WRITE-A21] 适用时回执记录 Zotero 同步结果。 <!-- check-type: offline_outcome -->
 - [ ] [WRITE-A22] 发生部分失败时，回执状态为 partial 或 failed。 <!-- check-type: offline_outcome -->
 - [ ] [WRITE-A23] 发生部分失败时，回执可定位到恢复记录。 <!-- check-type: offline_outcome -->
+
+### 原生文件提交
+
+可使用 `vault_publish.commit_markdown`（明确 scope、authorized、候选与目标哈希及资源清单）和 `vault_publish.rollback`（原事务计划及其哈希、明确授权）。仅操作实际 Markdown 与资源文件，保存库外备份；完整流程仍须通过原有验收。不得自动删除未知共享资源，不把单文件写入视为完整交付通过。

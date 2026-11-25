@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "release": "b11901",
+  "upstream": "https://github.com/ggml-org/llama.cpp/releases/tag/b11901",
+  "model_upstream_revision": "c21a3ca524263ef8166cb6d350864b10c3056b61",
+  "targets": {
+    "x86_64-unknown-linux-gnu": {
+      "cpu": {
+        "name": "llama-b11901-bin-ubuntu-x64.tar.gz",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-ubuntu-x64.tar.gz",
+        "sha256": "7c15e703cf4589e90371b51de0ed6ff1107df63b5f86e8d3c396019388be1fa8",
+        "size": 22496063
+      },
+      "gpu": {
+        "variant": "vulkan",
+        "name": "llama-b11901-bin-ubuntu-vulkan-x64.tar.gz",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-ubuntu-vulkan-x64.tar.gz",
+        "sha256": "a11d56ec232dec8d4611ba5b93412ab50c363255ab2fb4b005bb1d3499956c24",
+        "size": 35162311
+      }
+    },
+    "aarch64-unknown-linux-gnu": {
+      "cpu": {
+        "name": "llama-b11901-bin-ubuntu-arm64.tar.gz",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-ubuntu-arm64.tar.gz",
+        "sha256": "9362155b389b89b127d219965fbb43fcd5e45ad8fc3d5d47fac2807620f42a5a",
+        "size": 18218048
+      },
+      "gpu": {
+        "variant": "vulkan",
+        "name": "llama-b11901-bin-ubuntu-vulkan-arm64.tar.gz",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-ubuntu-vulkan-arm64.tar.gz",
+        "sha256": "0f90604456781215b02b2fb8f4a4ccc1dc0167261f437ddfe373781efe867b37",
+        "size": 28517862
+      }
+    },
+    "x86_64-pc-windows-msvc": {
+      "cpu": {
+        "name": "llama-b11901-bin-win-cpu-x64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-win-cpu-x64.zip",
+        "sha256": "039951745399d7c1228b1e882d6e41b24d393f1795e3a6e176162bfb8193500a",
+        "size": 24228082
+      },
+      "gpu": {
+        "variant": "vulkan",
+        "name": "llama-b11901-bin-win-vulkan-x64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-win-vulkan-x64.zip",
+        "sha256": "6e3a253f45117d1aec2adb2de0699ded0f6dccb683a798802d9e0dabae291f2c",
+        "size": 37052720
+      }
+    },
+    "aarch64-pc-windows-msvc": {
+      "cpu": {
+        "name": "llama-b11901-bin-win-cpu-arm64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-win-cpu-arm64.zip",
+        "sha256": "6bdb25ea6644c58a3f0075295d2d6c3e43cf247ce9b18402bdf0c0e3bf41a5db",
+        "size": 12846237
+      },
+      "gpu": {
+        "variant": "vulkan",
+        "name": "llama-b11901-bin-win-vulkan-arm64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-win-vulkan-arm64.zip",
+        "sha256": "249eb54e16775ecd039aac41faf4934dc94c62b92f8c62d897a31ad84bd33400",
+        "size": 25256565
+      }
+    },
+    "aarch64-apple-darwin": {
+      "cpu": {
+        "name": "llama-b11901-bin-macos-arm64.tar.gz",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-macos-arm64.tar.gz",
+        "sha256": "dde35fc01722157f31af2c3a6e859e971427deb8e65b9e038606fcc9c44ce79c",
+        "size": 16296203
+      },
+      "gpu": {
+        "variant": "metal",
+        "name": "llama-b11901-bin-macos-arm64.tar.gz",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11901/llama-b11901-bin-macos-arm64.tar.gz",
+        "sha256": "dde35fc01722157f31af2c3a6e859e971427deb8e65b9e038606fcc9c44ce79c",
+        "size": 16296203
+      }
+    }
+  }
+}

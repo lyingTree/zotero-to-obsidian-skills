@@ -5,6 +5,8 @@ description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、�
 
 # 处理补充材料
 
+本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+
 ## 必要输入
 
 - item.json 中的 supplement 附件、第 3 步选定主稿及术语记录。
@@ -146,15 +148,20 @@ DOCX 补充材料直接进入[原生 DOCX 证据入口](../literature-zotero2obs
 
 补充图有原号但没有 S 前缀时，仅在原号前加 S；已有 S 前缀时逐字保留，不再追加 S。题注中按 SI-C100 保留原号说明。新建的正文补充图调用采用同一显示号；显示文字的调整不重命名已核实锚点，也不改变既有链接目标。
 
-新建补充图题注时可调用 `format_helpers.plan_supplement_figure_caption(original_number, translated_caption)`。输入原号来自实际源页。函数返回独立的原号、显示号、显示号来源及 `caption`。显示号改变时，可见题注内带出原号说明。函数只返回题注计划。原号本来含 S 时保留原样。来源无编号时，原号明确传入 `None`。无原号时，另传入已规划的显示号。无原号时，另提供实际无号理由。不从图件顺序猜原号。
+新建补充图题注时可调用 `format_helpers.plan_supplement_figure_caption(original_number, translated_caption)`。输入原号来自实际源页。函数返回独立的原号、显示号、显示号来源及 `caption`。显示号改变时，可见题注内带出原号说明。函数只返回题注计划。原号本来含 S 时保留原样。来源无编号时，原号明确传入 JSON `null`。无原号时，另传入已规划的显示号。无原号时，另提供实际无号理由。不从图件顺序猜原号。
 
-```python
-from format_helpers import plan_supplement_figure_caption
+以下为虚构接口示例；实际调用改用已读源页事实。
 
-# 以下编号与文字是虚构接口示例，实际调用改用已读源页的事实。
-caption_plan = plan_supplement_figure_caption("7c", "棱镜的响应。")
-# caption_plan["caption"] 为 **图S7c：** 棱镜的响应。（来源原号：7c）
+```json
+{
+  "schema_version": 1,
+  "operation": "format_helpers.plan_supplement_figure_caption",
+  "args": ["7c", "棱镜的响应。"],
+  "kwargs": {}
+}
 ```
+
+返回 `result.caption` 为 `**图S7c：** 棱镜的响应。（来源原号：7c）`。
 
 以下都是虚构例子。实际来源位置与文件引用沿用本次来源映射：
 

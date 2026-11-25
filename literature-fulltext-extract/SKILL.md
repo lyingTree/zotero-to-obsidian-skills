@@ -5,6 +5,8 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 
 # 提取全文与段落
 
+本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+
 ## 必要输入
 
 - item.json 已确认的主全文及附件哈希。
@@ -169,17 +171,9 @@ PDF 图像先使用 `prepare_sources(...)` 生成的 `image_index` 选择实际�
 
 软连字符与可见连字符同处一个片段时，把整个待核片段一次替换为已核定的读法。不能先把软连字符转换成 `-`，再叠加一个可见连字符。原页有两个可见字符也不能机械去重。涉及跨行断词时，证据区域覆盖词的两部分，裁决原因写明为何保留或去掉该处连字符；不将这一处裁决扩散到全文同形片段。
 
-[format_helpers.py](../literature-zotero2obsidian/scripts/format_helpers.py) 的 `apply_visible_text_edits(...)` 只应用调用方已经指定的修订。每条 `resolved_edits` 记录包含 `id`、原始文本的 Unicode 码点区间 `start` / `end`（右端不含）、`expected_text`、`visible_page` 和 `decision`。`visible_page` 保存实际页图的最小文件引用、页码、`bbox`、坐标系及核定转写 `text`；`decision` 保存 `status="resolved"`、相同的 `selected_text`、原因、查看人和该查看人提供的 `observed` 声明。调用方负责真实查看行为与读法正确性，函数不认证这两项。
+原生操作 `format_helpers.apply_visible_text_edits` 只应用调用方已经指定的修订。每条 `resolved_edits` 记录包含 `id`、原始文本的 Unicode 码点区间 `start` / `end`（右端不含）、`expected_text`、`visible_page` 和 `decision`。`visible_page` 保存实际页图的最小文件引用、页码、`bbox`、坐标系及核定转写 `text`；`decision` 保存 `status="resolved"`、相同的 `selected_text`、原因、查看人和该查看人提供的 `observed` 声明。调用方负责真实查看行为与读法正确性，函数不认证这两项。
 
-```python
-from format_helpers import apply_visible_text_edits
-
-result = apply_visible_text_edits(
-    text_file=raw_text_file_record, edits=resolved_edits,
-)
-source_unit.setdefault("text_visual_conflicts", []).extend(result["text_visual_conflicts"])
-candidate_text = result["text"]
-```
+将实际 `raw_text_file_record` 与 `resolved_edits` 分别作为 `kwargs.text_file` 和 `kwargs.edits`，调用 `format_helpers.apply_visible_text_edits`。将返回 `result.text_visual_conflicts` 追加到实际来源单元的 `text_visual_conflicts`，用 `result.text` 作为候选文字；原始文字文件不变。
 
 函数核对证据文件哈希、原片段及区间不重叠，再基于同一原始快照一次组装结果；它不写回原始文件，不按词典生成修订，也不自动删除软连字符。缺少页图证据、待决读法或未声明实际查看时不应用修改，保留来源映射中的待核记录。以上帮助复用 EXT-C30–C33、EXT-C65–C66、EXT-C77–C80 与 EXT-A22 的逐项验收。
 

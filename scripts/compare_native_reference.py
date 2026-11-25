@@ -1,0 +1,2071 @@
+"""Development-only differential tests; the Rust executable never runs Python."""
+from __future__ import annotations
+
+import base64
+import json
+import hashlib
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT.joinpath("literature-zotero2obsidian", "scripts")))
+import deterministic_stage_checks as reference
+import format_helpers as formatting
+import source_url_inventory as urls
+import render_note as renderer
+sys.path.insert(0, str(ROOT.joinpath('tests')))
+from test_render_note import fixture as render_fixture
+import test_normalize_note as normalize_suite
+
+BINARY = Path(os.environ["Z2O_REFERENCE_BINARY"]).resolve() if "Z2O_REFERENCE_BINARY" in os.environ else ROOT.joinpath("native", "target", "debug", "z2o.exe" if sys.platform == "win32" else "z2o")
+
+
+def encoded(data: bytes) -> dict:
+    return {"$bytes": base64.b64encode(data).decode("ascii")}
+
+
+def statuses(report: dict) -> dict:
+    return {key: row["status"] for key, row in report["checks"].items()}
+
+
+class ReferenceComparison(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def invoke(self, operation, *args, **kwargs):
+        request = self.root.joinpath("request.json")
+        request.write_text(json.dumps({"schema_version": 1, "operation": operation,
+                                      "args": args, "kwargs": kwargs}, ensure_ascii=False), encoding="utf-8")
+        completed = subprocess.run([str(BINARY), "invoke", str(request)], check=True,
+                                   capture_output=True, encoding="utf-8", timeout=45)
+        return json.loads(completed.stdout)["result"]
+
+    def test_author_and_collection(self):
+        for markers in (["欧阳"], ["van der Waals", "Smith"], ["联合国", "A", "B"]):
+            self.assertEqual(self.invoke("deterministic_stage_checks.author_token", markers),
+                             reference.author_token(markers))
+        library = {"type": "group", "id": 123}
+        item = {"library": library, "data": {"collections": ["B"]}}
+        records = [
+            {"key": "A", "library": library, "data": {"key": "A", "name": "Root", "parentCollection": False}},
+            {"key": "B", "library": library, "data": {"key": "B", "name": "Child", "parentCollection": "A"}},
+        ]
+        self.assertEqual(self.invoke("deterministic_stage_checks.collection_ancestry", item, records,
+                                     pagination_complete=True),
+                         reference.collection_ancestry(item, records, pagination_complete=True))
+
+    def test_file_binding(self):
+        source = self.root.joinpath("论文.md")
+        source.write_bytes(b"abc")
+        self.assertEqual(self.invoke("deterministic_stage_checks.snapshot", str(source)),
+                         reference.snapshot(source))
+        self.assertEqual(self.invoke("deterministic_stage_checks.verify_binding", reference.snapshot(source),
+                                     str(source), base=str(self.root)),
+                         reference.verify_binding(reference.snapshot(source), source, base=self.root))
+
+    def test_properties_byte_output_and_audit(self):
+        original = b"\xef\xbb\xbf# Title\r\n\r\n---\r\nText\r\n"
+        fields = {"类型": "期刊论文", "年份": 2024, "关键词": ["a: b", "a # b", "2020"], "期刊名": "J: X"}
+        expected = reference.build_properties(original, item_type="journalArticle", confirmed=fields)
+        self.assertEqual(self.invoke("deterministic_stage_checks.build_properties", encoded(original),
+                                     item_type="journalArticle", confirmed=fields), encoded(expected))
+        old = ("---\r\n类型: '期刊论文'\r\n库内参考文献:\r\n"
+               "  - 'old'\r\ncustom: \"2020\"\r\n"
+               "nested:\r\n  库内参考文献: retain\r\n---\r\n# Title\r\n").encode()
+        self.assertEqual(self.invoke("deterministic_stage_checks.repair_properties", encoded(old)),
+                         encoded(reference.repair_properties(old)))
+        before, after = self.root.joinpath("before.md"), self.root.joinpath("after.md")
+        before.write_bytes(original)
+        after.write_bytes(expected)
+        self.assertEqual(statuses(self.invoke("deterministic_stage_checks.audit_properties",
+                                            str(before), str(after), mode="new", item_type="journalArticle")),
+                         statuses(reference.audit_properties(before, after, mode="new", item_type="journalArticle")))
+
+    def test_naming_plan_complete_mapping(self):
+        source = self.root.joinpath("source.txt")
+        source.write_text("Synthetic source", encoding="utf-8")
+        file = reference.snapshot(source)
+        evidence = {key: {"file": file, "locator": "line 1"}
+                    for key in ("year", "author_token", "original_title")}
+        fields = dict(year=2024, author_token="Smith", original_title="a:🌊🌊🌊",
+                      source_evidence=evidence, max_utf16_units=17)
+        expected = formatting.build_naming_plan(**fields, target_directory=self.root)
+        actual = self.invoke("format_helpers.build_naming_plan", **fields, target_directory=str(self.root))
+        self.assertEqual(actual, expected)
+
+    def test_figure_caption_and_anchor(self):
+        images = [{"target": "a#b.png", "alt": "[A]"}]
+        fields = dict(caption="**图1：** 内容", anchor="fig-1", newline="\r\n")
+        self.assertEqual(self.invoke("format_helpers.build_figure_block", images, **fields),
+                         formatting.build_figure_block(images, **fields))
+        self.assertEqual(self.invoke("format_helpers.plan_supplement_figure_caption", "7c", "内容"),
+                         formatting.plan_supplement_figure_caption("7c", "内容"))
+        self.assertEqual(self.invoke("format_helpers.new_figure_table_anchor",
+                                     source_token="ab12", figure_number_token="S7c"),
+                         formatting.new_figure_table_anchor(source_token="ab12", figure_number_token="S7c"))
+
+    def test_table_checks(self):
+        fence = chr(96) * 3
+        note = self.root.joinpath("table.md")
+        note.write_text(fence + "rich-table\nversion: 3\nsheets:\n"
+                        "  - locked: true\n    theme: grid\n    columns: [a]\n    rows: [b]\n"
+                        "  - locked: false\n    theme: grid\n    columns: [a]\n    rows: [b]\n"
+                        "    footer: 123\n" + fence + "\n^tbl-1\n", encoding="utf-8")
+        self.assertEqual(statuses(self.invoke("deterministic_stage_checks.audit_rich_tables", str(note))),
+                         statuses(reference.audit_rich_tables(note)))
+
+
+    def test_source_url_occurrence_assignment(self):
+        value = "https://example.org/Fn_(x)"
+        inventory = {"sources": [{"id": "main", "pages": [{"page": 1, "blocks": [
+            {"id": "b1", "text": "中文 🌊 (" + value + ")."},
+            {"id": "b2", "text": value},
+        ]}]}], "units": [
+            {"id": "broad", "kind": "metadata", "field": "external_url", "source": "main",
+             "value": value, "evidence": [{"page": 1}]},
+            {"id": "narrow", "kind": "metadata", "field": "external_url", "source": "main",
+             "value": value, "evidence": [{"page": 1, "blocks": ["b1"]}]},
+        ]}
+        self.assertEqual(self.invoke("source_url_inventory.source_url_coverage", inventory),
+                         urls.source_url_coverage(inventory))
+        self.assertEqual(self.invoke("source_url_inventory.scan_source_url_occurrences", inventory,
+                                     excluded_blocks=["b2"]),
+                         urls.scan_source_url_occurrences(inventory, excluded_blocks=["b2"]))
+
+
+    def test_full_render_reference_bytes_and_source_mapping(self):
+        plan, content = render_fixture()
+        self.assertEqual(self.invoke("render_note.content_template", plan), renderer.content_template(plan))
+        self.assertEqual(self.invoke("render_note.render_note", plan, content),
+                         renderer.render_note(plan, content))
+        for mutate in (
+            lambda p, c: c.pop("eq"),
+            lambda p, c: c["eq"].update(latex="tamper"),
+            lambda p, c: p["units"][4].update(anchor="fig-1"),
+            lambda p, c: p["units"][4].update(latex="a\n$$\n## injected"),
+            lambda p, c: p["units"][2]["literals"].update(scale="# forged"),
+            lambda p, c: c["body"].update(text="{{link:unknown}}"),
+            lambda p, c: p["units"][1].update(level=4),
+        ):
+            plan, content = render_fixture()
+            mutate(plan, content)
+            expected = renderer.render_note(plan, content)
+            actual = self.invoke("render_note.render_note", plan, content)
+            self.assertEqual(actual["status"], expected["status"])
+            self.assertEqual(actual["text"], expected["text"])
+            self.assertEqual(actual["mapping"], expected["mapping"])
+            self.assertEqual(actual["findings"][0]["field"], expected["findings"][0]["field"])
+
+
+
+class NativeNormalizationComparison(normalize_suite.NoteNormalization):
+    """Run every frozen reference fixture, then compare the entire native report."""
+    def check(self, source):
+        expected = super().check(source)
+        with tempfile.TemporaryDirectory() as folder:
+            request = Path(folder).joinpath("request.json")
+            request.write_text(json.dumps({"schema_version": 1,
+                "operation": "normalize_note.normalize_note", "args": [source]},
+                ensure_ascii=False), encoding="utf-8")
+            completed = subprocess.run([str(BINARY), "invoke", str(request)], check=True,
+                capture_output=True, encoding="utf-8", timeout=45)
+            actual = json.loads(completed.stdout)["result"]
+        self.assertEqual(actual, expected)
+        return actual
+
+    def test_exclusive_destination(self):
+        super().test_exclusive_destination()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source, destination = root.joinpath("原稿.md"), root.joinpath("规范.md")
+            source.write_bytes(b"60 min\r\n")
+            request = root.joinpath("request.json")
+            request.write_text(json.dumps({"schema_version": 1,
+                "operation": "normalize_note.normalize_file",
+                "args": [str(source), str(destination)]}, ensure_ascii=False), encoding="utf-8")
+            result = subprocess.run([str(BINARY), "invoke", str(request)], check=True,
+                capture_output=True, encoding="utf-8", timeout=45)
+            report = json.loads(result.stdout)["result"]
+            self.assertEqual(destination.read_bytes(), report["text"].encode())
+            repeated = subprocess.run([str(BINARY), "invoke", str(request)],
+                capture_output=True, encoding="utf-8", timeout=45)
+            self.assertNotEqual(repeated.returncode, 0)
+            self.assertEqual(source.read_bytes(), b"60 min\r\n")
+
+
+
+class NativeValidatorMixin:
+    """Run the original validation suites unchanged using native findings."""
+    validator_module = None
+
+    def setUp(self):
+        super().setUp()
+        import dataclasses
+        from unittest.mock import patch
+
+        module = self.validator_module
+        reference_note = module.validate_note
+        reference_file = module.validate_file
+        reference_inspect = reference_note
+
+        def compare(actual, expected):
+            expected_rows = [dataclasses.asdict(row) for row in expected]
+            self.assertEqual([(r["level"], r["code"], r["line"]) for r in actual],
+                             [(r["level"], r["code"], r["line"]) for r in expected_rows])
+            for a, b in zip(actual, expected_rows):
+                if a["code"] not in {"FRONTMATTER_YAML", "TABLE_YAML", "FILE_READ"}:
+                    self.assertEqual(a["message"], b["message"])
+            return [module.Finding(**row) for row in actual]
+
+        def native(operation, value):
+            with tempfile.TemporaryDirectory() as folder:
+                request = Path(folder).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version": 1, "operation": operation,
+                    "args": [value]}, ensure_ascii=False), encoding="utf-8")
+                process = subprocess.run([str(BINARY), "invoke", str(request)],
+                    capture_output=True, encoding="utf-8", check=True, timeout=45)
+                return json.loads(process.stdout)["result"]
+
+        def validate_note(text, **kwargs):
+            expected_records = []
+            expected = reference_inspect(text, table_records=expected_records)
+            actual = native("validate_note.inspect_note", text)
+            self.assertEqual(actual["table_records"], expected_records)
+            if kwargs.get("table_records") is not None:
+                kwargs["table_records"].extend(actual["table_records"])
+            return compare(actual["findings"], expected)
+
+        def validate_file(path):
+            expected = reference_file(path)
+            actual = native("validate_note.validate_file", str(path))
+            return compare(actual, expected)
+
+        for name, replacement in (("validate_note", validate_note), ("validate_file", validate_file)):
+            patcher = patch.object(module, name, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+import test_validate_note as validate_suite
+import test_rich_tables as table_suite
+
+
+class NativeStaticValidationComparison(NativeValidatorMixin, validate_suite.ValidateNoteTests):
+    validator_module = validate_suite.validator
+
+
+class NativeRichTableComparison(NativeValidatorMixin, table_suite.RichTableTests):
+    validator_module = table_suite.validator
+
+
+class NativeGlossaryComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_glossary_retrieval_and_saved_evidence(self):
+        import test_glossary_candidates as suite
+        glossary = self.root.joinpath("术语表.md")
+        glossary.write_bytes(("\ufeff| ID | English | Chinese | Context |\r\n"
+            "| --- | --- | --- | --- |\r\n"
+            "| T1 | radial velocity | 径向速度 | centre |\r\n"
+            "| T2 | root mean square；别名/缩写：RMS | 均方根 | statistic |\r\n"
+            "| T3 | tangential velocity | 切向速度 | tangent |\r\n").encode())
+        index = suite.glossary_tools.GlossaryIndex(glossary)
+        for query in ("RADIAL", "RMS", "切向", "rad", "unlisted estimator"):
+            self.assertEqual(self.invoke("glossary_candidates.search", str(glossary), query),
+                             index.search(query))
+        for text in ("🌊 Radial-velocity and RMS were recorded.", "The radial spacing changed.",
+                     "radially spaced", "Tangential velocity", ""):
+            for limit in (1, 8):
+                self.assertEqual(self.invoke("glossary_candidates.suggest", str(glossary), text,
+                                             max_family_entries=limit),
+                                 index.suggest(text, max_family_entries=limit))
+        source = self.root.joinpath("source.pdf")
+        source.write_bytes(b"source identity")
+        import hashlib
+        inventory = self.root.joinpath("inventory.json")
+        inventory.write_text(json.dumps({"sources": [{"id": "main", "path": source.name,
+             "sha256": hashlib.sha256(source.read_bytes()).hexdigest(), "pages": [{"page": 1,
+             "blocks": [{"id": "b1", "bbox": [0, 0, 20, 30], "text": "Radial spacing."}]}]}]}),
+             encoding="utf-8")
+        expected = self.root.joinpath("expected.json")
+        actual = self.root.joinpath("actual.json")
+        suite.glossary_tools.prepare_glossary_candidates(inventory, glossary, expected)
+        self.assertEqual(self.invoke("glossary_candidates.prepare_glossary_candidates",
+                                     str(inventory), str(glossary), str(actual)), str(actual.resolve()))
+        self.assertEqual(json.loads(actual.read_text(encoding="utf-8")),
+                         json.loads(expected.read_text(encoding="utf-8")))
+
+
+class NativePipelineComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_plan_contract_replay_and_mapping(self):
+        import test_note_pipeline as suite
+        source = self.root.joinpath("source.txt")
+        source.write_bytes(b"source")
+        plan = {"schema_version": 1, "properties": {"type": "article"}, "units": [
+            {"unit_id": "title", "kind": "header", "original_title": "A source", "translated": True,
+             "authors": ["Author"], "affiliations": ["Institute"],
+             "source": {"source_id": "main", "locator": "title"}, "scope": "main"},
+            {"unit_id": "p", "kind": "paragraph", "source": {"source_id": "main", "locator": "p1"}, "scope": "main"}]}
+        content = {"title": {"translated_title": "来源"}, "p": {"text": "每60 min观测，变化7.00%。"}}
+        expected = suite.pipeline.build_contract(plan, {"main": source})
+        actual = self.invoke("note_pipeline.build_contract", plan, {"main": str(source)})
+        self.assertEqual(actual, expected)
+        rendered = self.invoke("render_note.render_note", plan, content)
+        normalized = self.invoke("normalize_note.normalize_note", rendered["text"])
+        self.assertEqual(self.invoke("note_pipeline.replay_changes", rendered["text"], normalized["changes"]),
+                         suite.pipeline.replay_changes(rendered["text"], normalized["changes"]))
+        self.assertEqual(self.invoke("note_pipeline.rebase_rendering", rendered, normalized),
+                         suite.pipeline.rebase_rendering(rendered, normalized))
+        job = self.invoke("note_pipeline.prepare_content_job", plan, {"main": str(source)}, str(self.root.joinpath("jobs")))
+        d = Path(job["directory"])
+        self.assertEqual(json.loads(d.joinpath("contract.json").read_text(encoding="utf-8")), expected)
+        self.assertEqual(json.loads(d.joinpath("content-template.json").read_text(encoding="utf-8")),
+                         renderer.content_template(plan))
+        self.assertEqual(self.invoke("note_pipeline.read_json", str(d.joinpath("request.json")))["engine"]["engine"],
+                         "rust-native")
+
+
+import test_delivery_presentation as presentation_suite
+
+class NativePresentationComparison(presentation_suite.PresentationTests):
+    def setUp(self):
+        super().setUp()
+        from dataclasses import asdict
+        from unittest.mock import patch
+        reference_lint = presentation_suite.lint_presentation
+
+        def native(text):
+            expected = reference_lint(text)
+            with tempfile.TemporaryDirectory() as folder:
+                request = Path(folder).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version": 1,
+                    "operation": "lint_presentation.lint_presentation", "args": [text]},
+                    ensure_ascii=False), encoding="utf-8")
+                completed = subprocess.run([str(BINARY), "invoke", str(request)], check=True,
+                    capture_output=True, encoding="utf-8", timeout=45)
+                actual = json.loads(completed.stdout)["result"]
+            # Preserve each original prompt, not just pass/fail or code sets.
+            self.assertEqual(actual, [asdict(row) for row in expected])
+            return expected
+
+        patcher = patch.object(presentation_suite, "lint_presentation", native)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+import test_accept_note as acceptance_suite
+
+class NativeAcceptanceComparison(acceptance_suite.TestAccept):
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        reference = acceptance_suite.acceptance.accept_note
+        def native(candidate_path, contract=None, *, resource_root=None, rendering=None):
+            expected = reference(candidate_path, contract, resource_root=resource_root, rendering=rendering)
+            with tempfile.TemporaryDirectory() as folder:
+                request = Path(folder).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version": 1, "operation": "accept_note.accept_note",
+                    "args": [str(candidate_path)], "kwargs": {"contract": contract,
+                    "resource_root": str(resource_root) if resource_root is not None else None, "rendering": rendering}},
+                    ensure_ascii=False), encoding="utf-8")
+                completed = subprocess.run([str(BINARY), "invoke", str(request)], check=True,
+                    capture_output=True, encoding="utf-8", timeout=90)
+                actual = json.loads(completed.stdout)["result"]
+            for key in ("mechanical_status", "source_coverage", "source_fidelity"):
+                self.assertEqual(actual[key], expected[key], key)
+            self.assertEqual({r["code"] for r in actual["checks"] if r["status"] == "fail"},
+                             {r["code"] for r in expected["checks"] if r["status"] == "fail"})
+            if not any(r["code"] == "INPUT_INVALID" for r in expected["checks"]):
+                self.assertEqual(actual["counts"], expected["counts"])
+                def rows(report):
+                    return sorted((r["code"], r["location"], r["status"]) for r in report["checks"])
+                self.assertEqual(rows(actual), rows(expected))
+            # Native rules hash binds the native executable, not the old Python files.
+            self.assertEqual(actual["inputs"]["candidate_sha256"], expected["inputs"]["candidate_sha256"])
+            return actual
+        patcher = patch.object(acceptance_suite.acceptance, "accept_note", native)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class NativeEndToEndComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_process_markdown_and_content_native_receipts(self):
+        import test_note_pipeline as suite
+        source = self.root.joinpath("paper.txt")
+        source.write_bytes(b"source evidence")
+        note = self.root.joinpath("candidate.md")
+        note.write_text("---\ntype: article\n---\n\n# Example\n\n## 1 方法\n每60 min观测，增加31.$2\\%$。\n", encoding="utf-8")
+        contract = {"schema_version": 1, "sources": {"main": {"path": str(source),
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}},
+            "counts": {"figures": 0, "equations": 0, "tables": 0, "bibliography": 0}}
+        for selected in (contract, None):
+            expected = suite.pipeline.process_markdown(note, self.root.joinpath("python"),
+                contract=selected, resource_root=self.root, progress=None)
+            actual = self.invoke("note_pipeline.process_markdown", str(note), str(self.root.joinpath("rust")),
+                contract=selected, resource_root=str(self.root))
+            self.assertEqual(actual["status"], expected["status"])
+            self.assertEqual(actual["source_fidelity"], "not_assessed")
+            self.assertEqual(Path(actual["directory"]).joinpath("normalized.md").read_bytes(),
+                             Path(expected["directory"]).joinpath("normalized.md").read_bytes())
+            self.assertEqual(actual, self.invoke("note_pipeline.process_markdown", str(note),
+                str(self.root.joinpath("rust")), contract=selected, resource_root=str(self.root)))
+            for name, record in actual["outputs"].items():
+                path = Path(record["path"])
+                self.assertEqual(path.name, name)
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), record["sha256"])
+        plan = {"schema_version": 1, "properties": {"type": "article"}, "units": [
+            {"unit_id": "title", "kind": "header", "original_title": "A source", "translated": True,
+             "authors": ["Author"], "affiliations": ["Institute"], "scope": "main",
+             "source": {"source_id": "main", "locator": "title"}},
+            {"unit_id": "p", "kind": "paragraph", "scope": "main",
+             "source": {"source_id": "main", "locator": "p"}}]}
+        content = {"title": {"translated_title": "来源"}, "p": {"text": "每60 min观测。"}}
+        contract = suite.pipeline.build_contract(plan, {"main": source})
+        for supplied in (content, {}):
+            expected = suite.pipeline.process_content(plan, supplied, self.root.joinpath("python"),
+                contract=contract, resource_root=self.root, progress=None)
+            actual = self.invoke("note_pipeline.process_content", plan, supplied, str(self.root.joinpath("rust")),
+                contract=contract, resource_root=str(self.root))
+            self.assertEqual(actual["status"], expected["status"])
+            self.assertEqual(actual["source_fidelity"], expected["source_fidelity"])
+            if supplied:
+                for name in ("normalized.md", "rendering.json", "normalization.json"):
+                    self.assertEqual(Path(actual["directory"]).joinpath(name).read_bytes(),
+                                     Path(expected["directory"]).joinpath(name).read_bytes())
+
+
+import test_docx_source_inventory as docx_suite
+
+class NativeDocxComparison(docx_suite.NativeDocxTests):
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        module = docx_suite.native
+        read_reference = module.read_docx
+        prepare_reference = module.prepare_docx_source
+        native_document = module.NativeDocument
+        errors_reference = module.native_evidence_errors
+
+        def invoke(operation, *args):
+            with tempfile.TemporaryDirectory() as folder:
+                request = Path(folder).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version": 1,
+                    "operation": "docx_source_inventory." + operation,
+                    "args": args}, ensure_ascii=False), encoding="utf-8")
+                completed = subprocess.run([str(BINARY), "invoke", str(request)],
+                    capture_output=True, encoding="utf-8", check=True, timeout=90)
+                return json.loads(completed.stdout)["result"]
+
+        def read(path, source_id, *, progress=None):
+            try:
+                expected = read_reference(path, source_id, progress=progress)
+            except ValueError:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    invoke("read_docx", str(path), source_id)
+                raise
+            actual = invoke("read_docx", str(path), source_id)
+            self.assertEqual(actual, expected)
+            return actual
+
+        def prepare(path, source_id, directory, *, progress=None):
+            with tempfile.TemporaryDirectory() as folder:
+                expected_dir = Path(folder).joinpath("reference")
+                expected = prepare_reference(path, source_id, expected_dir, progress=progress)
+                if Path(directory).joinpath("document.xml").exists():
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        invoke("prepare_docx_source", str(path), source_id, str(directory))
+                    raise FileExistsError(str(directory))
+                actual = invoke("prepare_docx_source", str(path), source_id, str(directory))
+                def compare_records(a, b):
+                    if isinstance(a, dict) and isinstance(b, dict):
+                        self.assertEqual(set(a), set(b))
+                        for key in a:
+                            if key == "path":
+                                self.assertEqual(Path(a[key]).name, Path(b[key]).name)
+                                self.assertEqual(Path(a[key]).read_bytes(), Path(b[key]).read_bytes())
+                            else:
+                                compare_records(a[key], b[key])
+                    elif isinstance(a, list) and isinstance(b, list):
+                        self.assertEqual(len(a), len(b))
+                        for x, y in zip(a, b):
+                            compare_records(x, y)
+                    else:
+                        self.assertEqual(a, b)
+                compare_records(actual, expected)
+                return actual
+
+        def errors(source, location):
+            actual = invoke("native_evidence_errors", source, location)
+            self.assertEqual(actual, errors_reference(source, location))
+            return actual
+
+        test = self
+        class NativeDocument:
+            def __init__(self, path):
+                self.path = path
+                self.reference = native_document(path)
+                self.inventory = invoke("read_docx", str(path), "native")
+                test.assertEqual(self.inventory, self.reference.inventory)
+            def resolve_native_locator(self, locator):
+                try:
+                    expected = self.reference.resolve_native_locator(locator)
+                except ValueError:
+                    with test.assertRaises(subprocess.CalledProcessError):
+                        invoke("resolve_native_locator", str(self.path), locator)
+                    raise
+                actual = invoke("resolve_native_locator", str(self.path), locator)
+                test.assertEqual(actual, expected)
+                return actual
+
+        for name, replacement in (("read_docx", read), ("prepare_docx_source", prepare),
+            ("native_evidence_errors", errors), ("NativeDocument", NativeDocument)):
+            patcher = patch.object(module, name, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+class NativePreparationComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_docx_source_inventory_uses_real_files_and_pending_terms(self):
+        from prepare_source_inventory import prepare_sources
+        from test_docx_source_inventory import make_docx, paragraph, image_call, image_relation, PNG
+        source = self.root.joinpath("论文.docx")
+        make_docx(source, paragraph("First source.") + image_call("image"),
+                  relationships=[image_relation("image", "media/one.png")],
+                  media={"word/media/one.png": PNG})
+        glossary = self.root.joinpath("术语.md")
+        glossary.write_text("test", encoding="utf-8")
+        py_root = self.root.joinpath("python")
+        rs_root = self.root.joinpath("rust")
+        expected_path = prepare_sources({"main": source}, py_root, source_roles={"main": "main"},
+                                        glossary_path=glossary, progress=None)
+        actual_path = Path(self.invoke("prepare_source_inventory.prepare_docx_sources", {"main": str(source)},
+                                        str(rs_root), source_roles={"main": "main"}, glossary_path=str(glossary)))
+        def compare(a, b, key=None):
+            if isinstance(a, dict):
+                self.assertEqual(set(a), set(b))
+                for k in a:
+                    compare(a[k], b[k], k)
+            elif isinstance(a, list):
+                self.assertEqual(len(a), len(b))
+                for x, y in zip(a, b):
+                    compare(x, y)
+            elif key == "path":
+                self.assertEqual(Path(a).name, Path(b).name)
+                self.assertEqual(Path(a).read_bytes(), Path(b).read_bytes())
+            elif key == "terminology_path":
+                compare(json.loads(Path(a).read_text(encoding="utf-8")),
+                        json.loads(Path(b).read_text(encoding="utf-8")))
+            else:
+                self.assertEqual(a, b, key)
+        compare(json.loads(actual_path.read_text(encoding="utf-8")),
+                json.loads(expected_path.read_text(encoding="utf-8")))
+
+    def test_pending_translation_scaffold_source_binding_and_negative_cases(self):
+        import test_translation_review as suite
+        ref = suite.review
+        source = self.root.joinpath("source.pdf")
+        source.write_bytes(b"fixture source")
+        candidate = self.root.joinpath("candidate.md")
+        candidate.write_text("翻译。", encoding="utf-8")
+        inventory = {"sources": [{"id":"s","path":source.name,
+            "sha256":hashlib.sha256(source.read_bytes()).hexdigest(),
+            "pages":[{"page":1,"blocks":[{"id":"b1","bbox":[0,1,3,4],"text":"Source 1"},
+                                        {"id":"b2","bbox":[2,5,9,10],"text":"Source 2"}]}]}],
+            "units":[{"id":"p1","source":"s","kind":"paragraph",
+                      "evidence":[{"basis":"text_blocks","page":1,"blocks":["b2","b1"]}]},
+                     {"id":"p2","source":"s","kind":"paragraph","evidence":[{"page":1,"quote":"Source 2"}]}]}
+        inv = self.root.joinpath("inventory.json")
+        inv.write_text(json.dumps(inventory), encoding="utf-8")
+        py_out, rs_out = self.root.joinpath("python.json"), self.root.joinpath("rust.json")
+        ref.prepare_translation_review(inv,candidate,py_out,unit_ids=["p1"],progress=None)
+        self.invoke("prepare_translation_review.prepare_translation_review",str(inv),str(candidate),str(rs_out),
+                    unit_ids=["p1"])
+        self.assertEqual(json.loads(py_out.read_text(encoding="utf-8")),json.loads(rs_out.read_text(encoding="utf-8")))
+        for unit_ids in ([],["p1","p1"],["unknown"]):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("prepare_translation_review.prepare_translation_review",str(inv),str(candidate),
+                            str(self.root.joinpath("invalid.json")),unit_ids=unit_ids)
+        self.assertFalse(self.root.joinpath("invalid.json").exists())
+        loc={"page":1,"quote":"12"}
+        self.assertEqual(self.invoke("prepare_translation_review.new_occurrence","num","numbers",source_span=loc),
+                         ref.new_occurrence("num","numbers",source_span=loc))
+        self.assertEqual(self.invoke("prepare_translation_review.new_term_candidate","t","ocean","concept",
+                                     source_excerpt="ocean",source_locator=loc),
+                         ref.new_term_candidate("t","ocean","concept",source_excerpt="ocean",source_locator=loc))
+
+
+class NativeAtomicPreparationComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_actual_repository_rule_catalog(self):
+        expected = reference.coverage_catalog(ROOT)
+        actual = self.invoke("deterministic_stage_checks.coverage_catalog", str(ROOT))
+        self.assertEqual(actual, expected)
+
+    def test_atomic_ledger_creation_and_pending_queries(self):
+        import test_check_records as suite
+        fixture = suite.CheckRecordsTests(methodName="test_skeleton_discovers_all_atomic_ids_without_resolving_any")
+        fixture.setUp()
+        try:
+            expected = fixture.ledger
+            output = fixture.base.joinpath("rust-checks.json")
+            self.invoke("check_records.prepare_check_records", str(fixture.skills), str(output),
+                        sources={"source-a": str(fixture.pdf)}, candidate_path=str(fixture.candidate),
+                        scopes=fixture.scopes, requirement_types=fixture.types, rule_selection="all")
+            actual = json.loads(output.read_text(encoding="utf-8"))
+            # UTC timestamps describe distinct executions. Compare every other
+            # field, including complete rule declarations, selection and hashes.
+            expected = dict(expected)
+            actual.pop("created_at")
+            expected.pop("created_at")
+            self.assertEqual(actual, expected)
+            from complete_workflow import pending_check_batch, pending_check_rows
+            for prefix in (None, "EX", "FMT"):
+                self.assertEqual(self.invoke("complete_workflow.pending_check_batch", str(output), prefix=prefix, limit=5),
+                                 pending_check_batch(output, prefix=prefix, limit=5))
+                self.assertEqual(self.invoke("complete_workflow.pending_check_rows", str(output), prefix=prefix, limit=2),
+                                 pending_check_rows(output, prefix=prefix, limit=2))
+            locator = {"kind": "lines", "start": 1, "end": 1}
+            self.assertEqual(self.invoke("check_records.bind_evidence", str(fixture.candidate), locator),
+                             suite.checker.bind_evidence(fixture.candidate, locator))
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("check_records.prepare_check_records", str(fixture.skills), str(output),
+                            sources={"source-a": str(fixture.pdf)})
+        finally:
+            fixture.doCleanups()
+
+
+import test_check_records as check_records_suite
+
+class NativeAtomicValidatorComparison(check_records_suite.CheckRecordsTests):
+    """Reuse original adversarial ledger fixtures; compare native diagnostics
+    and status counts for every validator call, not just a final pass boolean."""
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        from collections import Counter
+        original = check_records_suite.checker.validate_check_records
+
+        def validate(path, *, progress=None):
+            expected = original(path, progress=progress)
+            with tempfile.TemporaryDirectory() as directory:
+                request = Path(directory).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version": 1,
+                    "operation": "check_records.validate_check_records", "args": [str(path)]},
+                    ensure_ascii=False), encoding="utf-8")
+                result = subprocess.run([str(BINARY), "invoke", str(request)], check=True,
+                                        capture_output=True, encoding="utf-8", timeout=90)
+                actual = json.loads(result.stdout)["result"]
+            expected_value = expected.to_dict()
+            # Parser diagnostics may differ across libraries, but every
+            # independent rule ID, severity, count and readiness gate must match.
+            def diagnostics(v):
+                return Counter((r["code"], r["object_id"], r["level"]) for r in v["findings"])
+            self.assertEqual(diagnostics(actual), diagnostics(expected_value), actual["findings"])
+            for key, value in expected_value.items():
+                if key != "findings":
+                    self.assertEqual(actual[key], value, key)
+            return expected
+        patcher = patch.object(check_records_suite.checker, "validate_check_records", validate)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        original_scopes = check_records_suite.checker.scopes_from_deliveries
+
+        def scopes(inventory_path, candidate_path, deliveries, *, unit_ids):
+            payload = {"schema_version": 1, "operation": "check_records.scopes_from_deliveries",
+                       "args": [str(inventory_path), str(candidate_path), deliveries],
+                       "kwargs": {"unit_ids": unit_ids}}
+            with tempfile.TemporaryDirectory() as directory:
+                request = Path(directory).joinpath("scope.json")
+                request.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                actual = subprocess.run([str(BINARY), "invoke", str(request)], capture_output=True,
+                                        encoding="utf-8", timeout=90)
+                try:
+                    expected = original_scopes(inventory_path, candidate_path, deliveries, unit_ids=unit_ids)
+                except ValueError:
+                    self.assertNotEqual(actual.returncode, 0, actual.stdout)
+                    raise
+                self.assertEqual(actual.returncode, 0, actual.stderr)
+                self.assertEqual(json.loads(actual.stdout)["result"], expected)
+                return expected
+
+        scope_patch = patch.object(check_records_suite.checker, "scopes_from_deliveries", scopes)
+        scope_patch.start()
+        self.addCleanup(scope_patch.stop)
+
+class NativeAtomicWriterComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_explicit_batch_preserves_previous_decisions_and_evidence(self):
+        from complete_workflow import record_check_batch, record_decision_rows
+        fixture = check_records_suite.CheckRecordsTests(methodName="test_skeleton_discovers_all_atomic_ids_without_resolving_any")
+        fixture.setUp()
+        try:
+            a = fixture.path
+            b = fixture.base.joinpath("native-checks.json")
+            b.write_bytes(a.read_bytes())
+            evidence = {"result": check_records_suite.checker.bind_evidence(fixture.candidate, {"kind":"lines","start":1,"end":1})}
+            scope = fixture.scopes["EX-C01"]
+            rows = [{"id":"EX-C01","status":"passed","scope":scope,"reason":"Actual check.","evidence":["result"]}]
+            record_check_batch(a, rows, evidence=evidence)
+            self.invoke("complete_workflow.record_check_batch",str(b),rows,evidence=evidence)
+            contexts = {"table": {"scope":fixture.scopes["FMT-A01"],"evidence":["result"]}}
+            decisions = [["FMT-A01","failed","table","Missing cell."]]
+            record_decision_rows(a,decisions,contexts=contexts,evidence={})
+            self.invoke("complete_workflow.record_decision_rows",str(b),decisions,contexts=contexts,evidence={})
+            expected = json.loads(a.read_text(encoding="utf-8"))
+            actual = json.loads(b.read_text(encoding="utf-8"))
+            for report in (actual,expected):
+                for update in report["updates"]:
+                    update.pop("at")
+            self.assertEqual(actual,expected)
+            before = b.read_bytes()
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("complete_workflow.record_check_batch",str(b),[dict(rows[0],objective="forged")],evidence={})
+            self.assertEqual(b.read_bytes(),before)
+        finally:
+            fixture.doCleanups()
+
+
+
+    def test_prepare_with_inventory_and_explicit_overwrite(self):
+        fixture = check_records_suite.CheckRecordsTests(methodName="test_skeleton_discovers_all_atomic_ids_without_resolving_any")
+        fixture.setUp()
+        try:
+            b = fixture.base.joinpath("native-checks.json")
+            inventory = fixture.base.joinpath("native-inventory.json")
+            inventory.write_bytes(fixture.inventory.read_bytes())
+            kwargs = dict(sources={"source-a":str(fixture.pdf)},candidate_path=str(fixture.candidate),
+                          scopes=fixture.scopes,requirement_types=fixture.types,rule_selection="all")
+            self.invoke("check_records.prepare_check_records",str(fixture.skills),str(b),
+                        inventory_path=str(inventory),**kwargs)
+            actual=json.loads(b.read_text(encoding="utf-8"))
+            expected=dict(fixture.ledger)
+            actual.pop("created_at")
+            expected.pop("created_at")
+            self.assertEqual(actual,expected)
+            self.assertEqual(Path(json.loads(inventory.read_text(encoding="utf-8"))["checks_path"]),b.resolve())
+            original=b.read_bytes()
+            self.invoke("check_records.prepare_check_records",str(fixture.skills),str(b),
+                        inventory_path=str(inventory),overwrite=True,**kwargs)
+            backups=list(b.parent.glob(".z2o-check-transaction-*/ledger.before"))
+            self.assertIn(original,[p.read_bytes() for p in backups])
+            self.assertTrue(all(p.parent.joinpath("completed.json").is_file() for p in backups))
+            before=fixture.candidate.read_bytes()
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("check_records.prepare_check_records",str(fixture.skills),str(fixture.candidate),
+                            overwrite=True,**kwargs)
+            self.assertEqual(fixture.candidate.read_bytes(),before)
+        finally:
+            fixture.doCleanups()
+
+
+
+import test_format_helpers as format_suite
+
+class NativeVisibleTextEditComparison(format_suite.VisibleTextEditTests):
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        reference_apply = format_suite.helpers.apply_visible_text_edits
+
+        def apply(*, text_file, edits):
+            with tempfile.TemporaryDirectory() as directory:
+                request = Path(directory).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version":1,
+                    "operation":"format_helpers.apply_visible_text_edits",
+                    "kwargs":{"text_file":text_file,"edits":edits}}, ensure_ascii=False),
+                    encoding="utf-8")
+                result = subprocess.run([str(BINARY),"invoke",str(request)],
+                    capture_output=True, encoding="utf-8", timeout=90)
+                try:
+                    expected = reference_apply(text_file=text_file, edits=edits)
+                except ValueError:
+                    self.assertNotEqual(result.returncode,0,result.stdout)
+                    raise
+                self.assertEqual(result.returncode,0,result.stderr)
+                actual=json.loads(result.stdout)["result"]
+                self.assertEqual(actual,expected)
+                return expected
+        patcher=patch.object(format_suite.helpers,"apply_visible_text_edits",apply)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+
+import test_draft_queue as draft_suite
+
+class NativeDraftQueueComparison(draft_suite.DraftQueueTests):
+    """Drive the existing queue fixtures through the actual Rust executable.
+    The adapter holds only the latest explicit queue hash, not a Python engine."""
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        original_prepare = draft_suite.queue_tools.prepare_draft_queue
+
+        def encode(value):
+            if isinstance(value, Path):
+                return str(value)
+            if isinstance(value, (tuple,list)):
+                return [encode(v) for v in value]
+            if isinstance(value, dict):
+                return {k:encode(v) for k,v in value.items()}
+            return value
+
+        def invoke(operation, *args, **kwargs):
+            with tempfile.TemporaryDirectory() as directory:
+                request = Path(directory).joinpath("request.json")
+                request.write_text(json.dumps({"schema_version":1,"operation":operation,
+                    "args":encode(args),"kwargs":encode(kwargs)},ensure_ascii=False),encoding="utf-8")
+                completed = subprocess.run([str(BINARY),"invoke",str(request)],capture_output=True,
+                                            encoding="utf-8",timeout=90)
+                if completed.returncode != 0:
+                    msg = completed.stderr
+                    if any(phrase in msg for phrase in ("Resume the existing queue", "Assemble a new version", "Keep existing output")):
+                        raise FileExistsError(msg)
+                    if "another script" in msg:
+                        raise RuntimeError(msg)
+                    raise ValueError(msg)
+                return json.loads(completed.stdout)["result"]
+
+        def prepare(inventory,queue,*,progress=None):
+            # Independently prepare a reference queue with a distinct path.
+            # Its absolute snapshot/parts paths are expected to differ.
+            reference = Path(queue).with_name("reference-" + Path(queue).name)
+            result = invoke("draft_queue.prepare_draft_queue",inventory,queue)
+            if not reference.exists():
+                original_prepare(inventory,reference,progress=progress)
+                a=json.loads(Path(result).read_text(encoding="utf-8"))
+                b=json.loads(reference.read_text(encoding="utf-8"))
+                a.pop("parts_root");b.pop("parts_root")
+                x=a.pop("inventory_snapshot");y=b.pop("inventory_snapshot")
+                self.assertEqual(x["sha256"],y["sha256"])
+                self.assertEqual(Path(x["path"]).read_bytes(),Path(y["path"]).read_bytes())
+                self.assertEqual(a,b)
+            return Path(result)
+
+        class NativeQueue:
+            def __init__(self,p):
+                self.path=Path(p)
+                self._reload()
+            @classmethod
+            def open(cls,p):
+                return cls(p)
+            def _reload(self):
+                opened=invoke("draft_queue.DraftQueue.open",self.path)
+                self.data=opened["data"];self.sha=opened["sha256"]
+            def _call(self,operation,*args,mutate=False,**kwargs):
+                result=invoke("draft_queue.DraftQueue."+operation,self.path,*args,expected_sha256=self.sha,**kwargs)
+                if mutate:
+                    self._reload()
+                return result
+            def status(self):
+                return self._call("status")
+            def next_task(self):
+                return self._call("next_task")
+            def review_pdf_page_order(self,source_id,page,ordered_block_ids,reason):
+                return self._call("review_pdf_page_order",source_id,page,ordered_block_ids,reason,mutate=True)
+            def review_additional_objects(self,source_id,page,reason):
+                return self._call("review_additional_objects",source_id,page,reason,mutate=True)
+            def add_page_object(self,block_id,source_id,page,**kwargs):
+                return self._call("add_page_object",block_id,source_id,page,mutate=True,**kwargs)
+            def group(self,unit_id,block_ids,**kwargs):
+                return self._call("group",unit_id,block_ids,mutate=True,**kwargs)
+            def exclude(self,block_id,reason):
+                return self._call("exclude",block_id,reason,mutate=True)
+            def write_unit(self,unit_id,markdown,**kwargs):
+                return self._call("write_unit",unit_id,markdown,mutate=True,**kwargs)
+            def record_issue_decision(self,issue_id,**kwargs):
+                return self._call("record_issue_decision",issue_id,mutate=True,**kwargs)
+            def assemble(self,output_path,*,progress=None):
+                return self._call("assemble",output_path)
+
+        for name,replacement in (("prepare_draft_queue",prepare),("DraftQueue",NativeQueue)):
+            patcher=patch.object(draft_suite.queue_tools,name,replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+
+class NativeDeliveryPreparationComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_manifest_and_source_unit_against_reference(self):
+        import validate_delivery as delivery
+        import handoff_maps as maps
+        inventory=self.root.joinpath("inventory.json")
+        candidate=self.root.joinpath("candidate.md")
+        asset=self.root.joinpath("figure.png")
+        inventory.write_text('{"schema_version":1,"sources":[],"units":[]}',encoding="utf-8")
+        candidate.write_text("图注。",encoding="utf-8")
+        asset.write_bytes(b"fixture")
+        evidence=[{"page":1,"bbox":[0,0,10,10]}]
+        fields={"original_number":"S1","contains_table":False}
+        expected=maps.make_source_unit("figure","main","figure",evidence,**fields)
+        actual=self.invoke("handoff_maps.make_source_unit","figure","main","figure",evidence,**fields)
+        self.assertEqual(actual,expected)
+        rows=[{"unit":"figure","target":{"anchor":"fig-1"},"assets":[{"path":"figure.png"}]}]
+        py=self.root.joinpath("python.json");rs=self.root.joinpath("rust.json")
+        delivery.write_delivery_manifest(inventory,candidate,rows,py,resource_root=self.root,figure_edge_reviews_required=True)
+        self.invoke("validate_delivery.write_delivery_manifest",str(inventory),str(candidate),rows,str(rs),resource_root=str(self.root),figure_edge_reviews_required=True)
+        self.assertEqual(json.loads(py.read_text(encoding="utf-8")),json.loads(rs.read_text(encoding="utf-8")))
+        from dataclasses import asdict
+        text="中文 [标签](<a b.md> \"title\") ![图](image.png)"
+        self.assertEqual(self.invoke("validate_delivery.scan_markdown_links",text),
+                         [asdict(v) for v in delivery.scan_markdown_links(text)])
+
+    def test_source_mailto_target_preserves_literal_mailbox_after_uri_decoding(self):
+        from test_docx_source_inventory import make_docx, paragraph
+        from test_docx_complete_workflow import prepare, delivery, native_evidence
+
+        address = "author+method@example.org"
+        source = self.root / "通讯说明.docx"
+        make_docx(source, paragraph(f"Correspondence: {address}"))
+        inventory = prepare.prepare_sources(
+            {"main": source}, self.root / "source evidence",
+            source_roles={"main": "main"}, progress=None)
+        document = json.loads(inventory.read_text(encoding="utf-8"))
+        source_row = document["sources"][0]
+        location = native_evidence(source_row["native_blocks"][0], quote=address)
+        source_row["header_fields"] = {
+            field: {"status": "absent_in_source", "reason": "This source contains only correspondence.",
+                    "evidence": [location]}
+            for field in ("title", "authors", "affiliations", "publication_date")
+        }
+        document["units"] = [{"id": "email", "kind": "metadata", "source": "main", "field": "email",
+                              "value": address, "display_text": "Correspondence", "evidence": [location]}]
+        inventory.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+
+        for index, (href, matched) in enumerate((
+            ("mailto:" + address, True),
+            ("mailto:author%2Bmethod%40example.org?subject=Reference", True),
+            ("MAILTO:AUTHOR%2bMETHOD@example.org?subject=Project%3F", True),
+            ("mailto:wrong@example.org?to=" + address, False),
+            ("mailto:author%2Bmethod%40example.org%2Cother%40example.org", False),
+            ("https://example.org/?address=" + address, False),
+        )):
+            with self.subTest(href=href):
+                candidate = self.root / f"candidate-{index}.md"
+                markdown = f"[Correspondence]({href})"
+                candidate.write_text(markdown + "\n", encoding="utf-8")
+                manifest = self.root / f"delivery-{index}.json"
+                delivery.write_delivery_manifest(inventory, candidate, [{"unit": "email", "target": {"quote": markdown}}],
+                                                 manifest)
+                bound_paths = [source, inventory, candidate, manifest]
+                before = [p.read_bytes() for p in bound_paths]
+                reference = delivery.validate_delivery(manifest)
+                self.assertEqual(reference.structurally_consistent, matched, reference.findings)
+                native = self.invoke("validate_delivery.validate_delivery", str(manifest))
+                self.assertEqual(native["native_subset_consistent"], matched, native["findings"])
+                self.assertEqual(any(f["code"] == "DELIVERY_TARGET" and f["object_id"] == "email"
+                                     for f in native["findings"]), not matched, native["findings"])
+                self.assertFalse(native["structurally_consistent"])
+                self.assertEqual(native["source_fidelity"], "not_assessed")
+                self.assertEqual([p.read_bytes() for p in bound_paths], before)
+
+    def test_header_note_uses_actual_visible_blockquote_context(self):
+        import test_delivery_evidence as suite
+        cases = (
+            ("partial-quote", "日期说明：来源载明在线日期。", "> 日期说明：来源载明在线日期。", True),
+            ("math-quote", "> 通讯说明", "$$\n> 通讯说明\n$$", False),
+            ("inline-marker", "> 通讯说明", "正文内的 > 通讯说明", False),
+            ("quoted-continuation", "来源说明。\n> 第二行。", "> 来源说明。\n> 第二行。", True),
+            ("unquoted-continuation", "> 来源说明。\n遗漏引用符的下一行。", "> 来源说明。\n遗漏引用符的下一行。", False),
+        )
+        for name, selector, markdown, expected in cases:
+            with self.subTest(case=name):
+                fixture = suite.DeliveryEvidenceTests(
+                    methodName="test_consistent_evidence_never_claims_semantic_acceptance")
+                fixture.setUp()
+                try:
+                    fixture.add_header_note(selector, markdown)
+                    if name == "partial-quote":
+                        # Verify that byte-accurate context survives CRLF and Chinese text.
+                        raw = fixture.note.read_bytes()
+                        fixture.note.write_bytes(raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+                    fixture.bind()
+                    original = fixture.manifest_path.read_bytes()
+                    reference = suite.checker.validate_delivery(fixture.manifest_path)
+                    reference_codes = {f.code for f in reference.findings if f.object_id == "header-note"}
+                    self.assertEqual("HEADER_NOTE_LAYOUT" not in reference_codes, expected, reference_codes)
+                    actual = self.invoke("validate_delivery.validate_delivery", str(fixture.manifest_path))
+                    findings = [f for f in actual["findings"] if f["object_id"] == "header-note"]
+                    self.assertEqual(not findings, expected, findings)
+                    if not expected:
+                        self.assertEqual({f["code"] for f in findings}, {"HEADER_NOTE_LAYOUT"})
+                    self.assertFalse(actual["structurally_consistent"])
+                    self.assertEqual(actual["source_fidelity"], "not_assessed")
+                    self.assertTrue(actual["independent_review_required"])
+                    self.assertIn("NATIVE_DELIVERY_PARITY_PENDING", {f["code"] for f in actual["findings"]})
+                    self.assertEqual(fixture.manifest_path.read_bytes(), original)
+                finally:
+                    fixture.doCleanups()
+
+    def test_bounded_svg_figure_decodes_offline_without_promoting_acceptance(self):
+        import test_delivery_evidence as suite
+        svg_root = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="24">'
+        rect = '<rect x="2" y="2" width="36" height="20" fill="#137fb1"/>'
+        valid = svg_root + (
+            '<title>source figure</title>'
+            '<defs><path id="mark" d="M5 18 L30 5 L35 18 Z"/>'
+            '<linearGradient id="shade"><stop offset="0" stop-color="#113355"/>'
+            '<stop offset="1" stop-color="#3366aa"/></linearGradient>'
+            '<clipPath id="inside"><rect width="38" height="22"/></clipPath></defs>'
+            '<g clip-path="url(#inside)"><use xlink:href="#mark" style="fill:url(#shade); stroke:#113355"/></g>'
+        ) + '</svg>'
+        cases = (
+            ("valid", valid, None),
+            ("outside-root", valid, "FIGURE_RESOURCE_OUTSIDE_ROOT"),
+            ("per-row-root", valid, "DELIVERY_RESOURCE_ROOT"),
+            ("malformed", svg_root + rect + '</svgg>', "FIGURE_SVG_XML"),
+            ("duplicate-id", svg_root + '<g id="x" />' * 2 + rect + '</svg>', "FIGURE_SVG_XML"),
+            ("malformed-geometry", svg_root + rect + '<path d="M 5 -4 L malformed"/></svg>', "FIGURE_SVG_XML"),
+            ("huge-geometry", svg_root + rect + '<path d="M 5 -4 L 2e100 10"/></svg>', "FIGURE_SVG_BUDGET"),
+            ("foreign-image", svg_root + rect + '<image href="https://example.invalid/image.svg"/></svg>', "FIGURE_SVG_UNSUPPORTED"),
+            ("external-use", svg_root + rect + '<use href="file:///not-an-input.svg#mark"/></svg>', "FIGURE_SVG_EXTERNAL_REFERENCE"),
+            ("data-use", svg_root + rect + '<use href="data:image/svg+xml,%3Csvg%3E"/></svg>', "FIGURE_SVG_EXTERNAL_REFERENCE"),
+            ("recursive-use", svg_root + rect + '<use id="again" href="#again"/></svg>', "FIGURE_SVG_EXTERNAL_REFERENCE"),
+            ("invalid-paint", svg_root + rect + '<rect width="10" height="10" fill="url(https://example.invalid/a)"/></svg>', "FIGURE_SVG_EXTERNAL_REFERENCE"),
+            ("doctype", '<!DOCTYPE svg SYSTEM "https://example.invalid/svg.dtd">' + svg_root + rect + '</svg>', "FIGURE_SVG_XML"),
+            ("stylesheet", '<?xml-stylesheet href="https://example.invalid/plot.css"?>' + svg_root + rect + '</svg>', "FIGURE_SVG_ACTIVE"),
+            ("event-handler", svg_root + rect + '<g onclick="doNotRun()"/></svg>', "FIGURE_SVG_UNSUPPORTED"),
+            ("unrendered-text", svg_root + rect + '<text x="2" y="3">Must not disappear silently</text></svg>', "FIGURE_SVG_UNSUPPORTED"),
+            ("canvas", svg_root.replace('width="40"', 'width="500000"') + rect + '</svg>', "FIGURE_SVG_BUDGET"),
+            ("depth", svg_root + '<g>' * 40 + rect + '</g>' * 40 + '</svg>', "FIGURE_SVG_BUDGET"),
+            ("elements", svg_root + rect * 2050 + '</svg>', "FIGURE_SVG_BUDGET"),
+            ("bytes", svg_root + '<!--' + 'x' * (1024 * 1024) + '-->' + rect + '</svg>', "FIGURE_SVG_BUDGET"),
+        )
+        for name, content, expected in cases:
+            with self.subTest(case=name):
+                f = suite.DeliveryEvidenceTests(methodName="test_consistent_evidence_never_claims_semantic_acceptance")
+                f.setUp()
+                try:
+                    svg = f.base.joinpath("figure.SVG")
+                    svg.write_bytes(content.encode("utf-8"))
+                    embed = "figure.SVG"
+                    if name == "outside-root":
+                        f.resource_root = f.base.joinpath("declared-resource-root")
+                        f.resource_root.mkdir()
+                        embed = "../figure.SVG"
+                    f.note.write_bytes(f.note.read_bytes().replace(b"figure.png", embed.encode("ascii")))
+                    next(u for u in f.units if u["id"] == "figure")["original_number"] = "1"
+                    figure = next(d for d in f.deliveries if d["unit"] == "figure")
+                    figure["target"]["quote"] = figure["target"]["quote"].replace("figure.png", embed)
+                    figure["assets"] = [{"path": embed}]
+                    if name == "per-row-root":
+                        alternative = f.base.joinpath("unrelated-root")
+                        alternative.mkdir()
+                        alternative.joinpath("figure.SVG").write_text(valid, encoding="utf-8")
+                        figure["resource_root"] = str(alternative)
+                    f.bind()
+                    before = f.manifest_path.read_bytes()
+                    if expected is None:
+                        reference = suite.checker.validate_delivery(f.manifest_path)
+                        self.assertTrue(reference.structurally_consistent, reference.findings)
+                    actual = self.invoke("validate_delivery.validate_delivery", str(f.manifest_path))
+                    diagnostics = [x for x in actual["findings"] if x["object_id"] == "figure" and x["code"] == "DELIVERY_TARGET"]
+                    if expected is None:
+                        self.assertEqual(diagnostics, [], actual)
+                        self.assertTrue(any(row["sha256"] == hashlib.sha256(svg.read_bytes()).hexdigest()
+                                            for row in actual["checked_files"]))
+                    elif name == "per-row-root":
+                        self.assertTrue(any(x["code"] == "DELIVERY_HANDOFF" and expected in x["message"]
+                                            for x in actual["findings"]), actual)
+                        self.assertFalse(any(Path(row["path"]) == alternative.joinpath("figure.SVG")
+                                             for row in actual["checked_files"]))
+                    else:
+                        self.assertTrue(any(expected in x["message"] for x in diagnostics), actual)
+                        if name == "outside-root":
+                            self.assertFalse(any(Path(row["path"]) == svg for row in actual["checked_files"]))
+                    self.assertIn("NATIVE_DELIVERY_PARITY_PENDING", {f["code"] for f in actual["findings"]})
+                    self.assertFalse(actual["structurally_consistent"])
+                    self.assertEqual(actual["source_fidelity"], "not_assessed")
+                    self.assertTrue(actual["independent_review_required"])
+                    self.assertEqual(f.manifest_path.read_bytes(), before)
+                finally:
+                    f.doCleanups()
+
+
+
+class NativeSourceProvenanceComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_actual_docx_source_provenance_and_mutations(self):
+        import test_docx_complete_workflow as suite
+        fixture = suite.NativeFigureProvenanceTests(methodName="test_two_native_calls_form_one_logical_figure_without_fake_pagination")
+        fixture.setUp()
+        try:
+            actual = self.invoke("validate_delivery.check_source_provenance", str(fixture.inventory_path))
+            self.assertEqual(actual["findings"], [])
+            self.assertTrue(actual["source_checks_complete"])
+            self.assertFalse(actual["delivery_ready"])
+            fixture.inventory["sources"][0]["native_blocks"][0]["text"] = "Unsupported replacement"
+            suite.save(fixture.inventory_path, fixture.inventory)
+            actual = self.invoke("validate_delivery.check_source_provenance", str(fixture.inventory_path))
+            expected = fixture.validate()
+            expected_native = {(row.code, row.object_id) for row in expected.findings if row.code.startswith("NATIVE_PROVENANCE")}
+            self.assertTrue(expected_native)
+            self.assertEqual({(row["code"], row["object_id"]) for row in actual["findings"]}, expected_native)
+            self.assertFalse(actual["source_checks_complete"])
+            media = Path(fixture.inventory["sources"][0]["native_media"][0]["file"]["path"])
+            media.write_bytes(media.read_bytes() + b"changed")
+            actual = self.invoke("validate_delivery.check_source_provenance", str(fixture.inventory_path))
+            self.assertIn("FILE_HASH_MISMATCH", {row["code"] for row in actual["findings"]})
+        finally:
+            fixture.doCleanups()
+
+
+class NativeExplicitPdfMaskComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def fixture(self, name, mask_fields="", mode="normal"):
+        import fitz
+        source = self.root.joinpath(name + ".pdf")
+        with fitz.open() as document:
+            page = document.new_page(width=100, height=80)
+            mask = document.get_new_xref()
+            document.update_object(mask,
+                "<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ImageMask true /BitsPerComponent 1 "
+                + mask_fields + " >>")
+            document.update_stream(mask, bytes([0b01010101]), compress=False)
+            image = document.get_new_xref()
+            mask_field = ("/Mask [0 0 0 0 0 0]" if mode == "color-key" else f"/Mask {mask} 0 R")
+            soft_field = f" /SMask {mask} 0 R" if mode == "combined" else ""
+            document.update_object(image,
+                "<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceRGB "
+                f"/BitsPerComponent 8 {mask_field}{soft_field} >>")
+            document.update_stream(image, bytes([255, 0, 0, 0, 0, 255]), compress=False)
+            content = document.get_new_xref()
+            document.update_object(content, "<< >>")
+            document.update_stream(content, b"0 1 0 rg 0 0 100 80 re f q 40 0 0 20 20 20 cm /Im Do Q", compress=True)
+            document.xref_set_key(page.xref, "Contents", f"{content} 0 R")
+            document.xref_set_key(page.xref, "Resources", f"<< /XObject << /Im {image} 0 R >> >>")
+            document.save(source)
+        return source, image, mask
+
+    def test_explicit_mask_alpha_matches_independent_reference_page_pixels(self):
+        import fitz
+        from PIL import Image
+        import pdf_image_objects as reference
+        for name, field, alpha in (("default", "", (255, 0)), ("inverted", "/Decode [1 0]", (0, 255))):
+            with self.subTest(name=name):
+                source, image, mask = self.fixture(name, field)
+                frozen = hashlib.sha256(source.read_bytes()).hexdigest()
+                with self.assertRaises(reference.PageRenderRequired):
+                    reference.export_image_object(source, page_number=1, image_xref=image,
+                                                  destination=self.root.joinpath("legacy-" + name), progress=None)
+                receipt = self.invoke("pdf_image_objects.export_image_object", str(source), page_number=1,
+                    image_xref=image, destination=str(self.root.joinpath(name + "-native.png")), expected_source_sha256=frozen)
+                self.assertEqual(receipt["method"], "explicit_mask_composited_png")
+                self.assertEqual(receipt["source_object"]["explicit_mask"]["image_xref"], mask)
+                self.assertEqual(receipt["source_object"]["explicit_mask"]["decoded_alpha_sha256"],
+                                 hashlib.sha256(bytes(alpha)).hexdigest())
+                self.assertEqual(receipt["source_fidelity"], "not_assessed")
+                self.assertEqual(receipt["visual_review"]["status"], "pending")
+                with Image.open(receipt["asset"]["path"]) as extracted, fitz.open(source) as document:
+                    self.assertEqual(extracted.mode, "RGBA")
+                    self.assertEqual(extracted.size, (2, 1))
+                    self.assertEqual(tuple(extracted.getpixel((i, 0))[3] for i in range(2)), alpha)
+                    rendered = document[0].get_pixmap(alpha=False, colorspace=fitz.csRGB)
+                    composite = Image.new("RGBA", extracted.size, (0, 255, 0, 255))
+                    composite.alpha_composite(extracted)
+                    self.assertEqual([composite.getpixel((i, 0))[:3] for i in range(2)],
+                                     [rendered.pixel(x, 50) for x in (30, 50)])
+                self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), frozen)
+
+    def test_unqualified_explicit_mask_cases_fail_before_output(self):
+        for name, mask_fields, mode, detail in (
+            ("resampled", "/Width 4", "normal", "resolution differs"),
+            ("bad-decode", "/Decode [0 0]", "normal", "unsupported explicit Mask Decode"),
+            ("interpolated", "/Interpolate true", "normal", "requests interpolation"),
+            ("bad-mask-kind", "/ImageMask false", "normal", "declare ImageMask true"),
+            ("external-mask-stream", "/F (another-source.bin)", "normal", "unsupported explicit Mask F"),
+            ("compound", "", "combined", "combined explicit Mask and SMask"),
+            ("array", "", "color-key", "color-key masks are not supported"),
+        ):
+            with self.subTest(name=name):
+                source, image, _ = self.fixture(name, mask_fields, mode)
+                target = self.root.joinpath(name + "-output")
+                before = source.read_bytes()
+                with self.assertRaises(subprocess.CalledProcessError) as e:
+                    self.invoke("pdf_image_objects.export_image_object", str(source), page_number=1,
+                                image_xref=image, destination=str(target))
+                self.assertIn(detail, e.exception.stderr)
+                self.assertFalse(target.with_suffix(".png").exists())
+                self.assertFalse(target.with_suffix(".jpeg").exists())
+                self.assertEqual(source.read_bytes(), before)
+
+
+
+class NativeBoundMappingComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_file_bound_mapping_comparison_preserves_evidence_boundary(self):
+        import mapping_rerun as reference
+        base = {"source_map": {"units": [{"unit": "p", "source_id": "main", "review_status": "pending"}]}, "link_map": {}}
+        current = json.loads(json.dumps(base))
+        current["source_map"]["units"][0]["review_status"] = "reviewed"
+        paths = [{}, {}]
+        for i, doc in enumerate((base, current)):
+            for key, value in doc.items():
+                p = self.root.joinpath(f"{i}-{key}.json")
+                p.write_text(json.dumps(value), encoding="utf-8")
+                paths[i][key] = str(p)
+        output = self.root.joinpath("comparison.json")
+        saved = Path(self.invoke("mapping_rerun.compare_bound_maps", *paths, str(output)))
+        actual = json.loads(saved.read_text(encoding="utf-8"))
+        self.assertTrue(actual["mapping_equal"])
+        self.assertFalse(actual["actual_rerun_performed"])
+        self.assertFalse(actual["acceptance_status_written"])
+        self.assertEqual(actual["baseline_counts"], {key: {name: len(rows) for name, rows in reference._projection(value, key).items()} for key, value in base.items()})
+        for label, source in zip(("baseline", "comparison"), paths):
+            for key, value in source.items():
+                self.assertEqual(actual["inputs"][label][key]["sha256"], hashlib.sha256(Path(value).read_bytes()).hexdigest())
+        before = saved.read_bytes()
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("mapping_rerun.compare_bound_maps", *paths, str(output))
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("mapping_rerun.compare_bound_maps", paths[0], paths[0], str(self.root.joinpath("aliased.json")))
+        self.assertEqual(saved.read_bytes(), before)
+        current["source_map"]["units"][0]["source_id"] = "si"
+        Path(paths[1]["source_map"]).write_text(json.dumps(current["source_map"]), encoding="utf-8")
+        changed = Path(self.invoke("mapping_rerun.compare_bound_maps", *paths, str(self.root.joinpath("changed.json"))))
+        result = json.loads(changed.read_text(encoding="utf-8"))
+        self.assertFalse(result["mapping_equal"])
+        self.assertEqual(result["differences"][0]["id"], "p")
+
+
+class NativeTextVisualConflictComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_conflict_record_matches_reference_and_rejects_changed_evidence(self):
+        import fitz
+        import handoff_maps
+        import prepare_source_inventory
+        pdf = self.root.joinpath("synthetic.pdf")
+        with fitz.open() as doc:
+            page = doc.new_page(width=300, height=200)
+            page.insert_text((20, 40), "Actual source text.")
+            doc.save(pdf)
+        inv = prepare_source_inventory.prepare_sources({"main": pdf}, self.root.joinpath("evidence"),
+            source_roles={"main": "main"}, progress=None)
+        inventory = json.loads(inv.read_text(encoding="utf-8"))
+        source = inventory["sources"][0]
+        inventory["units"] = [{"id": "paragraph", "kind": "paragraph", "source": "main",
+                               "evidence": [{"page": 1, "basis": "visual", "bbox": [0, 0, 200, 100]}]}]
+        py = inv.with_name("py-inventory.json")
+        rs = inv.with_name("rs-inventory.json")
+        for p in (py, rs):
+            p.write_text(json.dumps(inventory), encoding="utf-8")
+        kwargs = dict(conflict_id="conflict-1", page_number=1, text_locator={"kind": "lines", "start": 1, "end": 1},
+                      text_layer_text="Actual source text.", visible_text="Actual source text?",
+                      bbox=[0, 0, 200, 100],
+                      decision={"status": "resolved", "selected_text": "Actual source text?", "reason": "Explicit fixture observation", "observed": True})
+        expected = handoff_maps.record_text_visual_conflict(py, "paragraph", **kwargs)
+        actual = self.invoke("handoff_maps.record_text_visual_conflict", str(rs), "paragraph", **kwargs)
+        self.assertEqual(actual, expected)
+        self.assertEqual(json.loads(py.read_text(encoding="utf-8")), json.loads(rs.read_text(encoding="utf-8")))
+        before = rs.read_bytes()
+        for changes in ({}, {"conflict_id": "other", "page_number": 2},
+                        {"conflict_id": "other", "bbox": [0, 0, 9999, 9999]},
+                        {"conflict_id": "other", "text_layer_text": "absent reading"},
+                        {"conflict_id": "other", "decision": {"status": "resolved", "reason": "Explicit", "selected_text": "not recorded"}}):
+            with self.assertRaises(ValueError):
+                handoff_maps.record_text_visual_conflict(py, "paragraph", **{**kwargs, **changes})
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("handoff_maps.record_text_visual_conflict", str(rs), "paragraph", **{**kwargs, **changes})
+            self.assertEqual(rs.read_bytes(), before)
+        render = Path(source["pages"][0]["render"]["path"])
+        render.write_bytes(render.read_bytes() + b"changed")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("handoff_maps.record_text_visual_conflict", str(rs), "paragraph", **{**kwargs, "conflict_id": "other"})
+        self.assertEqual(rs.read_bytes(), before)
+
+
+class NativeWorkflowDraftComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_docx_workflow_initialization_and_resume(self):
+        from test_docx_source_inventory import make_docx, paragraph
+        import complete_workflow as workflow
+        skills = self.root.joinpath("skills")
+        skill = skills.joinpath("synthetic-skill")
+        skill.mkdir(parents=True)
+        skill.joinpath("SKILL.md").write_text(
+            "# Synthetic\n- [ ] [DOCX-A01] A source sentence has a target. <!-- check-type: offline_outcome -->\n",
+            encoding="utf-8")
+        source = self.root.joinpath("source.docx")
+        make_docx(source, paragraph("First synthetic paragraph.") + paragraph("Second synthetic paragraph."))
+        candidate = self.root.joinpath("candidate.md")
+        py = workflow.initialize_workflow(skills_root=skills, work_root=self.root.joinpath("python"),
+            sources={"main": source}, source_roles={"main": "main"}, candidate_path=candidate,
+            resource_root=self.root, translation_required=False, progress=lambda *_: None)
+        rs = Path(self.invoke("complete_workflow.initialize_workflow", skills_root=str(skills),
+            work_root=str(self.root.joinpath("rust")), sources={"main": str(source)},
+            source_roles={"main": "main"}, candidate_path=str(candidate), resource_root=str(self.root),
+            translation_required=False))
+        expected = json.loads(py.read_text(encoding="utf-8"))
+        actual = json.loads(rs.read_text(encoding="utf-8"))
+        for field in ("schema_version", "run_id", "workflow_profile", "scope", "identity",
+                      "naming", "placement", "content_input", "stages", "issues", "publish"):
+            self.assertEqual(actual[field], expected[field], field)
+        for field in ("rule_files", "files"):
+            self.assertEqual(actual["versions"][field], expected["versions"][field])
+        self.assertEqual(set(actual["records"]), set(expected["records"]))
+        queue = Path(actual["records"]["draft_queue"])
+        checks = json.loads(Path(actual["records"]["checks"]).read_text(encoding="utf-8"))
+        self.assertTrue(all(row["status"] == "not_verified" for row in checks["checks"]))
+        paths = (rs, queue, Path(actual["records"]["checks"]))
+        before = [p.read_bytes() for p in paths]
+        ref_resume = workflow.resume_workflow(py)
+        state = self.invoke("complete_workflow.resume_workflow", str(rs))
+        for field in ("phase", "counts", "draft_ready", "source_fidelity", "boundary"):
+            self.assertEqual(state[field], ref_resume[field], field)
+        self.assertEqual(state["next_action"]["stage"], ref_resume["next_action"]["stage"])
+        self.assertEqual([p.read_bytes() for p in paths], before)
+        self.assertFalse(candidate.exists())
+        actual["scope"]["source_roles"]["main"] = "supplement"
+        rs.write_text(json.dumps(actual), encoding="utf-8")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("complete_workflow.resume_workflow", str(rs))
+        actual["scope"]["source_roles"]["main"] = "main"
+        rs.write_text(json.dumps(actual), encoding="utf-8")
+        source.write_bytes(source.read_bytes() + b"changed")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("complete_workflow.resume_workflow", str(rs))
+        self.assertEqual(queue.read_bytes(), before[1])
+
+
+class NativeFigurePreparationComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_pending_pdf_figure_review_against_reference(self):
+        self.maxDiff = None
+        import test_figure_review_records as suite
+        from copy import deepcopy
+        fixture = suite.FigureReviewTests(methodName="test_generated_rows_cover_only_actual_figures_and_all_atomic_ids")
+        fixture.setUp()
+        try:
+            original = fixture.inventory_path.read_bytes()
+            inventory = fixture.inventory_path.with_name("native-inventory.json")
+            inventory.write_bytes(original)
+            # Test an actual XRef in addition to explicit geometry.
+            value = json.loads(original)
+            value["units"][-1]["evidence"][0]["image_xref"] = fixture.image_xref
+            fixture.inventory_path.write_text(json.dumps(value), encoding="utf-8")
+            inventory.write_text(json.dumps(value), encoding="utf-8")
+            fixture.generate()
+            native = Path(self.invoke("prepare_source_inventory.prepare_figure_reviews", str(inventory),
+                {key: [str(p) for p in paths] for key, paths in fixture.assets.items()},
+                str(fixture.base.joinpath("native-review")), resource_root=str(fixture.base)))
+            actual = json.loads(native.read_text(encoding="utf-8"))
+            expected = deepcopy(fixture.ledger)
+            actual_snapshot = Path(actual.pop("inventory")["path"])
+            expected_snapshot = Path(expected.pop("inventory")["path"])
+            self.assertEqual(actual_snapshot.read_bytes(), json.dumps(value).encode("utf-8"))
+            self.assertEqual(json.loads(actual_snapshot.read_text(encoding="utf-8")),
+                             json.loads(expected_snapshot.read_text(encoding="utf-8")))
+            self.assertEqual(actual.pop("inventory_path"), str(inventory.resolve()))
+            expected.pop("inventory_path")
+            self.assertEqual(actual, expected)
+            self.assertEqual(json.loads(inventory.read_text(encoding="utf-8"))["figure_reviews_path"], str(native))
+            self.assertTrue(all(c["status"] == "pending" for row in actual["figures"] for c in row["checks"]))
+            bad = fixture.inventory_path.with_name("bad-inventory.json")
+            value["units"][-1]["evidence"][0]["image_xref"] = 999999
+            bad.write_text(json.dumps(value), encoding="utf-8")
+            before = bad.read_bytes()
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("prepare_source_inventory.prepare_figure_reviews", str(bad),
+                    {key: [str(p) for p in paths] for key, paths in fixture.assets.items()},
+                    str(fixture.base.joinpath("bad-review")), resource_root=str(fixture.base))
+            self.assertEqual(bad.read_bytes(), before)
+        finally:
+            fixture.doCleanups()
+
+
+class NativeFigureEdgeComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_record_figure_edges_against_reference(self):
+        import prepare_source_inventory as source
+        source_path = self.root.joinpath("source.pdf")
+        render_path = self.root.joinpath("page.png")
+        media_path = self.root.joinpath("native.png")
+        asset_path = self.root.joinpath("figure.png")
+        for path in (source_path, render_path, media_path, asset_path):
+            path.write_bytes(path.name.encode("utf-8"))
+        bound_source = source.file_record(source_path)
+        bound_asset = source.file_record(asset_path)
+        locations = [
+            {"page": 1, "page_render": source.file_record(render_path)},
+            {"native_locator": {"part": "word/document.xml"}, "source_media": source.file_record(media_path)},
+        ]
+        data = {"schema_version": 2, "figures": [{
+            "unit": "fig", "source_file": bound_source,
+            "final_assets": [bound_asset], "source_locations": locations,
+            "edge_reviews": [
+                {"asset_index": 0, "edge": side, "status": "pending", "observation": "",
+                 "source_file": bound_source, "final_asset": bound_asset, "source_locations": []}
+                for side in ("left", "right", "top", "bottom")
+            ],
+        }]}
+        py = self.root.joinpath("reference-figure-reviews.json")
+        rs = self.root.joinpath("native-figure-reviews.json")
+        for path in (py, rs):
+            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        observations = {"left": {"status": "pass", "observation": "显式观察"},
+                        "bottom": {"status": "ambiguous", "observation": "需复查"}}
+        kwargs = {"source_location_indices": [1, 0], "observations": observations}
+        source.record_figure_edges(py, "fig", 0, **kwargs)
+        self.assertEqual(Path(self.invoke("prepare_source_inventory.record_figure_edges",
+                                          str(rs), "fig", 0, **kwargs)), rs.resolve())
+        self.assertEqual(json.loads(py.read_text(encoding="utf-8")),
+                         json.loads(rs.read_text(encoding="utf-8")))
+        original = rs.read_bytes()
+        for invalid in (
+            {"source_location_indices": [0, 0], "observations": observations},
+            {"source_location_indices": [2], "observations": observations},
+            {"source_location_indices": [0], "observations": {"top": {"status": "not_applicable", "observation": "bad"}}},
+        ):
+            with self.assertRaises(ValueError):
+                source.record_figure_edges(py, "fig", 0, **invalid)
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("prepare_source_inventory.record_figure_edges", str(rs), "fig", 0, **invalid)
+            self.assertEqual(rs.read_bytes(), original)
+        asset_path.write_bytes(b"changed")
+        with self.assertRaises(ValueError):
+            source.record_figure_edges(py, "fig", 0, **kwargs)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("prepare_source_inventory.record_figure_edges", str(rs), "fig", 0, **kwargs)
+        self.assertEqual(rs.read_bytes(), original)
+
+
+class NativeTranslationSelectionComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_explicit_selectors_and_incremental_decision_replay(self):
+        import test_translation_review_writer as suite
+        fixture = suite.CompactReviewTests(methodName="test_compact_draft_resumes_exact_decisions_and_keeps_remaining_targets")
+        fixture.setUp()
+        try:
+            writer, unit = fixture.active()
+            decisions = [{"op": "unit", "unit_id": "one", "candidate_locations": [{"lines": [1, 1]}]}]
+            for side, selector in (
+                ("source", {"quote": "cobalt badge"}),
+                ("candidate", {"quote": "钴蓝色徽片"}),
+                ("candidate", {"quote": "7 px", "comparison_text": "7 pixels", "interpretation_basis": "Explicit fixture reading"}),
+            ):
+                expected = getattr(unit, side)(**selector)
+                actual = self.invoke("translation_review_writer.select_" + side, str(fixture.prepared),
+                    decisions, unit_id="one", selector=selector)
+                self.assertEqual(actual, {key: getattr(expected, key) for key in
+                    ("unit_id", "side", "locator", "text", "raw_text", "basis", "selector")})
+            command = {"op": "check", "unit_id": "one", "name": "alignment", "status": "passed",
+                       "reason": "Explicit fixture observation."}
+            unit.check("alignment", "passed", command["reason"])
+            updated = self.invoke("translation_review_writer.append_decision", str(fixture.prepared),
+                decisions, command=command)
+            self.assertEqual(updated["data"], writer.data)
+            self.assertEqual(updated["decisions"], decisions + [command])
+            for side, selector in (("source", {"quote": "nonexistent"}), ("candidate", {"quote": "玩具窗"}),
+                                   ("candidate", {"quote": "7 px", "comparison_text": "7 pixels"})):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.invoke("translation_review_writer.select_" + side, str(fixture.prepared),
+                        decisions, unit_id="one", selector=selector)
+            fixture.candidate.write_text("Changed candidate", encoding="utf-8")
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke("translation_review_writer.select_source", str(fixture.prepared),
+                    decisions, unit_id="one", selector={"quote": "cobalt badge"})
+        finally:
+            fixture.doCleanups()
+
+
+class NativeTranslationLifecycleComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_historical_cr_glossary_draft_restores_and_publishes(self):
+        import test_translation_review_writer as suite
+
+        root = self.root.joinpath("old-mac-glossary")
+        example = suite.example.demonstrate(root)
+        glossary = example["glossary_path"]
+        glossary.write_bytes(glossary.read_bytes().replace(b"\n", b"\r"))
+        prepared = root.joinpath("prepared-cr.json")
+        suite.tools.PREPARE.prepare_translation_review(example["inventory_path"], example["candidate_path"],
+            prepared, glossary_path=glossary, unit_ids=[suite.example.UNIT_ID], progress=None)
+        writer = suite.tools.ReviewWriter(prepared, progress=None)
+        for decision in json.loads(example["draft_path"].read_text(encoding="utf-8"))["decisions"]:
+            writer._replay(decision)
+        writer.source_issues_review("passed", "Compared the complete invented source sentence.")
+        writer.terminology_review("reviewed", covered_units=[suite.example.UNIT_ID],
+                                  no_unlisted_reason="Both invented terms matched the glossary.")
+        writer.review("reviewed")
+        draft = writer.save_draft(root.joinpath("decisions-cr.json"))
+        draft_before = draft.read_bytes()
+        expected_terms = root.joinpath("python-terms-cr.json")
+        expected = writer.save(root.joinpath("python-review-cr.json"), terminology_path=expected_terms).to_dict()
+        self.assertTrue(expected["records_ready"])
+        self.assertEqual(expected["findings"], [])
+
+        snapshot = self.invoke("translation_review_writer.restore_decision_draft", str(draft))
+        self.assertEqual(snapshot["data"], writer.data)
+        actual_terms = root.joinpath("native-terms-cr.json")
+        actual = self.invoke("translation_review_writer.save_review", str(prepared), snapshot["decisions"],
+                             output_path=str(root.joinpath("native-review-cr.json")), terminology_path=str(actual_terms))
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual["source_fidelity"], "not_assessed")
+        self.assertEqual(actual["execution_truth"], "not_assessed")
+        self.assertEqual(json.loads(actual_terms.read_text(encoding="utf-8")),
+                         json.loads(expected_terms.read_text(encoding="utf-8")))
+        self.assertEqual(draft.read_bytes(), draft_before)
+
+    def test_complete_legacy_review_replays_a_relative_glossary_binding(self):
+        import test_translation_review_writer as suite
+
+        root = self.root.joinpath("legacy-review")
+        legacy = suite.example.demonstrate(root)
+        prepared = root.joinpath("review-portable.json")
+        payload = json.loads(legacy["prepared_path"].read_text(encoding="utf-8"))
+        payload["bindings"]["glossary"]["path"] = legacy["glossary_path"].name
+        prepared.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        before = prepared.read_bytes()
+        writer = suite.tools.ReviewWriter(prepared, progress=None)
+        for command in json.loads(legacy["draft_path"].read_text(encoding="utf-8"))["decisions"]:
+            writer._replay(command)
+        writer.source_issues_review("passed", "Compared the complete invented source sentence.")
+        writer.terminology_review("reviewed", covered_units=[suite.example.UNIT_ID],
+                                  no_unlisted_reason="Both invented concepts match the actual contextual glossary entries.")
+        writer.review("reviewed")
+        draft = writer.save_draft(root.joinpath("legacy-decisions-portable.json"))
+        expected = writer.save(root.joinpath("python-review.json"),
+                               terminology_path=root.joinpath("python-terms.json")).to_dict()
+        snapshot = self.invoke("translation_review_writer.restore_decision_draft", str(draft))
+        self.assertEqual(snapshot["data"], writer.data)
+        self.assertEqual(snapshot["decisions"], writer._commands)
+        output, terms = root.joinpath("native-review.json"), root.joinpath("native-terms.json")
+        actual = self.invoke("translation_review_writer.save_review", str(prepared), snapshot["decisions"],
+                             output_path=str(output), terminology_path=str(terms))
+        self.assertEqual(actual, expected)
+        self.assertTrue(actual["records_ready"])
+        self.assertEqual(actual["findings"], [])
+        self.assertEqual(actual["source_fidelity"], "not_assessed")
+        self.assertEqual(actual["execution_truth"], "not_assessed")
+        self.assertEqual(json.loads(terms.read_text(encoding="utf-8")),
+                         json.loads(root.joinpath("python-terms.json").read_text(encoding="utf-8")))
+        self.assertEqual(prepared.read_bytes(), before)
+
+        draft_before = draft.read_bytes()
+        glossary = legacy["glossary_path"]
+        glossary.write_bytes(glossary.read_bytes() + b"\nSame rows, changed file bytes.\n")
+        with self.assertRaises(suite.tools.ReviewWriterError) as changed_legacy:
+            suite.tools.ReviewWriter.from_draft(draft, progress=None)
+        self.assertEqual(changed_legacy.exception.code, "TRW_STALE_BINDING")
+        with self.assertRaises(subprocess.CalledProcessError) as changed_native:
+            self.invoke("translation_review_writer.restore_decision_draft", str(draft))
+        self.assertIn("TRW_STALE_BINDING", changed_native.exception.stderr)
+        self.assertEqual(draft.read_bytes(), draft_before)
+        self.assertEqual(prepared.read_bytes(), before)
+
+    def test_reference_completed_and_defective_ledgers(self):
+        import test_translation_review as suite
+        fixture=suite.TranslationRecordValidationTests(methodName="test_complete_synthetic_record_is_ready_without_semantic_certification")
+        fixture.setUp()
+        try:
+            from collections import Counter
+            from copy import deepcopy
+            ledger=fixture.completed()
+            def compare(data):
+                fixture.save_ledger(data)
+                expected=fixture.validate().to_dict()
+                actual=self.invoke("validate_translation_review.validate_translation_review",str(fixture.path))
+                self.assertEqual(actual["records_ready"],expected["records_ready"],actual["findings"])
+                self.assertEqual(Counter((x["code"],x["object_id"],x["level"]) for x in actual["findings"]),
+                                 Counter((x["code"],x["object_id"],x["level"]) for x in expected["findings"]))
+                for field in ("status_counts","inventory_unit_count","selected_unit_count","recorded_unit_count","excluded_unit_count","review_status","source_fidelity","execution_truth"):
+                    self.assertEqual(actual[field],expected[field],field)
+                for field in ("pending_ids","failed_ids","unresolved_ids"):
+                    self.assertEqual(sorted(actual[field]),sorted(expected[field]),field)
+            compare(ledger)
+            mutations=[
+                lambda v:v["units"]["paragraph-a"]["occurrences"].update(claims=[]),
+                lambda v:v["units"]["paragraph-a"]["checks"].pop("directions"),
+                lambda v:v["units"]["paragraph-a"]["candidate_locations"].append({"lines":[99,99]}),
+                lambda v:v["units"]["paragraph-a"]["term_candidates"][0]["searches"]["family"].update(status="not_applicable",queries=[]),
+                lambda v:v["units"]["paragraph-a"]["term_candidates"][0].update(terminology_pointer="/adopted/999"),
+                lambda v:v["units"]["paragraph-a"]["occurrences"]["claims"][0].update(candidate_span={"lines":[2,2]}),
+                lambda v:v["bindings"]["candidate"].update(sha256="0"*64),
+                lambda v:v["scope"].update(selected_units=["paragraph-a"]),
+            ]
+            for mutate in mutations:
+                data=deepcopy(ledger);mutate(data);compare(data)
+        finally:
+            fixture.doCleanups()
+
+    def test_replay_real_reference_writer_draft_and_final_files(self):
+        import test_translation_review_writer as suite
+        fixture=suite.CompactReviewTests(methodName="test_compact_draft_resumes_exact_decisions_and_keeps_remaining_targets")
+        fixture.setUp()
+        try:
+            writer,unit=fixture.active()
+            writer.scope("passed","Explicit fixture scope decision.")
+            writer.exclude("two","This independent fixture task selects one paragraph.","Second paragraph is outside the selected scope.")
+            unit.check("alignment","passed","Actual complete pair was compared.")
+            unit.occurrence("claims","claim-a",unit.source(fixture.source_text),unit.candidate(fixture.candidate_text),
+                            "failed","Retain explicit failed comparison.")
+            term=unit.term("badge","cobalt badge","concept",unit.source("cobalt badge"))
+            term.search("full_phrase","cobalt badge","Actual exact search.")
+            term.search("family","badge","Actual family search.")
+            term.search_status("aliases","not_applicable","No alias in the selected source.")
+            term.decide("adopted","钴蓝色徽片","Explicit fixture decision.",matches=["BADGE"])
+            unit.scan("concept","scanned",["badge"],"One actual candidate.")
+            draft=writer.save_draft(fixture.base.joinpath("reference-draft.json"))
+            commands=json.loads(draft.read_text(encoding="utf-8"))["decisions"]
+            restored=self.invoke("translation_review_writer.restore_decision_draft",str(draft))
+            self.assertEqual(restored["data"],writer.data)
+            replay=self.invoke("translation_review_writer.replay_decisions",str(fixture.prepared),commands)
+            self.assertEqual(replay["data"],writer.data)
+            task=self.invoke("translation_review_tasks.next_review_task",str(fixture.prepared),commands)
+            self.assertEqual(task["stage"],"unit")
+            actual=self.invoke("translation_review_writer.save_review",str(fixture.prepared),commands,
+                               output_path=str(fixture.base.joinpath("rust-review.json")),
+                               terminology_path=str(fixture.base.joinpath("rust-terms.json")))
+            expected=writer.save(fixture.output,terminology_path=fixture.term_output).to_dict()
+            self.assertFalse(actual["records_ready"])
+            self.assertEqual(sorted(actual["pending_ids"]),sorted(expected["pending_ids"]))
+            self.assertEqual(sorted(actual["failed_ids"]),sorted(expected["failed_ids"]))
+            self.assertEqual(json.loads(fixture.base.joinpath("rust-terms.json").read_text(encoding="utf-8")),
+                             json.loads(fixture.term_output.read_text(encoding="utf-8")))
+        finally:
+            fixture.doCleanups()
+
+
+
+class NativeHandoffGenerationComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_generated_main_si_and_actual_rerun(self):
+        import test_handoff_maps as suite
+        fixture = suite.Fixture(self.root.joinpath("fixture"), candidate_eol="\r\n")
+        expected_report = fixture.write()
+        self.assertTrue(expected_report.records_ready, expected_report.as_dict())
+        paths = {name: str(self.root.joinpath("native", name + ".json")) for name in fixture.paths}
+        result = self.invoke("handoff_maps.write_handoff_maps", str(fixture.inventory_path),
+                             str(fixture.candidate), fixture.deliveries, paths,
+                             expected_source_bindings=fixture.expected)
+        self.assertTrue(result["records_ready"], result)
+        left = {name: suite.read(path) for name, path in fixture.paths.items()}
+        right = {name: suite.read(Path(path)) for name, path in paths.items()}
+        comparison = self.invoke("mapping_rerun.compare_stable_projections", left, right)
+        self.assertTrue(comparison["mapping_equal"], comparison)
+        validated = self.invoke("handoff_maps.validate_handoff_maps", str(fixture.inventory_path),
+                               str(fixture.candidate), paths, expected_source_bindings=fixture.expected)
+        self.assertTrue(validated["records_ready"], validated)
+        run = self.root.joinpath("run.json")
+        suite.save(run, {"schema_version": 1, "records": {"source_inventory": str(fixture.inventory_path), **paths},
+                         "config": {"candidate_path": str(fixture.candidate)},
+                         "identity": {"sources": [{"id": key, **value} for key, value in fixture.expected.items()]},
+                         "scope": {"source_roles": {key: value["role"] for key, value in fixture.expected.items()}}})
+        receipt = Path(self.invoke("mapping_rerun.record_mapping_rerun", str(run), fixture.deliveries,
+                                   str(self.root.joinpath("rerun"))))
+        rerun = suite.read(receipt)
+        self.assertTrue(rerun["actual_rerun_performed"])
+        self.assertTrue(rerun["mapping_equal"], rerun)
+
+    def test_unversioned_legacy_baseline_produces_same_ordered_rerun_differences(self):
+        from copy import deepcopy
+        import mapping_rerun as reference
+        import test_mapping_rerun as suite
+
+        fixture = suite.MappingRerunTests()
+        self.addCleanup(fixture.doCleanups)
+        fixture.setUp()
+        self.assertNotIn("schema_version", fixture.run)
+        changed = deepcopy(fixture.fixture.deliveries)
+        replacements = {
+            "main-body": "The main sample has an orange marker.\n^main-body",
+            "si-body": "The extra sample has a green marker.\n^si-body",
+        }
+        for delivery in changed:
+            if delivery["unit"] in replacements:
+                delivery["target"] = {"quote": replacements[delivery["unit"]]}
+        expected = suite.read(reference.record_mapping_rerun(
+            fixture.run_path, changed, self.root.joinpath("python-rerun")))
+        path = self.invoke("mapping_rerun.record_mapping_rerun", str(fixture.run_path), changed,
+                           str(self.root.joinpath("rust-rerun")))
+        actual = suite.read(Path(path))
+        self.assertTrue(actual["actual_rerun_performed"])
+        self.assertFalse(actual["mapping_equal"])
+        self.assertEqual([(row["map"], row["id"]) for row in actual["differences"]],
+                         [("source_map", "main-body"), ("si_map", "si-body")])
+        for field in ("inputs", "baseline_counts", "mapping_equal", "differences",
+                      "source_fidelity", "acceptance_status_written"):
+            self.assertEqual(actual[field], expected[field], field)
+
+
+    def test_historical_optional_empty_handoff_collections(self):
+        import test_handoff_maps as suite
+        fixture = suite.Fixture(self.root.joinpath("fixture"), candidate_eol="\r\n")
+        original = fixture.write()
+        self.assertTrue(original.records_ready, original.as_dict())
+        for name, groups in (("si_map", ("objects", "references", "citations")),
+                             ("link_map", ("external_links", "resource_links"))):
+            path = fixture.paths[name]
+            view = suite.read(path)
+            for group in groups:
+                self.assertEqual(view.pop(group), [])
+            suite.save(path, view)
+        paths = {name: str(path) for name, path in fixture.paths.items()}
+
+        def compare(expected):
+            reference_report = fixture.validate()
+            rust_report = self.invoke("handoff_maps.validate_handoff_maps",
+                                      str(fixture.inventory_path), str(fixture.candidate), paths,
+                                      expected_source_bindings=fixture.expected)
+            self.assertIs(reference_report.records_ready, expected, reference_report.as_dict())
+            self.assertIs(rust_report["records_ready"], expected, rust_report)
+
+        compare(True)
+        path = fixture.paths["link_map"]
+        view = suite.read(path)
+        view["external_links"] = None
+        suite.save(path, view)
+        compare(False)
+
+    def test_merged_block_partition_validation_and_rerun_against_reference(self):
+        import test_handoff_maps as suite
+        import mapping_rerun as reference
+        fixture = suite.Fixture(self.root.joinpath("merged-fixture"))
+        self.assertTrue(fixture.write().records_ready)
+        source_map_path = fixture.paths["source_map"]
+        source_map = suite.read(source_map_path)
+        rows = source_map["blocks"]
+        combined_text = "\n".join(row["original_text"] for row in rows)
+        combined = dict(rows[0])
+        combined.pop("source_locator", None)
+        combined.pop("target_unit", None)
+        combined.update({
+            "block_id": "merged-main",
+            "source_id": "main",
+            "source_blocks": [row["block_id"] for row in rows],
+            "source_locators": [row["source_locator"] for row in rows],
+            "joiner": "\n",
+            "original_text": combined_text,
+            "original_sha256": hashlib.sha256(combined_text.encode("utf-8")).hexdigest(),
+            "target_units": ["main-title", "main-body"],
+            "kind": "mixed",
+        })
+        source_map["blocks"] = [combined]
+        suite.save(source_map_path, source_map)
+        paths = {name: str(path) for name, path in fixture.paths.items()}
+        py_valid = fixture.validate()
+        rs_valid = self.invoke("handoff_maps.validate_handoff_maps", str(fixture.inventory_path),
+                               str(fixture.candidate), paths, expected_source_bindings=fixture.expected)
+        self.assertTrue(py_valid.records_ready, py_valid.as_dict())
+        self.assertTrue(rs_valid["records_ready"], rs_valid)
+
+        run_path = self.root.joinpath("merged-run.json")
+        suite.save(run_path, {
+            "schema_version": 1,
+            "records": {"source_inventory": str(fixture.inventory_path), **paths},
+            "config": {"candidate_path": str(fixture.candidate)},
+            "identity": {"sources": [{"id": k, **v} for k, v in fixture.expected.items()]},
+            "scope": {"source_roles": {k: v["role"] for k, v in fixture.expected.items()}},
+        })
+        py_rerun = suite.read(reference.record_mapping_rerun(
+            run_path, fixture.deliveries, self.root.joinpath("py-merged-rerun")))
+        rs_rerun = suite.read(Path(self.invoke(
+            "mapping_rerun.record_mapping_rerun", str(run_path), fixture.deliveries,
+            str(self.root.joinpath("rs-merged-rerun")))))
+        self.assertTrue(rs_rerun["actual_rerun_performed"])
+        self.assertFalse(py_rerun["mapping_equal"])
+        self.assertFalse(rs_rerun["mapping_equal"])
+        for field in ("inputs", "mapping_equal", "baseline_counts", "source_fidelity", "acceptance_status_written"):
+            self.assertEqual(rs_rerun[field], py_rerun[field], field)
+        self.assertEqual([(r["map"], r["collection"], r["id"]) for r in rs_rerun["differences"]],
+                         [(r["map"], r["collection"], r["id"]) for r in py_rerun["differences"]])
+        merged_diff = next(r for r in rs_rerun["differences"] if r["id"] == "merged-main")
+        self.assertEqual(merged_diff["previous"]["source_blocks"], [row["block_id"] for row in rows])
+        self.assertEqual(merged_diff["previous"]["joiner"], "\n")
+        self.assertIsNone(merged_diff["rerun"])
+
+        for bad_change in (
+            lambda b: b.update(joiner=" "),
+            lambda b: b.update(source_blocks=[rows[0]["block_id"], rows[0]["block_id"]]),
+            lambda b: b.update(target_units=["main-title"]),
+            lambda b: b.update(kind=""),
+        ):
+            mutated = json.loads(json.dumps(source_map))
+            bad_change(mutated["blocks"][0])
+            suite.save(source_map_path, mutated)
+            self.assertFalse(fixture.validate().records_ready)
+            self.assertFalse(self.invoke("handoff_maps.validate_handoff_maps", str(fixture.inventory_path),
+                                         str(fixture.candidate), paths,
+                                         expected_source_bindings=fixture.expected)["records_ready"])
+        mutated = json.loads(json.dumps(source_map))
+        mutated["blocks"][0]["kind"] = "paragraph"
+        suite.save(source_map_path, mutated)
+        self.assertFalse(self.invoke("handoff_maps.validate_handoff_maps", str(fixture.inventory_path),
+                                     str(fixture.candidate), paths,
+                                     expected_source_bindings=fixture.expected)["records_ready"])
+
+    def test_strict_delivery_manifest_and_figure_snapshot_schema_against_reference(self):
+        import test_figure_review_records as fig_suite
+        import validate_delivery as delivery
+        fixture = fig_suite.FigureReviewTests(methodName="test_generated_rows_cover_only_actual_figures_and_all_atomic_ids")
+        fixture.setUp()
+        try:
+            fixture.require_edges = True
+            fixture.generate()
+            fixture.bind()
+            manifest_path = fixture.manifest
+            baseline = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+            for version, valid_version in ((2, False), (None, False), (1, True)):
+                current = json.loads(json.dumps(baseline))
+                if version is None:
+                    current.pop("schema_version", None)
+                else:
+                    current["schema_version"] = version
+                manifest_path.write_text(json.dumps(current), encoding="utf-8")
+                py_codes = {f.code for f in delivery.validate_delivery(manifest_path).findings}
+                rs_codes = {f["code"] for f in self.invoke("validate_delivery.validate_delivery", str(manifest_path))["findings"]}
+                self.assertEqual("MANIFEST_VERSION" in py_codes, not valid_version, py_codes)
+                self.assertEqual("MANIFEST_VERSION" in rs_codes, not valid_version, rs_codes)
+
+            manifest_path.write_text(json.dumps(baseline), encoding="utf-8")
+            ledger = json.loads(fixture.review_path.read_text(encoding="utf-8"))
+            snap_path = Path(ledger["inventory"]["path"])
+            snap_data = json.loads(snap_path.read_text(encoding="utf-8"))
+            snap_data["schema_version"] = 2
+            snap_path.write_text(json.dumps(snap_data), encoding="utf-8")
+            ledger["inventory"]["sha256"] = hashlib.sha256(snap_path.read_bytes()).hexdigest()
+            fixture.review_path.write_text(json.dumps(ledger), encoding="utf-8")
+            fixture.bind()
+            py_report = delivery.validate_delivery(manifest_path)
+            rs_report = self.invoke("validate_delivery.validate_delivery", str(manifest_path))
+            self.assertIn("FIG_REVIEW_SNAPSHOT_VERSION", {f.code for f in py_report.findings})
+            self.assertTrue(any(
+                f["code"] == "FIG_REVIEW_REQUIRED" and "snapshot schema_version" in f["message"]
+                for f in rs_report["findings"]), rs_report["findings"])
+        finally:
+            fixture.doCleanups()
+
+    def test_packed_indexed_and_predictor_samples_match_reference_page_pixels(self):
+        import fitz
+        from PIL import Image
+        import zlib
+        source = self.root.joinpath("packed-indexed-diff.pdf")
+        rgb_palette = bytes([20, 40, 60, 80, 120, 160, 200, 220, 240])
+        raw_samples = bytes([0b00011000, 0b10010000])
+        with fitz.open() as document:
+            page = document.new_page(width=90, height=60)
+            pal_xref = document.get_new_xref()
+            document.update_object(pal_xref, "<< >>")
+            document.update_stream(pal_xref, zlib.compress(rgb_palette), compress=False)
+            document.xref_set_key(pal_xref, "Filter", "/FlateDecode")
+            cs_xref = document.get_new_xref()
+            document.update_object(cs_xref, f"[ /Indexed /DeviceRGB 2 {pal_xref} 0 R ]")
+            img_xref = document.get_new_xref()
+            document.update_object(img_xref,
+                f"<< /Type /XObject /Subtype /Image /Width 3 /Height 2 /BitsPerComponent 2 "
+                f"/ColorSpace {cs_xref} 0 R >>")
+            document.update_stream(img_xref, zlib.compress(raw_samples), compress=False)
+            document.xref_set_key(img_xref, "Filter", "/FlateDecode")
+            content = document.get_new_xref()
+            document.update_object(content, "<< >>")
+            document.update_stream(content, b"q 90 0 0 60 0 0 cm /Im Do Q", compress=True)
+            document.xref_set_key(page.xref, "Contents", f"{content} 0 R")
+            document.xref_set_key(page.xref, "Resources", f"<< /XObject << /Im {img_xref} 0 R >> >>")
+            document.save(source)
+
+        out_png = self.root.joinpath("packed-extracted.png")
+        receipt = self.invoke("pdf_image_objects.export_image_object", str(source),
+                              page_number=1, image_xref=img_xref, destination=str(out_png))
+        self.assertEqual(receipt["method"], "lossless_sample_png")
+        self.assertEqual(receipt["source_object"]["pdf_colorspace"], "/Indexed")
+        self.assertEqual(receipt["source_object"]["bits_per_component"], 2)
+        self.assertEqual(receipt["source_fidelity"], "not_assessed")
+        with Image.open(out_png) as extracted, fitz.open(source) as document:
+            self.assertEqual(extracted.mode, "RGB")
+            self.assertEqual(extracted.size, (3, 2))
+            rendered = document[0].get_pixmap(alpha=False, colorspace=fitz.csRGB)
+            for row_idx, y in enumerate((15, 45)):
+                for col_idx, x in enumerate((15, 45, 75)):
+                    self.assertEqual(extracted.getpixel((col_idx, row_idx)), rendered.pixel(x, y))
+
+    def test_docx_workflow_post_draft_manifest_maps_and_inspection_against_reference(self):
+        from test_docx_source_inventory import make_docx, paragraph
+        import complete_workflow as workflow
+        skills = self.root.joinpath("skills")
+        skill = skills.joinpath("synthetic-skill")
+        skill.mkdir(parents=True)
+        skill.joinpath("SKILL.md").write_text(
+            "# Synthetic\n- [ ] [DOCX-A01] A source sentence has a target. <!-- check-type: offline_outcome -->\n",
+            encoding="utf-8")
+        source = self.root.joinpath("source.docx")
+        make_docx(source, paragraph("Synthetic paragraph text."))
+        py_candidate = self.root.joinpath("py-candidate.md")
+        rs_candidate = self.root.joinpath("rs-candidate.md")
+        markdown = "---\n类型: 期刊论文\n年份: 2025\n关键词: []\n期刊名: Synthetic\n---\n# Synthetic\n\nSynthetic paragraph text. ^p1\n"
+        py_candidate.write_text(markdown, encoding="utf-8")
+        rs_candidate.write_text(markdown, encoding="utf-8")
+
+        py_run = workflow.initialize_workflow(
+            skills_root=skills, work_root=self.root.joinpath("py-work"),
+            sources={"main": source}, source_roles={"main": "main"},
+            candidate_path=py_candidate, resource_root=self.root,
+            translation_required=False, progress=lambda *_: None)
+        rs_run = Path(self.invoke(
+            "complete_workflow.initialize_workflow",
+            skills_root=str(skills), work_root=str(self.root.joinpath("rs-work")),
+            sources={"main": str(source)}, source_roles={"main": "main"},
+            candidate_path=str(rs_candidate), resource_root=str(self.root),
+            translation_required=False))
+
+        for run_path in (py_run, rs_run):
+            run_data = json.loads(run_path.read_text(encoding="utf-8"))
+            inv_path = Path(run_data["records"]["source_inventory"])
+            inv = json.loads(inv_path.read_text(encoding="utf-8"))
+            block = inv["sources"][0]["native_blocks"][0]
+            loc = {"basis": "native", "blocks": [block["id"]], "native_locator": block["locator"]}
+            absence = {"status": "absent_in_source", "reason": "Synthetic DOCX without headers.", "evidence": [loc]}
+            inv["sources"][0]["header_fields"] = {k: absence for k in ("title", "authors", "affiliations", "publication_date")}
+            inv["units"] = [{"id": "p1", "source": "main", "kind": "paragraph", "evidence": [loc]}]
+            inv_path.write_text(json.dumps(inv, ensure_ascii=False), encoding="utf-8")
+
+        deliveries = [{"unit": "p1", "target": {"anchor": "p1"}}]
+        workflow.write_manifest(py_run, deliveries)
+        self.invoke("complete_workflow.write_manifest", str(rs_run), deliveries)
+        py_maps = workflow.write_maps(py_run, deliveries)
+        rs_maps = self.invoke("complete_workflow.write_maps", str(rs_run), deliveries)
+        self.assertTrue(py_maps.records_ready, py_maps.as_dict())
+        self.assertTrue(rs_maps["records_ready"], rs_maps)
+
+        py_inspect = workflow.inspect_workflow(py_run).as_dict()
+        rs_inspect = self.invoke("complete_workflow.inspect_workflow", str(rs_run))
+        self.assertFalse(py_inspect["records_ready"])
+        self.assertFalse(rs_inspect["records_ready"])
+        self.assertEqual(rs_inspect["source_fidelity"], py_inspect["source_fidelity"])
+        py_codes = {f["code"] for f in py_inspect["findings"]}
+        rs_codes = {f["code"] for f in rs_inspect["findings"]}
+        self.assertIn("WORKFLOW_NAMING_MISSING", py_codes)
+        self.assertIn("WORKFLOW_NAMING_MISSING", rs_codes)
+        self.assertIn("CHECK_OFFLINE_INCOMPLETE", py_codes)
+        self.assertIn("CHECK_OFFLINE_INCOMPLETE", rs_codes)
+
+
+class NativePublicHelperComparison(unittest.TestCase):
+    setUp = ReferenceComparison.setUp
+    invoke = ReferenceComparison.invoke
+
+    def test_render_helper_public_api(self):
+        for value in ("海洋重力波", "1. first", "a [link] *literal* %% x", "---", "10%"):
+            self.assertEqual(self.invoke("render_note.digest", value), renderer.digest(value))
+            self.assertEqual(self.invoke("render_note.literal", value), renderer.literal(value))
+            self.assertEqual(self.invoke("render_note.line", value, "/value"), renderer.line(value, "/value"))
+        for value in ({"b": ["重力波", 2, True], "a": None}, ["x", {"a": 4}], {}):
+            self.assertEqual(self.invoke("render_note.canonical", value, "/data"), renderer.canonical(value, "/data"))
+        for unit in ({"kind": "header", "translated": True}, {"kind": "list", "count": 4},
+                     {"kind": "figure"}, {"kind": "formula"}, {"kind": "paragraph"}):
+            self.assertEqual(self.invoke("render_note.template_fields", unit), renderer.template_fields(unit))
+        self.assertIsNone(self.invoke("render_note.keys", {"a": 1}, "/v", "a"))
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke("render_note.keys", {"a": 1, "extra": True}, "/v", "a")
+
+    def test_native_pdf_geometry_public_api(self):
+        import fitz
+        source = self.root.joinpath("rotated.pdf")
+        with fitz.open() as pdf:
+            p = pdf.new_page(width=200, height=100)
+            p.set_rotation(90)
+            pdf.save(source)
+        with fitz.open(source) as pdf:
+            expected = list(pdf[0].rect * pdf[0].derotation_matrix)
+        self.assertEqual(self.invoke("prepare_source_inventory.pdf_page_rect", str(source), page_number=1), expected)
+        for box, ok in [([0, 0, 200, 100], True), ([0, 0, 201, 100], False), ([10, 0, 0, 100], False), ([False, 0, 1, 2], False)]:
+            self.assertEqual(self.invoke("prepare_source_inventory.valid_pdf_bbox", box, expected), ok)
+
+
+    def test_all_named_translation_writer_methods_execute_real_reference_decisions(self):
+        import test_translation_review_writer as suite
+        fixture = suite.CompactReviewTests(methodName="test_compact_draft_resumes_exact_decisions_and_keeps_remaining_targets")
+        fixture.setUp()
+        try:
+            writer, unit = fixture.active()
+            writer.scope("passed", "Explicit fixture scope decision.")
+            writer.exclude("two", "Second unit outside this test scope.", "Explicit fixture exclusion.")
+            writer.source_issues_review("pending", "Further source review is needed.")
+            writer.terminology_review("pending", covered_units=["one"], no_unlisted_reason=None)
+            writer.review("pending")
+            unit.check("alignment", "passed", "Actual pair compared.")
+            unit.occurrence("claims", "claim-a", unit.source(fixture.source_text), unit.candidate(fixture.candidate_text),
+                            "failed", "Retain an explicit unresolved comparison.")
+            term = unit.term("badge", "cobalt badge", "concept", unit.source("cobalt badge"))
+            term.search("full_phrase", "cobalt badge", "Actual query.")
+            term.search("family", "badge", "Actual family query.")
+            term.search_status("aliases", "not_applicable", "No alias in the selected source.")
+            term.decide("adopted", "钴蓝色徽片", "Actual fixture decision.", matches=["BADGE"])
+            unit.scan("concept", "scanned", ["badge"], "Actual term candidate.")
+            unit.issue("issue-one", unit.source("cobalt badge"), "Review this excerpt.",
+                       ["cobalt badge"], "Retain pending", "pending", "Independent review still needed.")
+            draft = writer.save_draft(fixture.base.joinpath("method-draft.json"))
+            reference_commands = json.loads(draft.read_text(encoding="utf-8"))["decisions"]
+            commands = []
+            method_classes = {
+                "unit": "ReviewWriter", "scope": "ReviewWriter", "exclude": "ReviewWriter",
+                "source_issues_review": "ReviewWriter", "terminology_review": "ReviewWriter", "review": "ReviewWriter",
+                "check": "UnitReview", "scan": "UnitReview", "occurrence": "UnitReview",
+                "term": "UnitReview", "issue": "UnitReview",
+                "search": "TermReview", "search_status": "TermReview", "decide": "TermReview",
+            }
+            seen = set()
+            for command in reference_commands:
+                method = command["op"]
+                args = {key: value for key, value in command.items() if key != "op"}
+                result = self.invoke("translation_review_writer." + method_classes[method] + "." + method,
+                                     str(fixture.prepared), commands, **args)
+                commands = result["decisions"]
+                seen.add(method)
+                if method == "search":
+                    self.assertEqual([h["entry_id"] for h in result["method_result"]], ["BADGE"])
+            self.assertEqual(seen, set(method_classes))
+            self.assertEqual(result["data"], writer.data)
+            self.assertEqual(commands, reference_commands)
+            again = self.invoke("translation_review_writer.ReviewWriter.unit", str(fixture.prepared), commands, unit_id="one")
+            self.assertEqual(again["decisions"], commands)
+            self.assertTrue(again["method_result"]["reused"])
+        finally:
+            fixture.doCleanups()
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
