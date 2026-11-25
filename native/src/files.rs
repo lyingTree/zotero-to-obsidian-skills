@@ -8,17 +8,42 @@ pub fn digest(data:&[u8])->String { format!("{:x}",Sha256::digest(data)) }
 pub fn canonical(p:&Path)->Result<PathBuf> {
     dunce::canonicalize(p).with_context(||format!("resolve {}",p.display()))
 }
-pub fn snapshot(p:&Path)->Result<Value> {
+pub fn snapshot(p:&Path)->Result<Value> {snapshot_impl(p,None)}
+/// Hash large inference weights without retaining verification reads in the
+/// Darwin filesystem cache. The digest and file-stability checks are identical.
+pub(crate) fn snapshot_model_weight(p:&Path,max:u64)->Result<Value> {snapshot_impl(p,Some(max))}
+
+#[cfg(target_os="macos")]
+fn hint_uncached(file:&File){
+    use std::os::fd::AsRawFd;
+    // SAFETY: the File owns a live descriptor throughout this call. Darwin
+    // F_NOCACHE takes an integer, with 1 disabling data caching. Unsupported
+    // filesystems can ignore the hint; the full SHA still runs.
+    let _=unsafe {libc::fcntl(file.as_raw_fd(),libc::F_NOCACHE,1 as libc::c_int)};
+}
+
+fn snapshot_impl(p:&Path,model_limit:Option<u64>)->Result<Value> {
     let p=canonical(p)?;
     ensure!(fs::metadata(&p)?.is_file(),"not a regular file");
     let file=File::open(&p)?;
     let before=file.metadata()?;
     ensure!(before.is_file(),"not a regular file");
+    if let Some(limit)=model_limit{
+        ensure!(before.len()<=limit,"Model asset exceeds size budget");
+        #[cfg(target_os="macos")]
+        hint_uncached(&file);
+    }
     let mut stream=BufReader::with_capacity(1024*1024,file);
     let mut buffer=vec![0u8;1024*1024];
     let mut hasher=Sha256::new();
     let mut size=0u64;
-    loop { let n=stream.read(&mut buffer)?; if n==0 {break;} hasher.update(&buffer[..n]); size+=n as u64; }
+    loop {
+        let n=stream.read(&mut buffer)?;
+        if n==0 {break;}
+        size+=n as u64;
+        ensure!(model_limit.is_none_or(|limit|size<=limit),"Model asset exceeds size budget");
+        hasher.update(&buffer[..n]);
+    }
     let after=stream.get_ref().metadata()?;
     ensure!(size==before.len() && size==after.len() && before.modified().ok()==after.modified().ok(),
         "file changed while reading");

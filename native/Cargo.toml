@@ -67,6 +67,9 @@ lopdf = { git = "https://github.com/storytold/pdfcraft", rev = "6e910675c68dd509
 vello_common = { git = "https://github.com/storytold/pdfcraft", rev = "6e910675c68dd5092e889065cfe8d0274c1b2742" }
 vello_cpu = { git = "https://github.com/storytold/pdfcraft", rev = "6e910675c68dd5092e889065cfe8d0274c1b2742" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

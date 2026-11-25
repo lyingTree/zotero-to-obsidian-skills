@@ -3341,6 +3341,7 @@ dependencies = [
  "granit-parser",
  "html-escape",
  "image",
+ "libc",
  "lopdf 0.36.0",
  "ort",
  "pdfcraft-render",

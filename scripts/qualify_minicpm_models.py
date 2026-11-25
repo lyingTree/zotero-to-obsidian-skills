@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 
 ROOT = Path(os.environ["Z2O_LLAMA_FIXTURE_DIR"]).resolve()
 SHARED = Path(os.environ["Z2O_LLAMA_SHARED_SCAN"]).resolve()
@@ -74,6 +75,14 @@ def weights(repo, names, pinned_revision=None):
         count = 0
         digest = hashlib.sha256()
         with urlopen(Request(url, headers={"User-Agent": "z2o-native-ci"}), timeout=120) as stream, tmp.open("wb") as out:
+            if sys.platform == "darwin":
+                # Darwin F_NOCACHE from sys/fcntl.h; some Python builds do
+                # not expose the constant. Only this temporary file is scoped.
+                import fcntl
+                try:
+                    fcntl.fcntl(out.fileno(), getattr(fcntl, "F_NOCACHE", 48), 1)
+                except OSError as exc:
+                    print(f"Weight download cache hint unavailable: {exc.errno}", flush=True)
             while chunk := stream.read(4 * 1024**2):
                 count += len(chunk)
                 require(count <= size, "Weight exceeds declared length")

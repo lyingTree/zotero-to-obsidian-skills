@@ -44,9 +44,19 @@ fn bind(root:&Path,row:&Value,max:u64)->Result<Value>{
     let b=check_ledger::bind_file(&p)?;ensure!(b["sha256"]==hash(&row["sha256"])?,"Model/engine resource changed: {}",p.display());Ok(b)
 }
 fn verify(b:&Value)->Result<()>{let p=path(&b["path"])?;check_write::no_link(&p)?;ensure!(check_ledger::bind_file(&p)?==*b,"Bound input changed");Ok(())}
+fn weight_binding(p:&Path)->Result<Value>{
+    check_write::no_link(p)?;
+    let b=files::snapshot_model_weight(p,8*GIB)?;
+    Ok(json!({"path":b["path"],"sha256":b["sha256"]}))
+}
+fn verify_weight(b:&Value)->Result<()>{
+    ensure!(weight_binding(&path(&b["path"])?)?==*b,"Bound input changed");
+    Ok(())
+}
 fn gguf(root:&Path,row:&Value,allowed:&[&str])->Result<Value>{
-    let b=bind(root,row,8*GIB)?;
-    let p=path(&b["path"])?;
+    let p=local(root,text(&row["path"],"asset path")?)?;
+    let b=weight_binding(&p)?;
+    ensure!(b["sha256"]==hash(&row["sha256"])?,"Model/engine resource changed: {}",p.display());
     ensure!(p.file_name().and_then(|s|s.to_str()).is_some_and(|s|allowed.contains(&s)),"Expected actual official MiniCPM GGUF filename");
     let mut magic=[0;4];fs::File::open(p)?.read_exact(&mut magic)?;
     ensure!(&magic==b"GGUF","Asset is not a GGUF model");Ok(b)
@@ -121,7 +131,7 @@ impl Package{
         ensure!(model["path"]!=projector["path"]&&draft.as_ref().is_none_or(|b|b["path"]!=model["path"]&&b["path"]!=projector["path"]),"Model resources must differ");
         let p=Self{binding:b,kind:kind.into(),release,cpu,gpu,gpu_error,model,projector,draft};p.verify_models()?;Ok(p)
     }
-    fn verify_models(&self)->Result<()>{verify(&self.binding)?;verify(&self.model)?;verify(&self.projector)?;if let Some(b)=&self.draft{verify(b)?;}Ok(())}
+    fn verify_models(&self)->Result<()>{verify(&self.binding)?;verify_weight(&self.model)?;verify_weight(&self.projector)?;if let Some(b)=&self.draft{verify_weight(b)?;}Ok(())}
     fn report(&self,e:&EngineFiles)->Value{json!({"manifest":self.binding,"kind":self.kind,"model":self.model,"projector":self.projector,
         "draft":self.draft,"runtime":e.report(self.release),"upstream_revision":UPSTREAM,"qualified":false})}
 }
@@ -404,6 +414,24 @@ pub fn score(original:&Path,original_sha:&str,render:&Path,render_sha:&str,candi
 }
 #[cfg(test)]
 mod tests{
+    #[test]
+    fn weight_binding_preserves_the_regular_digest_and_rejects_same_size_changes(){
+        let temp=tempfile::tempdir().unwrap();
+        let p=temp.path().join("MiniCPM-OCR-1_0-Q4_K_M.gguf");
+        let original=b"GGUF fixture, not a model";
+        fs::write(&p,original).unwrap();
+        let actual=weight_binding(&p).unwrap();
+        assert_eq!(actual,check_ledger::bind_file(&p).unwrap());
+        let row=json!({"path":p.file_name().unwrap().to_str().unwrap(),"sha256":files::digest(original)});
+        let root=files::canonical(temp.path()).unwrap();
+        assert_eq!(gguf(&root,&row,&["MiniCPM-OCR-1_0-Q4_K_M.gguf"]).unwrap(),actual);
+        assert!(files::snapshot_model_weight(&p,(original.len()-1) as u64).is_err());
+        let mut changed=original.to_vec();changed[5]=b'X';
+        fs::write(&p,changed).unwrap();
+        assert!(verify_weight(&actual).is_err());
+        assert!(gguf(&root,&row,&["MiniCPM-OCR-1_0-Q4_K_M.gguf"]).is_err());
+    }
+
     #[test]
     fn model_memory_diagnostics_preserve_cpu_and_gpu_reservation(){
         let weights=1_430_124_352;

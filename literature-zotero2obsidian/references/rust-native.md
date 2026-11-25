@@ -269,3 +269,7 @@ Color-key arrays, placement-dependent stencil images, resampling, compound masks
 ### 原生 PDF 图件来源定位
 
 原生 PDF 交付校验和映射生成会从绑定的原文件扫描页面内容操作及调用链，核对图件的 `image_xref` 确实在该页被调用。仅出现在资源字典里的未调用对象不再通过；已调用的图件可单独用 XRef 定位，不必为了通过映射而添加虚构的坐标框。旧清单维持原资源查询语义。这只验证结构上的调用，不能证明可见性、完整图件边界或像素保真，完整 PDF 与交付验收仍保留阻断。
+
+### Apple Silicon 大模型文件校验
+
+在 macOS 上逐块校验 GGUF 权重时，对当前文件描述符使用 Apple 的 [F_NOCACHE](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html) 缓存提示；CI 权重下载也使用该提示，避免预检和测试准备产生不必要的文件缓存。文件系统不支持提示时仍执行原样的全量哈希。没有改变权重、哈希、进程前后校验、2 GiB 安全余量或真实推理验收条件。具体可用内存与推理结果须由 Apple Silicon CI 验证。
