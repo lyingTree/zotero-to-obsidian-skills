@@ -148,6 +148,14 @@ def example(name):
     return case, candidate, path, dest
 
 def main():
+    binary_digest = file_sha(BINARY)
+    require(binary_digest == os.environ["Z2O_LLAMA_NATIVE_BINARY_SHA256"], "Same-run native binary hash mismatch")
+    binary_identity = {"native_binary_sha256": binary_digest, "native_source_sha": os.environ["GITHUB_SHA"],
+                       "native_workflow_run_id": os.environ["GITHUB_RUN_ID"]}
+    # Keep the checked identity even when memory preflight or inference fails.
+    ROOT.mkdir(parents=True, exist_ok=True)
+    ROOT.joinpath("model-client-identity.json").write_text(json.dumps({"target": TARGET, **binary_identity}, indent=2) + "\n",
+                                                        encoding="utf-8")
     runtime = json.loads(ROOT.joinpath("runtime-evidence.json").read_text(encoding="utf-8"))
     jev_runtime = json.loads(ROOT.joinpath("jev-runtime-evidence.json").read_text(encoding="utf-8"))
     manifest = SHARED.joinpath("package.json")
@@ -177,7 +185,9 @@ def main():
     # Upstream documents the scores as relative, not a universal threshold.
     require(scores["formula"]["prob_1"] > max(scores["text"]["prob_1"], scores["table"]["prob_1"]),
             f"Jev reference discrimination regression: {scores}")
+    require(file_sha(BINARY) == binary_digest, "Native client changed during model qualification")
     ROOT.joinpath("model-smoke-result.json").write_text(json.dumps({"target": TARGET,
+        **binary_identity,
         "bilingual_cpu_inference": True, "jev_reference_discrimination": True,
         "scores": scores, "ocr_runtime_release": runtime["release"], "jev_runtime_release": jev_runtime["release"],
         "ocr_model_file": ocr_model, "ocr_model_revision": OCR_REVISION,
