@@ -537,7 +537,7 @@ fn same_resolution_explicit_mask_is_lossless_bound_and_replayed(){
     let image=image::open(output).unwrap().into_rgba8();
     let alpha=[0u8,255,0,255,0,255];
     assert_eq!(record["decoded_alpha_sha256"],files::digest(&alpha));
-    for ((actual,rgb),alpha) in image.pixels().zip(pixels.chunks_exact(3)).zip(alpha){
+    for ((actual,rgb),alpha) in image.pixels().zip(pixels.as_chunks::<3>().0.iter().map(|c|&c[..])).zip(alpha){
         assert_eq!(&actual.0[..3],rgb);
         assert_eq!(actual.0[3],alpha);
     }

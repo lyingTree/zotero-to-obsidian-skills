@@ -3,8 +3,8 @@
 //! block identities, semantic grouping, completeness or acceptance are inferred.
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
-use std::{collections::{BTreeMap,BTreeSet},fs,io::Write,path::{Path,PathBuf}};
-use crate::{check_ledger,check_write,files,ocr_backend,ocr_pdf,path,pdfcraft_backend::{Backend,PDFCRAFT_REV},pipeline};
+use std::{collections::{btree_map::Entry,BTreeMap,BTreeSet},fs,io::Write,path::{Path,PathBuf}};
+use crate::{check_ledger,check_write,files,ocr_backend,ocr_pdf,path,pdfcraft_backend::{Backend,PDFCRAFT_REV}};
 
 pub const BACKEND:&str="pdfcraft-native-v1";
 const BOUNDARY:&str="Actual PDF page rasters, native glyph/line records and invoked indirect image streams. Native line IDs are not PyMuPDF block IDs. OCR text is a separate hypothesis; page order, additional content, figure membership and source fidelity remain subject to independent review.";
@@ -221,7 +221,7 @@ pub(crate) fn prepare_bound_source(source:&Path,id:&str,root:&Path,dpi:u64,ocr:O
                 let locator=&indexed[key];
                 if let Some(mid)=mask_identity(locator)?{
                     ensure!(mid!=(xref,generation),"Recursive PDF image mask");
-                    if !masks.contains_key(&mid){masks.insert(mid,mask_record(&backend,mid,Some(&image_dir))?);}
+                    if let Entry::Vacant(e)=masks.entry(mid){e.insert(mask_record(&backend,mid,Some(&image_dir))?);}
                     row[format!("{key}_stream")]=masks[&mid].clone();
                 }else if locator["direct_or_other"]==true{
                     row[format!("{key}_stream")]=json!({"status":"unresolved_direct_or_other","review_required":true});

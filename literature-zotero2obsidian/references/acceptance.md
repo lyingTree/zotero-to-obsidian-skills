@@ -47,11 +47,19 @@
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "check_records.prepare_check_records",
+  "args": ["<实际 skills_root>", "work/checks.json"],
+  "kwargs": {
+    "sources": "<来源 ID 到实际文件路径的映射>",
+    "candidate_path": "<实际 candidate.md 路径>",
+    "scopes": "<各 ID 实际检查范围>",
+    "requirement_types": "<各 ID 实际要求类型>",
+    "inventory_path": "work/source-inventory.json"
+  }
 }
 ```
+
+生成台账后可再调用 `check_records.validate_check_records`（`args: ["work/checks.json"]`）校验结构与指针。
 
 `SOURCE_FILES` 是来源 ID 到实际 `Path` 的映射；多个候选可使用 `candidates` 映射代替 `candidate_path`。`scopes` 和类型映射可分阶段填写；没有提供的范围不会自动补全，也没有任何检查被自动置为通过。可选的 `progress(current, total, stage)` 回调可接入进度条。`inventory_path` 只回写 `checks_path` 指针，不把仍在改写的 inventory 自身哈希写入台账。主交付校验器通过该指针绑定台账文件并核对来源、候选版本。
 

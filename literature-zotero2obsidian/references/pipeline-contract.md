@@ -85,16 +85,36 @@ DOCX 结构清单的 `format` 为 `docx`，`pages` 为空且 `page_count` 为 `n
 
 ### 一次登记文字层与页图冲突
 
-来源单元的 `text_visual_conflicts` 是冲突决定的权威记录。盘点时可使用 [handoff_maps.py](../scripts/handoff_maps.py) 的 `record_text_visual_conflict(...)`，在建立图件库存快照及各映射之前写入一次。函数从该单元已经登记的来源页取得 PDF、原始页文本、完整页图的实际路径与哈希；两种读法、页内位置、采用值和理由必须由调用方明确给出。它不做 OCR，不推断可见读法，也不依据日期格式或常识改写来源。
+来源单元的 `text_visual_conflicts` 是冲突决定的权威记录。盘点时可使用 [Rust 运行入口](rust-entrypoints.md) 的 `handoff_maps.record_text_visual_conflict`，在建立图件库存快照及各映射之前写入一次。函数从该单元已经登记的来源页取得 PDF、原始页文本、完整页图的实际路径与哈希；两种读法、页内位置、采用值和理由必须由调用方明确给出。它不做 OCR，不推断可见读法，也不依据日期格式或常识改写来源。
 
 下面是虚构实验室名称的结构示例，变量须来自本次实际文件；不能把示例读法当成本次观察：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "handoff_maps.record_text_visual_conflict",
+  "args": ["<实际 inventory_path>", "synthetic-affiliation"],
+  "kwargs": {
+    "conflict_id": "lab-name-reading",
+    "page_number": "<实际页码整数>",
+    "text_locator": {
+      "kind": "characters",
+      "unit": "unicode_code_points",
+      "start": "<起始 Unicode 码点>",
+      "end": "<结束 Unicode 码点>",
+      "end_exclusive": true
+    },
+    "text_layer_text": "Reed Laboratory",
+    "visible_text": "Reid Laboratory",
+    "bbox": "<实测未旋转 PDF 点坐标 [x0, y0, x1, y1]>",
+    "decision": {
+      "status": "resolved",
+      "selected_text": "Reid Laboratory",
+      "reason": "<本次实际观察依据>",
+      "observed": true,
+      "reviewer": "<实际复核者>"
+    }
+  }
 }
 ```
 

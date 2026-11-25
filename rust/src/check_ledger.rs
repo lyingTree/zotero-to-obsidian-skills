@@ -11,17 +11,8 @@ const ENV:&[&str]=&["actual_ui","native_cache","actual_cli"];
 const EVIDENCE:&[&str]=&["source_location","offline_result","execution_trace","environment_observation"];
 const MAX_RULE_FILES:usize=20_000;
 const MAX_RULE_SIZE:u64=16*1024*1024;
-fn nonempty(v:&Value)->bool{v.as_str().is_some_and(|s|!s.trim().is_empty())}
 fn mapping(v:&Value,label:&str)->Result<Map<String,Value>>{
     if v.is_null(){Ok(Map::new())}else{Ok(v.as_object().with_context(||format!("{label} must be an object"))?.clone())}
-}
-fn is_symlink_or_reparse(meta:&fs::Metadata)->bool{
-    if meta.file_type().is_symlink(){return true;}
-    #[cfg(windows)]{
-        use std::os::windows::fs::MetadataExt;
-        if meta.file_attributes()&0x400!=0{return true;}
-    }
-    false
 }
 fn list_dir(path:&Path)->Result<Vec<PathBuf>>{
     let mut rows=fs::read_dir(path)?.map(|r|r.map(|e|e.path())).collect::<std::io::Result<Vec<_>>>()?;
@@ -33,7 +24,7 @@ fn collect_refs(root:&Path,files:&mut Vec<PathBuf>)->Result<()>{
         for p in list_dir(&dir)?{
             if p.file_name().and_then(|s|s.to_str())==Some("runs"){continue;}
             let m=fs::symlink_metadata(&p)?;
-            ensure!(!is_symlink_or_reparse(&m),"Refusing linked rule/reference path: {}",p.display());
+            ensure!(!files::is_linked(&p,&m),"Refusing linked rule/reference path: {}",p.display());
             if m.is_dir(){pending.push(p);}
             else if m.is_file()&&p.extension().and_then(|s|s.to_str())==Some("md"){
                 files.push(p);ensure!(files.len()<=MAX_RULE_FILES,"Rule file budget exceeded");
@@ -50,7 +41,7 @@ fn rule_files(root:&Path)->Result<Vec<(String,PathBuf)>>{
         if p.file_name().and_then(|s|s.to_str())==Some("runs"){continue;}
         let m=fs::symlink_metadata(&p)?;
         if p.is_dir()&&p.join("SKILL.md").is_file(){
-            ensure!(!is_symlink_or_reparse(&m),"Refusing linked skill directory: {}",p.display());
+            ensure!(!files::is_linked(&p,&m),"Refusing linked skill directory: {}",p.display());
             directories.push(p);
         }
     }
@@ -58,11 +49,11 @@ fn rule_files(root:&Path)->Result<Vec<(String,PathBuf)>>{
     for dir in directories{
         let skill=dir.file_name().and_then(|v|v.to_str()).context("non-Unicode skill name")?.to_owned();
         let main=dir.join("SKILL.md");
-        ensure!(!is_symlink_or_reparse(&fs::symlink_metadata(&main)?),"Refusing linked SKILL.md");
+        ensure!(!files::is_linked(&main,&fs::symlink_metadata(&main)?),"Refusing linked SKILL.md");
         files.push((skill.clone(),main));
         let refs=dir.join("references");
         if refs.is_dir(){
-            ensure!(!is_symlink_or_reparse(&fs::symlink_metadata(&refs)?),"Refusing linked references directory");
+            ensure!(!files::is_linked(&refs,&fs::symlink_metadata(&refs)?),"Refusing linked references directory");
             let mut found=Vec::new();collect_refs(&refs,&mut found)?;
             files.extend(found.into_iter().map(|p|(skill.clone(),p)));
         }
@@ -235,7 +226,7 @@ fn build_payload(root:&Path,out:&Path,opt:PrepareOptions,progress:impl FnMut(usi
             binding["id"]=json!(id);entries.push(binding);
         }bindings.insert(label.into(),json!(entries));
     }
-    ensure!(!protected.contains(&path_text(&out)?),"The ledger output would overwrite a bound input file.");
+    ensure!(!protected.contains(&path_text(out)?),"The ledger output would overwrite a bound input file.");
     let mut checks=Vec::with_capacity(selected.len());let mut entries=Vec::with_capacity(catalog.rules.len());
     for r in &catalog.rules{
         entries.push(r.entry());if !selected.contains(&r.id){continue;}

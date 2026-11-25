@@ -22,11 +22,25 @@
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
+  "operation": "complete_workflow.initialize_workflow",
   "args": [],
-  "kwargs": {}
+  "kwargs": {
+    "skills_root": "<实际技能根目录>",
+    "work_root": "<本次任务根>/work",
+    "sources": {
+      "main": "<本次任务根>/input/article.pdf",
+      "supplement": "<本次任务根>/input/supplement.docx"
+    },
+    "source_roles": {"main": "main", "supplement": "supplement"},
+    "candidate_path": "<本次任务根>/output/candidate.md",
+    "resource_root": "<本次任务根>/output",
+    "glossary_path": "<实际技能根目录>/template/glossary.md",
+    "translation_required": true
+  }
 }
 ```
+
+初始化返回 `run.json` 路径后，调用 `complete_workflow.resume_workflow`（`args: ["<实际 run.json 路径>"]`）查看下一项真实来源任务。
 
 没有 SI 时从两个映射中同时去掉对应来源。中文原文确实无需翻译时，将 `translation_required` 设为 `False`，并在语言分流记录中保存依据。初始化会保存来源材料、来源哈希、全量验收骨架、产出队列及 `run.json`；`run.records.draft_queue` 指向该实际队列。它不会把任何内容判断填成通过。恢复任务时将已有 `run.json` 传给 `resume_workflow()`，不要重新初始化或覆盖旧记录。
 
@@ -57,7 +71,7 @@ PDF 来源含实际页图和文字块；DOCX 来源含 `native_blocks`、`media_
 | `translation-review.json` | 逐段自核后 | 每个译文源块有独立核对记录 |
 | `checks.json` | 各阶段持续填写 | 每个验收 ID 有自己的判断 |
 
-记录的字段沿用[交接约定](pipeline-contract.md)。同一个事实可以存一次，再由多个明确 ID 引用其精确位置；不能把整个技能视作一个已通过目标。译文复核使用[翻译短入口](../../literature-translate-zh/references/translation-review.md#逐段短入口与增量保存)。首次填写前阅读[短调用的完整单段示例](../../literature-translate-zh/references/compact_review_example.py)，理解各目标如何分别闭合；该示例的内容判断只适用于它自带的虚构材料。需要查看展开后全部字段时再读[原始完整示例](../../literature-translate-zh/references/complete_review_example.py)。
+记录的字段沿用[交接约定](pipeline-contract.md)。同一个事实可以存一次，再由多个明确 ID 引用其精确位置；不能把整个技能视作一个已通过目标。译文复核使用[翻译短入口](../../literature-translate-zh/references/translation-review.md#逐段短入口与增量保存)及 [Rust 运行入口](rust-entrypoints.md#翻译复核) 中的 `translation_review_writer.*` 操作逐项推进与增量保存。
 
 完整入口读取以下集合字段；集合可以用列表保存记录，也可以用对象 ID 到记录的映射保存。没有对应对象时保留空集合，并在该验收 ID 记录实际不适用依据：`source-map.json` 的 `blocks`、`objects`、`references`、`citations`；`si-map.json` 的 `sources`、`blocks`、`objects`；`link-map.json` 的 `anchors`、`internal_links`、`library_matches`、`unresolved`。集合存在只说明结构齐全，不证明内容已经核对。
 
@@ -97,8 +111,12 @@ PDF 来源含实际页图和文字块；DOCX 来源含 `native_blocks`、`media_
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
+  "operation": "mapping_rerun.record_mapping_rerun",
+  "args": [
+    "<实际 run.json 路径>",
+    "<实际 deliveries 列表>",
+    "<本次任务根>/work/mapping-rerun-01"
+  ],
   "kwargs": {}
 }
 ```
@@ -113,14 +131,44 @@ PDF 来源含实际页图和文字块；DOCX 来源含 `native_blocks`、`media_
 
 此段调用适用于 PDF。DOCX 的内嵌媒体直接使用来源清单中 `native_media[].file` 指向的原始文件；按 `media_calls` 对照所属段落和题注，使用对应 `native_locator` 登记来源。不要为它们构造 PDF 页码、xref 或裁框。
 
-先从完整源页核定图件范围。只有已确定整幅图就是该原始图片对象时，才走直接导出分支。复合图直接使用页面范围渲染。以下变量均取实际图件清单，不从示例猜页码或对象号。
+先从完整源页核定图件范围。只有已确定整幅图就是该原始图片对象时，才先尝试 `pdf_image_objects.export_image_object`；若显示效果受限或属复合图，改用 `pdf_image_objects.render_page_region`（带 `margin_pt: 6.0`）。以下字段均取实际图件清单，不从示例猜页码或对象号：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "pdf_image_objects.export_image_object",
+  "args": ["<实际 SOURCE_PDF 路径>"],
+  "kwargs": {
+    "page_number": "<实际页码整数>",
+    "image_xref": "<实际 image_xref 整数>",
+    "destination": "<无后缀的目标输出路径>",
+    "expected_source_sha256": "<实际 SOURCE_SHA256>"
+  }
+}
+```
+
+复合图或需保留页面显示效果时使用页面范围渲染：
+
+```json
+{
+  "schema_version": 1,
+  "operation": "pdf_image_objects.render_page_region",
+  "args": ["<实际 SOURCE_PDF 路径>"],
+  "kwargs": {
+    "page_number": "<实际页码整数>",
+    "bbox": "<已核定的未旋转 PDF 点坐标 [x0, y0, x1, y1]>",
+    "coordinate_system": {
+      "space": "pdf_page",
+      "unit": "pt",
+      "origin": "top_left",
+      "x_axis": "right",
+      "y_axis": "down",
+      "rotation": "unrotated"
+    },
+    "destination": "<无后缀的目标输出路径>",
+    "margin_pt": 6.0,
+    "expected_source_sha256": "<实际 SOURCE_SHA256>"
+  }
 }
 ```
 
@@ -138,14 +186,38 @@ PDF 来源含实际页图和文字块；DOCX 来源含 `native_blocks`、`media_
 
 ### 用短行填写每个判断
 
-日常填写可用同一模块的两个短入口：
+日常填写可用同一模块的两个短入口（先用 `complete_workflow.pending_check_rows` 查看待核项，再用 `complete_workflow.record_decision_rows` 写入决定）：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "complete_workflow.pending_check_rows",
+  "args": ["<实际 checks.json 路径>"],
+  "kwargs": {
+    "prefix": "HDR",
+    "limit": 40
+  }
+}
+```
+
+```json
+{
+  "schema_version": 1,
+  "operation": "complete_workflow.record_decision_rows",
+  "args": [
+    "<实际 checks.json 路径>",
+    [
+      ["HDR-A01", "<TITLE_STATUS>", "titles", "<TITLE_COMPARISON_REASON>"],
+      ["HDR-A04", "<AUTHOR_STATUS>", "authors", "<AUTHOR_COMPARISON_REASON>"]
+    ]
+  ],
+  "kwargs": {
+    "contexts": {
+      "titles": {"scope": "<ACTUAL_TITLE_OBJECTS>", "evidence": "<TITLE_EVIDENCE_IDS>"},
+      "authors": {"scope": "<ACTUAL_AUTHOR_OBJECTS>", "evidence": "<AUTHOR_EVIDENCE_IDS>"}
+    },
+    "evidence": "<实际 EVIDENCE 映射>"
+  }
 }
 ```
 
@@ -159,31 +231,33 @@ PDF 来源含实际页图和文字块；DOCX 来源含 `native_blocks`、`media_
 
 ## 收尾：按缺项继续，不在零语法错误处结束
 
-把以下代码放入本次调用脚本。报告写在工作目录，不写入文献正文。
+把以下请求放入本次任务的 JSON 文件并执行，报告保存在工作目录，不写入文献正文：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
+  "operation": "complete_workflow.inspect_workflow",
+  "args": ["<实际 run.json 路径>"],
   "kwargs": {}
 }
 ```
 
-写最终完成报告的脚本先调用下面这一行。若本地记录尚未完成，函数抛出 `IncompleteRecordsError`，并附 `report` 与有限长度的缺项摘要；回到这些实际目标继续工作，不吞掉异常后填写完成结论。
+可用 `complete_workflow.pending_check_batch`（`args: ["<实际 checks.json 路径>"]`，`kwargs: {"limit": 20}`）分页查看待核 ID。
+
+写最终完成报告的脚本先调用下面入口。若本地记录尚未完成，函数返回错误并附 `report` 与有限长度的缺项摘要；回到这些实际目标继续工作，不吞掉异常后填写完成结论。
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
+  "operation": "complete_workflow.require_completed_records",
+  "args": ["<实际 run.json 路径>"],
   "kwargs": {}
 }
 ```
 
 这一入口使用与 `inspect_workflow()` 相同的验收范围。它不会补写任何状态，也不替代实际对源比较。
 
-`resume_workflow()` 提供下一项行动，`require_completed_records()` 拒绝给未齐全的记录返回就绪结果；两者都不能拦截助手的聊天最终答复。若宿主要强制续跑，必须另行实现任务派发和终止控制，不能把这里的 程序异常称为宿主硬门。
+`resume_workflow()` 提供下一项行动，`require_completed_records()` 拒绝给未齐全的记录返回就绪结果；两者都不能拦截助手的聊天最终答复。若宿主要强制续跑，必须另行实现任务派发和终止控制，不能把这里的程序异常称为宿主硬门。
 
 `WORKFLOW_RECORD_MISSING` 表示需要补对应记录。`WORKFLOW_CHECK_PENDING` 表示需要完成该单项目标。`WORKFLOW_MANIFEST_BINDING` 表示报告引用了另一份文件或旧版本。翻译记录中的 `TRN_PENDING`、`TRN_UNRESOLVED` 等逐项提示同样保留其具体目标位置，可据此回到对应段落或术语记录。先处理实际缺项，再运行收尾检查。
 

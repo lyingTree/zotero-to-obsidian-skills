@@ -89,7 +89,7 @@ fn scan_panels(text:&str,line:usize,out:&mut Vec<Prompt>)->Result<()>{
         let Some(a)=panel_label().captures(l.label)?.filter(|c|c.get(0).is_some_and(|m|m.start()==0&&m.end()==l.label.len()))else{continue;};
         let Some(b)=panel_label().captures(r.label)?.filter(|c|c.get(0).is_some_and(|m|m.start()==0&&m.end()==r.label.len()))else{continue;};
         if group(&a,"prefix").is_empty()&&group(&b,"prefix").is_empty(){continue;}
-        if group(&a,"object").to_ascii_lowercase()!=group(&b,"object").to_ascii_lowercase()||l.href!=r.href||r.start<l.end{continue;}
+        if !group(&a,"object").eq_ignore_ascii_case(group(&b,"object"))||l.href!=r.href||r.start<l.end{continue;}
         if !whole(panel_join(),&masked[l.end..r.start])?{continue;}
         add(out,"LINK-C13",line,"SPLIT_PANEL_CALL",&text[original[offsets.index(l.start)]..original[offsets.index(r.end)]],
             "同一对象的同组多面板调用应整体链接；核对来源调用边界后处理本次范围内的新建调用。");

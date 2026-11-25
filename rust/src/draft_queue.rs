@@ -319,7 +319,7 @@ impl Queue{
                     let mut v=self.context(&ids);v["stage"]=json!("write_unit");v["unit"]=u.clone();
                     v["entries"]=json!(ids.iter().map(|id|d["blocks"][id].clone()).collect::<Vec<_>>());v
                 }else{
-                    let mut v=self.context(&[id.clone()]);v["stage"]=json!("group_or_exclude");v["entry"]=d["blocks"][&id].clone();v
+                    let mut v=self.context(std::slice::from_ref(&id));v["stage"]=json!("group_or_exclude");v["entry"]=d["blocks"][&id].clone();v
                 };
                 task["boundary"]=json!(BOUNDARY);return task;
             }
@@ -379,6 +379,7 @@ impl Queue{
         self.data["issues"][id]["decision"]=json!({"status":status,"reason":reason,"evidence":bindings});
         self.commit("issue_decision",id)
     }
+    #[allow(clippy::too_many_arguments)]
     fn add_page_object(&mut self,id:&str,sid:&str,n:u64,kind:&str,reason:&str,bbox:&Value,content:&str)->Result<Value>{
         ensure!(self.data["blocks"].get(id).is_none(),"Keep source entry IDs unique");
         let key=self.page(sid,n)?;
@@ -457,7 +458,7 @@ fn pdf_bounds(p:&Path,page:u64)->Result<[f64;4]>{
             ensure!(seen.insert(id),"PDF page tree cycle");
             let dict=doc.get_object(id)?.as_dict()?;
             if let Ok(v)=dict.get(key){return Ok(Some(deref(doc,v)?));}
-            match dict.get(b"Parent"){Ok(Object::Reference(parent))=>id=*parent,Ok(_)=>return Err(anyhow!("Invalid PDF page parent")),Err(_)=>return Ok(None)}
+            match dict.get(b"Parent"){Ok(Object::Reference(parent))=>id = *parent,Ok(_)=>return Err(anyhow!("Invalid PDF page parent")),Err(_)=>return Ok(None)}
         }Err(anyhow!("PDF page tree exceeds depth limit"))
     }
     let read_box=|key:&[u8]|->Result<Option<[f64;4]>>{

@@ -228,7 +228,6 @@ fn render(plan:&Value,content:&Value)->R<(String,Vec<Value>)>{
         out.push_str(&format!("---\n{yaml}---\n\n"));offset=out.chars().count();current_line+=out.bytes().filter(|b|*b==b'\n').count();
     }
     let mut previous="";
-    static URI:OnceLock<Regex>=OnceLock::new();
     for(i,u)in units.iter().enumerate(){
         let uid=u["unit_id"].as_str().unwrap();let k=u["kind"].as_str().unwrap();let p=format!("/plan/units/{i}");let cp=format!("/content/{uid}");let v=&values[uid];
         let block=match k{
@@ -268,8 +267,9 @@ fn render(plan:&Value,content:&Value)->R<(String,Vec<Value>)>{
             }
             "reference"|"bibliography"=>format!("{}. {} {}",numbers[uid],literal(line(&u["source_text"],&format!("{p}/source_text"))?),targets[uid]),
             "zotero_link"=>{
+                fn uri_regex()->&'static Regex{static URI:OnceLock<Regex>=OnceLock::new();URI.get_or_init(||Regex::new(r"^zotero://select/(?:library|groups/[1-9][0-9]*)/items/[A-Za-z0-9]+$").unwrap())}
                 let uri=line(&u["uri"],&format!("{p}/uri"))?;
-                check(URI.get_or_init(||Regex::new(r"^zotero://select/(?:library|groups/[1-9][0-9]*)/items/[A-Za-z0-9]+$").unwrap()).is_match(uri),&format!("{p}/uri"),"expected a Zotero item selection URI")?;
+                check(uri_regex().is_match(uri),&format!("{p}/uri"),"expected a Zotero item selection URI")?;
                 format!("---\n\n## [Zotero原条目]({uri})")
             }
             _=>unreachable!(),

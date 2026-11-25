@@ -7,7 +7,7 @@ use pdfcraft_render::{PageRenderer,PageInfo,RenderConfig,RenderRequest,RequestKi
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::{fs,io::{Read,Write},path::{Path,PathBuf},sync::Arc};
-use crate::{check_ledger,files,path,path_text,pdf_structure::Pdf,pipeline};
+use crate::{check_ledger,files,pdf_structure::Pdf,pipeline};
 
 pub const PDFCRAFT_REV:&str="6e910675c68dd5092e889065cfe8d0274c1b2742";
 const MAX_INPUT:u64=512*1024*1024;
@@ -99,6 +99,7 @@ impl Backend{
         engine.verify()?;Ok(engine)
     }
     pub fn len(&self)->usize{self.pages.len()}
+    pub fn is_empty(&self)->bool{self.pages.is_empty()}
     pub(crate) fn source_binding(&self)->&Value{&self.source}
     pub(crate) fn structure(&self,page:u64)->Result<Value>{
         let mut result=self.structural.index(page)?;
@@ -205,14 +206,14 @@ impl Backend{
             "PdfCraft returned unexpected raster dimensions; no silent downscaling or tile clipping");
         let rgba=result.rgba.as_ref();
         let length=(result.width as usize).checked_mul(result.height as usize).and_then(|n|n.checked_mul(4)).context("Raster size overflow")?;
-        ensure!(rgba.len()==length&&rgba.chunks_exact(4).all(|p|p[3]==255),"PdfCraft white-background raster is not opaque RGBA8");
+        ensure!(rgba.len()==length&&rgba.as_chunks::<4>().0.iter().all(|p|p[3]==255),"PdfCraft white-background raster is not opaque RGBA8");
         // Canonical opaque RGB pixel digest, independent of PNG compression.
         // Batch the conversion instead of copying the entire RGBA raster.
         let mut hash=Sha256::new();
         let mut rgb=[0u8;12_288];
         for chunk in rgba.chunks(16_384){
             let count=chunk.len()/4;
-            for (out,pixel) in rgb[..count*3].chunks_exact_mut(3).zip(chunk.chunks_exact(4)){
+            for (out,pixel) in rgb[..count*3].as_chunks_mut::<3>().0.iter_mut().zip(chunk.as_chunks::<4>().0){
                 out.copy_from_slice(&pixel[..3]);
             }
             hash.update(&rgb[..count*3]);

@@ -1,6 +1,6 @@
 ---
 name: literature-filename
-version: v2.0.2
+version: v2.0.3
 description: 为文献生成“年份-作者-原文标题.md”命名计划，处理作者人数、非法字符、长度和身份冲突。用于独立命名或改名准备，实际移动交写入步骤执行。
 ---
 

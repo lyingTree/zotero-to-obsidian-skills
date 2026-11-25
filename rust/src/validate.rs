@@ -6,7 +6,8 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{collections::{HashMap,HashSet},fs,path::Path,sync::OnceLock};
 
-macro_rules! rx {($s:expr)=>{{static R:OnceLock<Regex>=OnceLock::new();R.get_or_init(||Regex::new($s).expect("static regex"))}}}
+fn compile_rx(s:&str)->Regex{Regex::new(s).expect("static regex")}
+macro_rules! rx {($s:expr)=>{{static R:OnceLock<Regex>=OnceLock::new();R.get_or_init(||compile_rx($s))}}}
 #[derive(Clone,Debug,Serialize,PartialEq,Eq)]
 pub struct Finding{pub level:&'static str,pub code:&'static str,pub line:usize,pub message:String}
 fn finding(out:&mut Vec<Finding>,level:&'static str,code:&'static str,line:usize,message:impl Into<String>){
@@ -181,6 +182,7 @@ fn caption_self_link(data:&Value,doc:&yaml_nodes::Document,node:Option<usize>,st
         finding(out,"error","TABLE_CAPTION_SELF_LINK",line,format!("[LINK-C27] {context}：title 中的表题不得链接到自身 ^{id}；保留题注文字和原锚 ID。"));
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn sheet(data:&Value,doc:&yaml_nodes::Document,node:Option<usize>,location:usize,start:usize,context:&str,own:Option<&str>,out:&mut Vec<Finding>,output:&mut Vec<LocalLink>){
     if data["locked"]!=true{finding(out,"error","TABLE_UNLOCKED",location,format!("{context}：locked 必须为 true。"));}
     if data["theme"]!="grid"{finding(out,"error","TABLE_THEME",location,format!("{context}：theme 必须为 grid。"));}

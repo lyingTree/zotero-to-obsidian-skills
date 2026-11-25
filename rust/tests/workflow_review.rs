@@ -1,6 +1,6 @@
 use serde_json::{json,Value};
 use std::{fs,path::Path};
-use z2o_native::{workflow,delivery_validate,files};
+use z2o_native::{check_ledger,delivery_validate,files,workflow};
 fn save(p:&Path,v:&Value){fs::write(p,serde_json::to_vec_pretty(v).unwrap()).unwrap();}
 #[test]
 fn incomplete_workflow_inspection_never_grants_completion(){
@@ -169,4 +169,167 @@ fn workflow_manifest_cli_preflights_without_freezing_a_rejected_candidate() {
     let inspect = passed(invoke("complete_workflow.inspect_workflow", json!([run]), json!({})));
     assert_eq!(inspect["records_ready"], false);
     assert_eq!(inspect["source_fidelity"], "not_assessed");
+}
+
+#[test]
+fn complete_workflow_reaches_records_ready_and_commits_to_vault() {
+    use std::{io::Write, process::Command};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let skills = root.join("skills");
+    fs::create_dir_all(skills.join("minimal-skill")).unwrap();
+    fs::write(
+        skills.join("minimal-skill/SKILL.md"),
+        "---\nname: minimal-skill\nversion: v2.0.3\ndescription: E2E fixture\n---\n\n- [ ] [MIN-A01] Actual candidate check recorded. <!-- check-type: offline_outcome -->\n",
+    )
+    .unwrap();
+    let work = root.join("work");
+    let resources = root.join("resources");
+    let vault = root.join("vault");
+    let backup = root.join("backup");
+    fs::create_dir(&resources).unwrap();
+    fs::create_dir(&backup).unwrap();
+    fs::create_dir_all(vault.join(".obsidian")).unwrap();
+    fs::create_dir_all(vault.join("文献")).unwrap();
+
+    let source = root.join("source.docx");
+    {
+        let mut zip = zip::ZipWriter::new(fs::File::create(&source).unwrap());
+        for (name, data) in [
+            ("[Content_Types].xml", r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#),
+            ("_rels/.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="main" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#),
+            ("word/document.xml", r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Verified paragraph text.</w:t></w:r></w:p></w:body></w:document>"#),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(data.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    let req = root.join("request.json");
+    let exe = env!("CARGO_BIN_EXE_z2o");
+    let invoke = |op: &str, args: Value, kwargs: Value| {
+        save(&req, &json!({"schema_version":1,"operation":op,"args":args,"kwargs":kwargs}));
+        let out = Command::new(exe).args(["invoke", req.to_str().unwrap()]).env("PATH", "").output().unwrap();
+        assert!(out.status.success(), "{op} failed: {}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone()
+    };
+    let get = |p: &Path| -> Value { serde_json::from_slice(&fs::read(p).unwrap()).unwrap() };
+
+    let candidate = work.join("candidate.md");
+    let run_val = invoke("complete_workflow.initialize_workflow", json!([]), json!({
+        "skills_root": skills, "work_root": work, "sources": {"main": source},
+        "source_roles": {"main": "main"}, "candidate_path": candidate,
+        "resource_root": resources, "translation_required": false, "run_id": "e2e-complete"
+    }));
+    let run_path = Path::new(run_val.as_str().unwrap());
+    let run_doc = get(run_path);
+    let inv_path = Path::new(run_doc["records"]["source_inventory"].as_str().unwrap());
+    let queue_path = Path::new(run_doc["records"]["draft_queue"].as_str().unwrap());
+    let checks_path = Path::new(run_doc["records"]["checks"].as_str().unwrap());
+
+    let mut inv = get(inv_path);
+    let block = &inv["sources"][0]["native_blocks"][0];
+    let block_id = block["id"].as_str().unwrap().to_owned();
+    let loc = json!({"basis":"native","blocks":[block_id],"native_locator":block["locator"]});
+    let absent = json!({"status":"absent_in_source","reason":"Fixture lacks header metadata.","evidence":[loc]});
+    inv["sources"][0]["header_fields"] = json!({"title":absent,"authors":absent,"affiliations":absent,"publication_date":absent});
+    inv["units"] = json!([{"id":"p1","source":"main","kind":"paragraph","evidence":[loc]}]);
+    save(inv_path, &inv);
+
+    invoke("draft_queue.DraftQueue.group", json!([queue_path,"p1",[block_id]]), json!({"kind":"paragraph","reason":"Single body paragraph"}));
+    invoke("draft_queue.DraftQueue.write_unit", json!([queue_path,"p1","Verified paragraph text. ^p1"]), json!({}));
+    let assembled = work.join("assembled.md");
+    invoke("draft_queue.DraftQueue.assemble", json!([queue_path, assembled]), json!({}));
+
+    let note_bytes = concat!(
+        "---\n",
+        "类型: \"期刊论文\"\n",
+        "年份: 2020\n",
+        "关键词: []\n",
+        "期刊名: \"Journal of Testing\"\n",
+        "---\n\n",
+        "# Test Title\n\n",
+        "## 1 正文\n",
+        "Verified paragraph text. ^p1\n\n",
+        "## 2 参考文献\n",
+        "无。\n",
+    );
+    fs::write(&candidate, note_bytes).unwrap();
+    let src_bind = check_ledger::bind_file(&source).unwrap();
+    let cand_bind = check_ledger::bind_file(&candidate).unwrap();
+
+    let ev = json!({"file": src_bind, "locator": {"kind":"native","part":"word/document.xml"}});
+    let naming_plan = invoke("format_helpers.build_naming_plan", json!([]), json!({
+        "year": 2020,
+        "author_token": "Smith",
+        "original_title": "Test Title",
+        "source_evidence": {"year": ev, "author_token": ev, "original_title": ev},
+        "delivery_path": candidate,
+        "target_directory": vault.join("文献"),
+    }));
+    invoke("complete_workflow.set_naming_plan", json!([run_path, naming_plan]), json!({}));
+
+    invoke("complete_workflow.record_check_batch", json!([]), json!({
+        "checks_path": checks_path,
+        "evidence": {"cand": {"path": cand_bind["path"], "sha256": cand_bind["sha256"], "locator": {"kind":"whole_file"}, "evidence_type":"offline_result"}},
+        "results": [{"id":"MIN-A01","status":"passed","scope":[{"object_id":cand_bind["path"],"locator":{"kind":"whole_file"}}],"evidence":["cand"],"reason":"Verified candidate file for E2E fixture."}]
+    }));
+
+    let deliveries = json!([{"unit":"p1","target":{"anchor":"p1"}}]);
+    invoke("complete_workflow.write_manifest", json!([run_path, deliveries]), json!({}));
+    let maps = invoke("complete_workflow.write_maps", json!([run_path, deliveries]), json!({}));
+    assert_eq!(maps["records_ready"], true, "{maps}");
+
+    let report = invoke("complete_workflow.inspect_workflow", json!([run_path]), json!({}));
+    assert_eq!(report["records_ready"], true, "{report}");
+    assert_eq!(report["findings"], json!([]));
+    assert_eq!(report["source_fidelity"], "not_assessed");
+
+    let required = invoke("complete_workflow.require_completed_records", json!([run_path]), json!({}));
+    assert_eq!(required["records_ready"], true);
+
+    let resumed = invoke("complete_workflow.resume_workflow", json!([run_path]), json!({}));
+    assert_eq!(resumed["phase"], "review");
+    assert_eq!(resumed["records_ready"], true);
+    assert_eq!(resumed["next_action"]["stage"], "records_complete");
+
+    let expected_name = naming_plan["filename"].as_str().unwrap();
+    let note_rel = format!("文献/{expected_name}");
+    invoke("complete_workflow.set_vault_write_scope", json!([run_path, true]), json!({
+        "authorized": true,
+        "vault_path": note_rel,
+    }));
+    let run_sha = check_ledger::bind_file(run_path).unwrap()["sha256"].as_str().unwrap().to_owned();
+
+    let planned = invoke("vault_publish.plan", json!([run_path]), json!({
+        "expected_run_sha256": run_sha,
+        "vault_root": vault,
+        "literature_relative": "文献",
+        "assets_relative": "文献/attachments",
+        "note_relative": note_rel,
+        "expected_existing_sha256": Value::Null,
+        "inspect_workflow": true,
+    }));
+    assert_eq!(planned["preconditions_ready"], true, "{planned}");
+
+    let commit = invoke("vault_publish.commit_markdown", json!([vault]), json!({
+        "backup_root": backup,
+        "literature_relative": "文献",
+        "assets_relative": "文献/attachments",
+        "note_relative": note_rel,
+        "candidate_path": candidate,
+        "expected_candidate_sha256": cand_bind["sha256"],
+        "expected_existing_sha256": Value::Null,
+        "resources": [],
+        "scope": "complete_workflow",
+        "authorized": true,
+        "workflow_run": run_path,
+        "expected_run_sha256": run_sha,
+    }));
+    assert_eq!(commit["status"], "verified_file_write", "{commit}");
+    assert_eq!(commit["scope"], "complete_workflow", "{commit}");
+    assert_eq!(commit["full_workflow_accepted"], false, "{commit}");
+    assert_eq!(commit["source_fidelity"], "not_assessed", "{commit}");
+    assert_eq!(fs::read(vault.join(&note_rel)).unwrap(), fs::read(&candidate).unwrap());
 }

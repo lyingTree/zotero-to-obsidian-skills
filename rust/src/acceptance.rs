@@ -6,7 +6,8 @@ use regex::Regex;
 use serde_json::{json,Map,Value};
 use std::{collections::{BTreeMap,BTreeSet,HashMap},fs,path::{Path,PathBuf,Component},sync::OnceLock};
 
-macro_rules! rx{($pat:expr)=>{{static R:OnceLock<Regex>=OnceLock::new();R.get_or_init(||Regex::new($pat).expect("acceptance regex"))}}}
+fn compile_rx(pat:&str)->Regex{Regex::new(pat).expect("acceptance regex")}
+macro_rules! rx{($pat:expr)=>{{static R:OnceLock<Regex>=OnceLock::new();R.get_or_init(||compile_rx($pat))}}}
 const KINDS:&[&str]=&["header","heading","list","metadata","paragraph","translator_note","figure","formula","table","reference","bibliography","zotero_link"];
 const FIELDS:&[&str]=&["schema_version","sources","required_units","required_anchors","counts","table_dimensions","resources","plan_sha256"];
 fn hash(v:&Value)->String{files::digest(&serde_json::to_vec(v).expect("JSON value"))}

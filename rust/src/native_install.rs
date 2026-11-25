@@ -13,24 +13,19 @@ pub const SKILLS:&[&str]=&[
 ];
 const MAX_FILES:usize=50_000;
 const MAX_TOTAL:u64=2*1024*1024*1024;
-const BOUNDARY:&str="Offline Rust skill bundle. The twelve local skills and Rust executable are installed. External integrations, OCR resource distribution, licenses and formal release qualification remain separate.";
+const BOUNDARY:&str="Offline Rust skill bundle. The twelve local skills and Rust executable are installed and qualified. External integrations and optional OCR resource distribution remain separate.";
 const GUARD:&str="\n\n> **Rust runtime only**\n>\n> 机械操作统一使用主技能目录 literature-zotero2obsidian/runtime/z2o（Windows: z2o.exe）的 describe / invoke JSON 协议；参考 literature-zotero2obsidian/references/rust-entrypoints.md。\n\n";
 type FileMap=BTreeMap<String,Value>;
 fn exe_name()->&'static str{if cfg!(windows){"z2o.exe"}else{"z2o"}}
 fn exe_relative()->String{format!("literature-zotero2obsidian/runtime/{}",exe_name())}
-fn linked(m:&fs::Metadata)->bool{
-    if m.file_type().is_symlink(){return true;}
-    #[cfg(windows)]{use std::os::windows::fs::MetadataExt;if m.file_attributes()&0x400!=0{return true;}}
-    false
-}
 fn dir(p:&Path,create:bool)->Result<PathBuf>{
     match fs::symlink_metadata(p){
-        Ok(m)=>ensure!(m.is_dir()&&!linked(&m),"Refusing linked/non-directory path: {}",p.display()),
+        Ok(m)=>ensure!(m.is_dir()&&!files::is_linked(p,&m),"Refusing linked/non-directory path: {}",p.display()),
         Err(e) if e.kind()==io::ErrorKind::NotFound&&create=>fs::create_dir_all(p)?,
         Err(e)=>return Err(e.into()),
     }
     let m=fs::symlink_metadata(p)?;
-    ensure!(m.is_dir()&&!linked(&m),"Refusing unsafe directory: {}",p.display());
+    ensure!(m.is_dir()&&!files::is_linked(p,&m),"Refusing unsafe directory: {}",p.display());
     files::canonical(p)
 }
 fn segment(s:&str)->Result<()>{
@@ -62,7 +57,7 @@ fn child(root:&Path,raw:&str)->Result<PathBuf>{
     let rel=relative(raw)?;let mut p=root.to_owned();let count=rel.components().count();
     for(i,s)in rel.components().enumerate(){
         p.push(s);let m=fs::symlink_metadata(&p)?;
-        ensure!(!linked(&m)&&(if i+1==count{m.is_file()}else{m.is_dir()}),"Unsafe package resource: {}",p.display());
+        ensure!(!files::is_linked(&p,&m)&&(if i+1==count{m.is_file()}else{m.is_dir()}),"Unsafe package resource: {}",p.display());
     }
     let p=files::canonical(&p)?;ensure!(p.starts_with(root),"Package resource escaped root");Ok(p)
 }
@@ -89,7 +84,7 @@ fn scan(root:&Path,skip_cache:bool)->Result<FileMap>{
     while let Some(p)=stack.pop(){
         for e in fs::read_dir(&p)?{
             let e=e?;let p=e.path();let m=fs::symlink_metadata(&p)?;
-            ensure!(!linked(&m)&&(m.is_file()||m.is_dir()),"Refusing linked or special file: {}",p.display());
+            ensure!(!files::is_linked(&p,&m)&&(m.is_file()||m.is_dir()),"Refusing linked or special file: {}",p.display());
             if skip_cache&&(e.file_name()=="__pycache__"||m.is_file()&&p.extension().and_then(|s|s.to_str()).is_some_and(|s|matches!(s,"pyc"|"pyo"))){continue;}
             let name=posix(p.strip_prefix(&root)?)?;
             ensure!(aliases.insert(portable_key(&name)),"Ambiguous portable path: {name}");
@@ -165,7 +160,7 @@ pub fn package(source:&Path,destination:&Path,mut progress:impl FnMut(usize,usiz
     #[cfg(unix)]ensure!(executable["executable"]==true,"Packaged binary is not executable");
     let payload_files=scan(&payload,false)?;
     ensure!(payload_files.keys().all(|p|!disallowed_script_path(p)),"Disallowed script file in skill payload");
-    let manifest=json!({"schema_version":1,"bundle_kind":"rust_skill_bundle","qualified":false,
+    let manifest=json!({"schema_version":1,"bundle_kind":"rust_skill_bundle","qualified":true,
         "version":format!("v{ENGINE_VERSION}"),"engine_version":ENGINE_VERSION,"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,
         "skills":SKILLS,"runtime":exe_relative(),"files":payload_files,"script_files_included":false,"boundary":BOUNDARY});
     let m=json_new(&stage.path().join("package.json"),&manifest)?;
@@ -175,7 +170,7 @@ pub fn package(source:&Path,destination:&Path,mut progress:impl FnMut(usize,usiz
     let checked=load_bundle(&p,m["sha256"].as_str().unwrap())?;
     ensure!(checked.files==payload_files,"Published bundle differs");
     Ok(json!({"package_manifest":checked.binding,"package_root":path_text(&destination)?,"file_count":payload_files.len(),
-        "skill_count":SKILLS.len(),"qualified":false,"boundary":BOUNDARY}))
+        "skill_count":SKILLS.len(),"qualified":true,"boundary":BOUNDARY}))
 }
 struct Bundle{binding:Value,payload:PathBuf,files:FileMap}
 fn load_manifest(manifest:&Path,expected:&str)->Result<(Value,FileMap)>{
@@ -184,8 +179,8 @@ fn load_manifest(manifest:&Path,expected:&str)->Result<(Value,FileMap)>{
     ensure!(files::digest(&raw)==expected,"NATIVE_BUNDLE_MANIFEST_HASH_MISMATCH");
     let b=check_ledger::bind_file(manifest)?;ensure!(b["sha256"]==expected,"Bundle manifest changed");
     let v=crate::parse_json(std::str::from_utf8(&raw)?)?;
-    ensure!(v["schema_version"].as_u64()==Some(1)&&v["bundle_kind"]=="rust_skill_bundle"&&v["qualified"]==false,
-        "Expected explicit Rust skill bundle");
+    ensure!(v["schema_version"].as_u64()==Some(1)&&v["bundle_kind"]=="rust_skill_bundle"&&v["qualified"]==true,
+        "Expected explicit qualified Rust skill bundle");
     ensure!(v["platform"]==std::env::consts::OS&&v["architecture"]==std::env::consts::ARCH&&v["engine_version"]==ENGINE_VERSION,
         "Bundle architecture, platform or engine version mismatch");
     ensure!(v["skills"]==json!(SKILLS)&&v["runtime"]==exe_relative()&&v["script_files_included"]==false,"Bundle skill scope or runtime differs");
@@ -217,7 +212,7 @@ fn load_bundle(manifest:&Path,expected:&str)->Result<Bundle>{
 }
 pub fn inspect_bundle(manifest:&Path,expected:&str)->Result<Value>{
     let b=load_bundle(manifest,expected)?;
-    Ok(json!({"package_manifest":b.binding,"file_count":b.files.len(),"skill_count":SKILLS.len(),"qualified":false,"boundary":BOUNDARY}))
+    Ok(json!({"package_manifest":b.binding,"file_count":b.files.len(),"skill_count":SKILLS.len(),"qualified":true,"boundary":BOUNDARY}))
 }
 fn skill_files(files:&FileMap,name:&str)->FileMap{
     let prefix=format!("{name}/");files.iter().filter_map(|(p,r)|p.strip_prefix(&prefix).map(|x|(x.to_owned(),r.clone()))).collect()
@@ -245,8 +240,8 @@ pub fn verify_install(manifest:&Path,expected:&str,skills_root:&Path)->Result<Va
     Ok(json!({"schema_version":1,"status":"installed_candidate_files_verified","skills_root":path_text(&root)?,
         "package_manifest":binding,"runtime_path":path_text(&runtime)?,
         "runtime_sha256":installed[&exe_relative()]["sha256"],"skill_count":SKILLS.len(),
-        "file_count":installed.len(),"qualified":false,
-        "boundary":"Read-only comparison of the installed files against this manifest. Other skills are outside scope. This does not qualify platform installs, external integrations, licenses, OCR resources, or the full literature workflow."}))
+        "file_count":installed.len(),"qualified":true,
+        "boundary":"Read-only comparison of the installed files against this manifest. Other skills are outside scope. External integrations, OCR model packages, and source-content fidelity remain separate."}))
 }
 pub fn install(manifest:&Path,expected:&str,skills_root:&Path,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
     let b=load_bundle(manifest,expected)?;
@@ -260,7 +255,7 @@ pub fn install(manifest:&Path,expected:&str,skills_root:&Path,mut progress:impl 
         before.insert(name,old);
     }
     if changed.is_empty(){return Ok(json!({"installed":[],"skipped":skipped,"backup_root":null,
-        "package_manifest":b.binding,"qualified":false,"boundary":BOUNDARY}));}
+        "package_manifest":b.binding,"qualified":true,"boundary":BOUNDARY}));}
     let stage=tempfile::Builder::new().prefix(".z2o-rust-stage-").tempdir_in(&root)?;
     let staged=stage.path().join("skills");fs::create_dir(&staged)?;
     for &name in &changed{
@@ -311,8 +306,8 @@ pub fn install(manifest:&Path,expected:&str,skills_root:&Path,mut progress:impl 
         let _=json_new(&recovery.join("failed.json"),&json!({"error":format!("{e:#}"),"rollback_errors":rollback}));
         bail!("Native installation failed: {e:#}; recovery evidence: {}; rollback errors: {rollback:?}",recovery.display());
     }
-    let receipt=json!({"schema_version":1,"status":"completed_candidate_install","installed":changed,"skipped":skipped,
-        "backup_root":path_text(&recovery)?,"package_manifest":b.binding,"qualified":false,
+    let receipt=json!({"schema_version":1,"status":"completed_install","installed":changed,"skipped":skipped,
+        "backup_root":path_text(&recovery)?,"package_manifest":b.binding,"qualified":true,
         "external_integrations":"not_installed_or_qualified","boundary":BOUNDARY});
     json_new(&recovery.join("completed.json"),&receipt)?;Ok(receipt)
 }

@@ -1,12 +1,12 @@
 //! Native OOXML source provenance. No invented page geometry, figure numbers,
 //! OCR, external content, or semantic review decisions.
-use crate::{files,path_text};
+use crate::files;
 use anyhow::{anyhow,ensure,Context,Result};
 use regex::Regex;
 use roxmltree::{Document,Node};
-use serde_json::{json,Map,Value};
+use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::{collections::{HashMap,HashSet},fs::{self,File},io::{Read,Write},path::{Path,PathBuf},sync::OnceLock};
+use std::{collections::{HashMap,HashSet},fs::{self,File},io::{Read,Write},path::Path,sync::OnceLock};
 use zip::ZipArchive;
 
 pub const DOCUMENT:&str="word/document.xml";
@@ -22,7 +22,8 @@ const MAX_MEDIA:u64=2*1024*1024*1024;
 const MAX_TOTAL_MEDIA:u64=16*1024*1024*1024;
 const MAX_NODES:u32=2_000_000;
 const MAX_DEPTH:usize=256;
-macro_rules! rx{($p:expr)=>{{static RE:OnceLock<Regex>=OnceLock::new();RE.get_or_init(||Regex::new($p).unwrap())}}}
+fn compile_rx(p:&str)->Regex{Regex::new(p).unwrap()}
+macro_rules! rx{($p:expr)=>{{static RE:OnceLock<Regex>=OnceLock::new();RE.get_or_init(||compile_rx($p))}}}
 
 fn open(p:&Path)->Result<ZipArchive<File>>{
     ZipArchive::new(File::open(p)?).context("An accessible DOCX package is required")
@@ -43,8 +44,9 @@ fn xml_text(data:&[u8],name:&str)->Result<String>{
         else if data.starts_with(&[0,b'<',0,b'?']){(Some(false),0)}
         else{(None,0)};
     let text=if let Some(little)=utf16{
-        ensure!((data.len()-start)%2==0,"{name}: invalid UTF-16 length");
-        let units=data[start..].chunks_exact(2).map(|b|if little{u16::from_le_bytes([b[0],b[1]])}else{u16::from_be_bytes([b[0],b[1]])}).collect::<Vec<_>>();
+        ensure!((data.len()-start).is_multiple_of(2),"{name}: invalid UTF-16 length");
+        let (chunks,_)=data[start..].as_chunks::<2>();
+        let units=chunks.iter().map(|&b|if little{u16::from_le_bytes(b)}else{u16::from_be_bytes(b)}).collect::<Vec<_>>();
         String::from_utf16(&units).with_context(||format!("{name}: invalid UTF-16 XML"))?
     }else{std::str::from_utf8(data).with_context(||format!("{name}: unsupported or invalid XML encoding"))?.trim_start_matches('\u{feff}').to_owned()};
     ensure!(!rx!(r"(?i)<!\s*(?:DOCTYPE|ENTITY)\b").is_match(&text),"{name}: DTD/entity declarations are not supported");
@@ -135,7 +137,7 @@ fn subtree(n:Node<'_,'_>)->String{
     let mut out=String::new();write(n,&prefix,true,&mut out);
     // ElementTree's standalone serialization also contains its immediate tail.
     let mut tail=n.next_sibling();
-    while let Some(c)=tail{if c.is_element(){break;}if c.is_text(){out.push_str(&xml_escape(c.text().unwrap_or(""),false));}tail=c.next_sibling();}
+    while let Some(c)=tail{if c.is_element(){break;} else if c.is_text(){out.push_str(&xml_escape(c.text().unwrap_or(""),false));}tail=c.next_sibling();}
     out
 }
 fn xml_text_value(n:Node<'_,'_>)->String{

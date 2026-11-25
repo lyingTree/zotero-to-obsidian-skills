@@ -23,14 +23,23 @@
 
 ## 准备来源证据
 
-完整流程在工作目录的调用脚本中导入函数，把本次参数保存在调用脚本中。保留技能目录内源码不变。独立编辑器使用时也可先将来源准备脚本复制到工作目录，再设置其顶部参数。
+完整流程通过 `z2o invoke` 调用 `prepare_source_inventory.prepare_sources`，把本次参数保存在任务 JSON 请求文件中。保留技能目录内源码不变。以下文件名和路径须替换为本次任务的实际路径：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "prepare_source_inventory.prepare_sources",
+  "args": [
+    {
+      "main": "<本次任务根>/input/main.pdf",
+      "si_a": "<本次任务根>/input/supplement.docx"
+    },
+    "<本次任务根>/work/evidence"
+  ],
+  "kwargs": {
+    "source_roles": {"main": "main", "si_a": "supplement"},
+    "glossary_path": "<实际技能根>/template/glossary.md"
+  }
 }
 ```
 
@@ -65,10 +74,10 @@
 
 ```json
 {
-  "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "basis": "native",
+  "native_locator": "<已查看 native_blocks 项的 locator>",
+  "blocks": ["<已查看 native_blocks 项的 id>"],
+  "quote": "<已查看 native_blocks 项的原文文本>"
 }
 ```
 
@@ -76,10 +85,10 @@
 
 ```json
 {
-  "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "basis": "native",
+  "native_locator": "<media_calls 项的 locator>",
+  "blocks": ["<media_calls 项所属的 block_id>"],
+  "media_call": "<media_calls 项的 id>"
 }
 ```
 
@@ -141,14 +150,17 @@
 
 主文与 SI 的对象都显式登记 `original_number`，有编号时保留原样字符串。来源没有编号时填 `null`，并填写 `original_number_reason`。这同样适用于未编号显示公式和图内独立表格，不能用生成的 Markdown 锚代替来源编号。
 
-在自己的盘点脚本中使用 `handoff_maps.make_source_unit()`，可提前检查合法单元类型、对象编号、图内表分类、表格形状和调用字段。图件的 `contains_table` 是明确的布尔值。表格的 `shape` 使用正整数；`merges` 即使为空也要显式提供。作者单位关系、来源角色和跨单元身份仍由全量交付检查核验，构造成功不代表来源内容已通过。下面变量均取自当前实际来源，不来自候选文字：
+在自己的盘点流程中使用 `handoff_maps.make_source_unit`，可提前检查合法单元类型、对象编号、图内表分类、表格形状和调用字段。图件的 `contains_table` 是明确的布尔值。表格的 `shape` 使用正整数；`merges` 即使为空也要显式提供。作者单位关系、来源角色和跨单元身份仍由全量交付检查核验，构造成功不代表来源内容已通过。下面变量均取自当前实际来源，不来自候选文字：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "handoff_maps.make_source_unit",
+  "args": ["<实际 UNIT_ID>", "<实际 SOURCE_ID>", "citation", "<实际 SOURCE_LOCATIONS>"],
+  "kwargs": {
+    "references": "<已核实的来源书目 ID 列表>",
+    "display_text": "<来源原始引文显示文字>"
+  }
 }
 ```
 
@@ -218,12 +230,17 @@
 正文写完后建立 `deliveries` 列表。每个 unit 都有一个最终目标。优先采用稳定块锚或包含足够上下文的唯一原样片段：
 
 ```json
-{
-  "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
-}
+[
+  {"unit": "main-title", "target": {"quote": "The complete final title"}},
+  {"unit": "main-ref-1", "target": {"anchor": "ref-1"}},
+  {"unit": "main-equation-1", "target": {"anchor": "eq-1"}},
+  {"unit": "main-table-1", "target": {"anchor": "tbl-1"}},
+  {
+    "unit": "main-figure-1",
+    "target": {"quote": "![[文献/attachments/2020/Example/0123456789abcdef/fig1.png]]  \n**图1：** 完整中文题注。\n^fig-1"},
+    "assets": [{"path": "文献/attachments/2020/Example/0123456789abcdef/fig1.png"}]
+  }
+]
 ```
 
 示例路径只解释格式，实际路径使用本次核实的年份、首作者与资源桶。`anchor` 只写 ID，不加 `^`。图件目标须覆盖实际嵌入语法；只选题注不足以检查图片路径。所有嵌入的本地资产都须有文件哈希。图件资产还须通过实际图像解码。
@@ -247,9 +264,17 @@
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "validate_delivery.write_delivery_manifest",
+  "args": [
+    "<实际 source-inventory.json 路径>",
+    "<实际 candidate.md 路径>",
+    "<deliveries 数组>",
+    "work/delivery-manifest.json"
+  ],
+  "kwargs": {
+    "resource_root": "<实际 output_root 或 vault 根>",
+    "translation_review_path": "work/translation-review.json"
+  }
 }
 ```
 
@@ -257,16 +282,22 @@
 
 ## 逐图视觉核对记录
 
-新生成的完整交付流程在图单元已盘点、最终图文件已准备好后调用 `prepare_figure_reviews(...)`。旧清单没有图像台账时仍可执行原有检查；这种兼容结果不表示已经完成逐图视觉核对。
+新生成的完整交付流程在图单元已盘点、最终图文件已准备好后调用 `prepare_source_inventory.prepare_figure_reviews`。旧清单没有图像台账时仍可执行原有检查；这种兼容结果不表示已经完成逐图视觉核对。
 
 以下代码从实际清单和交付映射取值，不通过图号数量猜测对象，也不生成视觉结论：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "prepare_source_inventory.prepare_figure_reviews",
+  "args": [
+    "<实际 source-inventory.json 路径>",
+    {"<图件 unit_id>": ["<相对 resource_root 的最终图片路径>"]},
+    "work/figure-review"
+  ],
+  "kwargs": {
+    "resource_root": "<实际 output_root 或 vault 根>"
+  }
 }
 ```
 
@@ -334,13 +365,13 @@ v2 的 `merges` 位于表模型顶层。v3 的 `merges` 位于对应工作表中
 
 ## 完成交付检查
 
-候选文件和清单实际存在后再绑定哈希：
+候选文件和清单实际存在后再绑定哈希并执行交付校验（先调用 `validate_delivery.write_delivery_manifest`，再调用 `validate_delivery.validate_delivery`）：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
+  "operation": "validate_delivery.validate_delivery",
+  "args": ["work/delivery-manifest.json"],
   "kwargs": {}
 }
 ```

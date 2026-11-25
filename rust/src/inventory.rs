@@ -4,7 +4,8 @@ use anyhow::Result;
 use regex::Regex;
 use serde_json::{json,Value};
 use std::{collections::{BTreeMap,HashMap},sync::OnceLock};
-macro_rules! rx{($pat:expr)=>{{static RE:OnceLock<Regex>=OnceLock::new();RE.get_or_init(||Regex::new($pat).expect("inventory regex"))}}}
+fn compile_rx(pat:&str)->Regex{Regex::new(pat).expect("inventory regex")}
+macro_rules! rx{($pat:expr)=>{{static RE:OnceLock<Regex>=OnceLock::new();RE.get_or_init(||compile_rx($pat))}}}
 #[derive(Default,Debug)]
 pub struct Inventory{
     pub anchors:BTreeMap<String,usize>,pub counts:BTreeMap<String,usize>,pub dimensions:BTreeMap<String,Value>,

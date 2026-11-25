@@ -4,7 +4,7 @@
 
 ## 统一协议
 
-先调用实际二进制 `describe`，检查 `engine=rust`、`version=v2.0.2` 和 `operations`。只有注册的操作才能调用。将 UTF-8 JSON 请求写到实际任务文件，例如：
+先调用实际二进制 `describe`，检查 `engine=rust`、`version=v2.0.3` 和 `operations`。只有注册的操作才能调用。将 UTF-8 JSON 请求写到实际任务文件，例如：
 
 ```json
 {
@@ -29,8 +29,10 @@
 | `validate_delivery.validate_delivery` | 实际 manifest_path | 无 |
 | `lint_presentation.lint_file` | 实际候选路径 | 无 |
 | `complete_workflow.resume_workflow` | 实际 run_path | 无 |
+| `complete_workflow.set_naming_plan` | 实际 run_path、naming_plan | expected_run_sha256（可选） |
 | `complete_workflow.bind_candidate` | 实际 run_path | 无 |
 | `complete_workflow.write_manifest` | 实际 run_path、deliveries | 无 |
+| `complete_workflow.set_vault_write_scope` | 实际 run_path、authorized | vault_path、expected_run_sha256（可选） |
 
 仅在候选版本固定后绑定。写交付索引前，运行入口检查实际附件、目标路径，以及来源清单引用的验收台账；未通过的预检不改动台账。相对路径以各自记录所在目录解析。首次绑定与写索引分别原子落盘，不是跨文件原子操作；如中断，保留台账目录中 `.z2o-workflow-manifest-*` 的恢复记录，按 `plan.json` 对照实际哈希后再处理，不覆盖期间的外部修改。
 
@@ -54,6 +56,7 @@
 | 文件名 | `format_helpers.build_naming_plan`、`format_helpers.validate_naming_plan` |
 | 属性、来源绑定和回读 | `deterministic_stage_checks.*` |
 | 来源、草稿队列与图件 | `prepare_source_inventory.*`、`docx_source_inventory.*`、`pdf_image_objects.*`、`draft_queue.*` |
+| OCR、表格/公式识别与 MiniCPM/Jev | 见[OCR、表格/公式识别与 MiniCPM/Jev 指南](ocr-and-minicpm.md)（15 个 `prepare_source_inventory.*` 操作） |
 | 表格、图件与篇内锚 | `format_helpers.build_rich_table_block`、`format_helpers.new_figure_table_anchor`、`format_helpers.plan_supplement_figure_caption` |
 | 库内链接身份 | `vault_library.index`、`vault_library.match_reference` |
 | 写库与恢复 | `vault_publish.plan`、`vault_publish.commit_markdown`、`vault_publish.rollback` |

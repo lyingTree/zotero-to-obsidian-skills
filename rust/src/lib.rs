@@ -175,6 +175,8 @@ pub const OPERATIONS: &[&str] = &[
     "complete_workflow.inspect_workflow",
     "complete_workflow.require_completed_records",
     "complete_workflow.write_maps",
+    "complete_workflow.set_naming_plan",
+    "complete_workflow.set_vault_write_scope",
     "accept_note.accept_note",
     "docx_source_inventory.read_docx",
     "docx_source_inventory.prepare_docx_source",
@@ -375,7 +377,7 @@ pub fn describe() -> Value {
         "schema_version": SCHEMA_VERSION, "engine": "rust", "version": format!("v{ENGINE_VERSION}"), "engine_version": ENGINE_VERSION,
         "reference_version": REFERENCE_VERSION, "platform": std::env::consts::OS,
         "architecture": std::env::consts::ARCH,
-        "pdf_backend": {"name":"pdfcraft-render","revision":pdfcraft_backend::PDFCRAFT_REV,"qualification":"candidate"}, "ocr_backend":{"name":"ppocr-rs","revision":ocr_backend::OCR_REV,"policy":"cpu_first","dynamic_runtime":"ONNX API 28; 1.28.3 or 1.32.0 candidate","gpu_required":false,"qualification":"candidate"}, "full_workflow_ready": blockers.is_empty(), "operations": OPERATIONS,
+        "pdf_backend": {"name":"pdfcraft-render","revision":pdfcraft_backend::PDFCRAFT_REV,"qualification":"qualified"}, "ocr_backend":{"name":"ppocr-rs","revision":ocr_backend::OCR_REV,"policy":"cpu_first","dynamic_runtime":"ONNX API 28; 1.28.3 or 1.32.0 candidate","gpu_required":false,"qualification":"optional_package"}, "full_workflow_ready": blockers.is_empty(), "operations": OPERATIONS,
         "release_target": manifest["release_target"], "module_status": modules,
         "required_targets": manifest["required_targets"], "release_blockers": blockers,
     })
@@ -930,6 +932,25 @@ pub fn invoke(request: Value) -> Result<Value> {
             let p=path(&c.positional("run_path")?)?;
             c.finish()?;workflow::resume(&p)?
         }
+        "complete_workflow.set_naming_plan" => {
+            let p=path(&c.positional("run_path")?)?;
+            let plan=c.positional("naming_plan")?;
+            let expected=c.option("expected_run_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_run_sha256")?)};
+            c.finish()?;
+            workflow::set_naming_plan(&p,&plan,expected.as_deref())?
+        }
+        "complete_workflow.set_vault_write_scope" => {
+            let p=path(&c.positional("run_path")?)?;
+            let write=c.positional("write_vault")?.as_bool().context("write_vault must be bool")?;
+            let auth=c.required("authorized")?.as_bool().context("authorized must be bool")?;
+            let vp=c.option("vault_path",Value::Null);
+            let vp=if vp.is_null(){None}else{Some(string(&vp,"vault_path")?)};
+            let expected=c.option("expected_run_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_run_sha256")?)};
+            c.finish()?;
+            workflow::set_vault_write_scope(&p,write,auth,vp.as_deref(),expected.as_deref())?
+        }
         "complete_workflow.write_manifest" => {
             let run=path(&c.positional("run_path")?)?;let deliveries=c.positional("deliveries")?;c.finish()?;
             json!(path_text(&delivery_prepare::write_workflow_manifest(&run,&deliveries)?)?)
@@ -1117,9 +1138,10 @@ pub fn invoke(request: Value) -> Result<Value> {
             let category=string(&c.required("category")?,"category")?;
             let mode=string(&c.option("acceleration",json!("auto")),"acceleration")?;
             let timeout=c.option("timeout_seconds",json!(300)).as_u64().context("timeout required")?;
+            let max_tokens=c.option("max_tokens",json!(minicpm::DEFAULT_MAX_TOKENS)).as_u64().context("max_tokens must be integer")?;
             c.finish()?;
             minicpm::recognize_pdf_region(&source,&output,minicpm::RegionOptions{page,bbox:&bbox,coordinates:&coords,dpi,source_sha:&source_sha,
-                manifest:&manifest,manifest_sha:&sha,category:&category,acceleration:&mode,timeout})?
+                manifest:&manifest,manifest_sha:&sha,category:&category,acceleration:&mode,timeout,max_tokens})?
         }
         "prepare_source_inventory.recognize_minicpm_region" | "prepare_source_inventory.score_jev_region" => {
             let png=path(&c.positional("image_path")?)?;
@@ -1135,8 +1157,14 @@ pub fn invoke(request: Value) -> Result<Value> {
                 let candidate=path(&c.required("candidate_text_path")?)?;
                 let candidate_sha=string(&c.required("expected_candidate_sha256")?,"expected_candidate_sha256")?;
                 c.finish()?;
-                minicpm::score(&png,&image_sha,&render,&render_sha,&candidate,&candidate_sha,&manifest,&msha,&category,&mode,timeout)?
-            }else{c.finish()?;minicpm::recognize(&png,&image_sha,&manifest,&msha,&category,&mode,timeout)?}
+                minicpm::score(&png,minicpm::ScoreOptions{original_sha:&image_sha,render:&render,render_sha:&render_sha,
+                    candidate:&candidate,candidate_sha:&candidate_sha,manifest:&manifest,manifest_sha:&msha,category:&category,acceleration:&mode,timeout})?
+            }else{
+                let max_tokens=c.option("max_tokens",json!(minicpm::DEFAULT_MAX_TOKENS)).as_u64().context("max_tokens must be integer")?;
+                c.finish()?;
+                minicpm::recognize(&png,minicpm::RecognizeOptions{image_sha:&image_sha,manifest:&manifest,manifest_sha:&msha,
+                    category:&category,acceleration:&mode,timeout,max_tokens})?
+            }
         }
         "prepare_source_inventory.inspect_ocr_package" | "prepare_source_inventory.recognize_ocr_png" => {
             let png=if op.ends_with("recognize_ocr_png"){Some(path(&c.positional("image_path")?)?)}else{None};

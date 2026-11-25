@@ -1,7 +1,7 @@
 //! Validate real rule declarations and evidence bindings. A valid ledger
 //! establishes record consistency, never the truth of a reviewer's claim.
 use crate::{check_ledger,files,path_text,parse_json,syntax};
-use anyhow::{anyhow,ensure,Context,Result};
+use anyhow::{ensure,Context,Result};
 use serde::Serialize;
 use serde_json::{json,Value};
 use std::{collections::{BTreeMap,BTreeSet,HashMap,HashSet},fs,path::{Path,PathBuf}};

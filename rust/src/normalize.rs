@@ -7,7 +7,8 @@ use regex::Regex;
 use serde_json::{json,Value};
 use std::{collections::{HashMap,HashSet},fs,io::Write,path::Path,sync::OnceLock};
 
-macro_rules! rx {($s:expr)=>{{static R:OnceLock<Regex>=OnceLock::new();R.get_or_init(||Regex::new($s).expect("static regex"))}}}
+fn compile_rx(s:&str)->Regex{Regex::new(s).expect("static regex")}
+macro_rules! rx {($s:expr)=>{{static R:OnceLock<Regex>=OnceLock::new();R.get_or_init(||compile_rx($s))}}}
 macro_rules! fx {($s:expr)=>{{static R:OnceLock<Fancy>=OnceLock::new();R.get_or_init(||Fancy::new($s).expect("static regex"))}}}
 const UNITS:&str=r"小时|分钟|秒钟|千米|公里|厘米|毫米|米|秒|节|年|milliseconds?|seconds?|minutes?|hours?|days?|weeks?|months?|years?|min|km|cm|mm|ms|kg|mg|kPa|Pa|Hz|m|h|s|g|[%％]";
 const NUMBER:&str=r"[+−-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)";
@@ -159,16 +160,12 @@ impl<'a> Pass<'a>{
                         if let Some(i)=text[b..e].find('|'){let x=b+i+1;let y=e.saturating_sub(2);if x<=y{labels.push((x,y));}}
                     }
                 }kind="link";
-            }else if raw=="<"{
-                if rx!(r"^(?:/?[A-Za-z!]|https?://)").is_match(&text[b..]){
-                    end=rx!(r#"^(?:[^>"']|"[^"]*"|'[^']*')*>"#).find(&text[b..]).map(|m|b+m.end());
-                    if let Some(c)=fx!(r"(?i)^<(code|pre)(?=[\s>])").captures(&text[a..])?{
-                        if let Some(e)=end{
-                            let tag=c.get(1).unwrap().as_str().to_ascii_lowercase();
-                            let closer=if tag=="code"{rx!(r"(?i)</code\s*>")}else{rx!(r"(?i)</pre\s*>")};
-                            end=closer.find(&text[e..]).map(|m|e+m.end());kind="html_code";
-                        }
-                    }
+            }else if raw=="<"&&rx!(r"^(?:/?[A-Za-z!]|https?://)").is_match(&text[b..]){
+                end=rx!(r#"^(?:[^>"']|"[^"]*"|'[^']*')*>"#).find(&text[b..]).map(|m|b+m.end());
+                if let (Some(e),Some(c))=(end,fx!(r"(?i)^<(code|pre)(?=[\s>])").captures(&text[a..])?){
+                    let tag=c.get(1).unwrap().as_str().to_ascii_lowercase();
+                    let closer=if tag=="code"{rx!(r"(?i)</code\s*>")}else{rx!(r"(?i)</pre\s*>")};
+                    end=closer.find(&text[e..]).map(|m|e+m.end());kind="html_code";
                 }
             }
             if end.is_none(){self.issue(&format!("UNCLOSED_{}",kind.to_uppercase()),a,"未找到可确认的闭合边界，保留余下原文。","review");end=Some(text.len());}

@@ -2,7 +2,7 @@
 //! A note footer is a locator, not proof of its publication version.
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
-use std::{collections::{BTreeMap,BTreeSet},fs,path::{Path,PathBuf}};
+use std::{collections::BTreeMap,fs,path::{Path,PathBuf}};
 use crate::{check_ledger,files,handoff_scan::Candidate,path,path_text,properties};
 const LIMIT:u64=32*1024*1024;
 const MAX_NOTES:usize=250_000;
@@ -27,8 +27,7 @@ fn contained(root:&Path,p:&Path)->Result<PathBuf>{
 }
 fn no_link(p:&Path)->Result<()>{
     let m=fs::symlink_metadata(p)?;
-    ensure!(!m.file_type().is_symlink(),"Linked vault entry requires explicit review");
-    #[cfg(windows)]{use std::os::windows::fs::MetadataExt;ensure!(m.file_attributes()&0x400==0,"Reparse point requires explicit review");}
+    ensure!(!files::is_linked(p,&m),"Linked vault entry requires explicit review");
     Ok(())
 }
 fn parse_uri(s:&str)->Option<(Option<u64>,String)>{

@@ -3,7 +3,7 @@
 use crate::{acceptance,files,normalize,parse_json,path,path_text,render,ENGINE_VERSION,REFERENCE_VERSION};
 use anyhow::{anyhow,ensure,Context,Result};
 use serde_json::{json,Map,Value};
-use std::{collections::{BTreeSet,BTreeMap},fs,io::Write,path::{Path,PathBuf}};
+use std::{collections::{BTreeSet,BTreeMap},fs,io::Write,path::Path};
 
 pub fn read_json(p:&Path)->Result<Value>{
     let bytes=fs::read(p)?;
@@ -97,7 +97,7 @@ pub fn prepare(plan:&Value,sources:&Value,output_root:&Path)->Result<Value>{
         "source_fidelity":"not_assessed"}))
 }
 fn offset(v:&Value)->Option<usize>{v.as_u64().and_then(|n|usize::try_from(n).ok())}
-fn change<'a>(row:&'a Value,len:usize,i:usize)->Result<(usize,usize,&'a str,&'a str)>{
+fn change(row:&Value,len:usize,i:usize)->Result<(usize,usize,&str,&str)>{
     let a=offset(&row["start"]).ok_or_else(||anyhow!("Invalid edit offsets at change {i}"))?;
     let b=offset(&row["end"]).ok_or_else(||anyhow!("Invalid edit offsets at change {i}"))?;
     ensure!(a<=b&&b<=len,"Invalid edit offsets at change {i}");

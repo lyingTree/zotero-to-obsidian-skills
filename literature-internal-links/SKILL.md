@@ -1,6 +1,6 @@
 ---
 name: literature-internal-links
-version: v2.0.2
+version: v2.0.3
 description: 为文献正文中的图、表、公式和引文建立指向本篇对应对象或参考条目的链接，保留原编号与引文显示形式。用于篇内导航构建和断链修复，不匹配其他文献文件。
 ---
 

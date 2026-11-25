@@ -10,11 +10,7 @@ const STATUSES:&[&str]=&["passed","failed","blocked","not_verified","not_applica
 fn nonempty(v:&Value)->bool{v.as_str().is_some_and(|s|!s.trim().is_empty())}
 pub(crate) fn no_link(p:&Path)->Result<()>{
     let m=fs::symlink_metadata(p)?;
-    ensure!(m.is_file()&&!m.file_type().is_symlink(),"Refusing linked or non-file ledger: {}",p.display());
-    #[cfg(windows)]{
-        use std::os::windows::fs::MetadataExt;
-        ensure!(m.file_attributes()&0x400==0,"Refusing a reparse-point ledger");
-    }
+    ensure!(m.is_file()&&!files::is_linked(p,&m),"Refusing linked or non-file ledger: {}",p.display());
     Ok(())
 }
 #[derive(Debug)]
@@ -62,7 +58,7 @@ fn load(p:&Path)->Result<(Value,String)>{
 }
 pub(crate) fn replace_bytes(p:&Path,before:&str,bytes:&[u8])->Result<()>{
     let mut tmp=tempfile::Builder::new().prefix(".pending-ledger-").tempfile_in(p.parent().context("ledger directory")?)?;
-    tmp.write_all(&bytes)?;tmp.as_file().sync_all()?;
+    tmp.write_all(bytes)?;tmp.as_file().sync_all()?;
     no_link(p)?;
     ensure!(files::snapshot(p)?["sha256"]==before,"Ledger changed since it was read; preserve the newer file.");
     tmp.persist(p).map_err(|e|anyhow!("Cannot publish ledger: {}",e.error))?;

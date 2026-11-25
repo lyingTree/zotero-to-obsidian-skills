@@ -1,12 +1,13 @@
 //! Read Zotero Desktop's documented local API v3 without credentials,
 //! external HTTP endpoints, redirects, attachment downloads or write methods.
 //! HTTP/1.1 parser specifically for the loopback server.
-use anyhow::{anyhow,bail,ensure,Context,Result};
+use anyhow::{bail,ensure,Context,Result};
 use serde_json::{json,Value};
 use std::{collections::{BTreeMap,BTreeSet,VecDeque},io::{BufRead,BufReader,Read,Write},net::{SocketAddr,Ipv4Addr,TcpStream},path::{Path,PathBuf},time::{Duration,Instant},fs};
-use crate::{files,check_ledger,path,path_text,metadata,pdf_structure::Pdf};
+use crate::{files,path,path_text,metadata,pdf_structure::Pdf};
 const MAX_ROWS:usize=100_000;
 const MAX_REQUESTS:usize=4096;
+const MAX_HTTP_BODY:usize=512*1024*1024;
 const PAGE:usize=100;
 const BOUNDARY:&str="Actual read-only local Zotero API records, declared fields and independently inspected local attachment bytes. No attachment downloaded, no source-language or document-version decision inferred. Older server versions do not provide a coherent local version token; this is not a database transaction.";
 fn key(s:&str)->Result<&str>{ensure!(s.len()==8&&s.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()),"Invalid Zotero object key");Ok(s)}
@@ -31,7 +32,10 @@ fn line<R:BufRead>(r:&mut R,limit:usize)->Result<Vec<u8>>{
     }
     ensure!(out.ends_with(b"\r\n"),"Malformed HTTP line");out.truncate(out.len()-2);Ok(out)
 }
-pub(crate) fn decode_http<R:BufRead>(mut reader:R)->Result<Response>{
+pub(crate) fn decode_http<R:BufRead>(reader:R)->Result<Response>{
+    decode_http_with_limit(reader,MAX_HTTP_BODY)
+}
+fn decode_http_with_limit<R:BufRead>(mut reader:R,max_body:usize)->Result<Response>{
     let status=line(&mut reader,8192)?;
     let status=std::str::from_utf8(&status)?;
     let mut fields=status.splitn(3,' ');
@@ -48,8 +52,9 @@ pub(crate) fn decode_http<R:BufRead>(mut reader:R)->Result<Response>{
         ensure!(!name.is_empty()&&name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'),"Invalid header field");
         let name=name.to_ascii_lowercase();let value=value.trim();
         ensure!(!value.chars().any(|c|c.is_control()&&c!='\t'),"Invalid HTTP header value");
-        if name=="link"{headers.entry(name).and_modify(|s|{s.push_str(", ");s.push_str(value)}).or_insert_with(||value.into());}
-        else if let Some(old)=headers.insert(name.clone(),value.into()){
+        if matches!(name.as_str(),"link"|"vary"|"cache-control"|"pragma"|"access-control-expose-headers"|"warning"){
+            headers.entry(name).and_modify(|s|{s.push_str(", ");s.push_str(value);}).or_insert_with(||value.into());
+        }else if let Some(old)=headers.insert(name.clone(),value.into()){
             ensure!(old==value,"Conflicting response header: {name}");
         }
     }
@@ -68,14 +73,17 @@ pub(crate) fn decode_http<R:BufRead>(mut reader:R)->Result<Response>{
                 loop{let tail=line(&mut reader,8192)?;budget=budget.checked_sub(tail.len()+2).context("HTTP trailers too large")?;if tail.is_empty(){break;}}
                 break;
             }
-            let start=body.len();body.resize(start+n,0);reader.read_exact(&mut body[start..])?;
+            let next_len=body.len().checked_add(n).filter(|&total|total<=max_body).context("HTTP body exceeds budget")?;
+            let start=body.len();body.resize(next_len,0);reader.read_exact(&mut body[start..])?;
             let mut crlf=[0;2];reader.read_exact(&mut crlf)?;ensure!(crlf==*b"\r\n","Malformed chunk terminator");
         }
     }else if let Some(length)=headers.get("content-length"){
         let n=length.parse::<usize>()?;
+        ensure!(n<=max_body,"HTTP body exceeds budget");
         body.resize(n,0);reader.read_exact(&mut body)?;
     }else{
-        reader.read_to_end(&mut body)?;
+        (&mut reader).take(u64::try_from(max_body).unwrap_or(u64::MAX).saturating_add(1)).read_to_end(&mut body)?;
+        ensure!(body.len()<=max_body,"HTTP body exceeds budget");
     }
     Ok(Response{headers,body})
 }
@@ -147,11 +155,28 @@ fn check_object(v:&Value,wanted:&str,kind:&str,id:u64)->Result<()>{
     let actual=v["library"]["id"].as_u64().context("Actual Zotero library identity missing")?;
     ensure!(actual>0&&(id==0&&kind=="user"||actual==id),"Zotero library identity differs");Ok(())
 }
+fn local_version_consistent(client:&Client)->bool{
+    let Some(expected_ver)=client.library_version.as_deref() else{return false;};
+    if client.observations.is_empty(){return false;}
+    let first_server=client.observations[0]["server_id"].as_str();
+    let seen_any_server=client.server_id.is_some()||client.observations.iter().any(|o|!o["server_id"].is_null());
+    client.observations.iter().all(|o|{
+        o["library_version"].as_str()==Some(expected_ver)
+            &&(!seen_any_server||(o["server_id"].as_str()==first_server&&first_server.is_some()))
+    })
+}
 fn attachment_path(raw:&Value,root:Option<&Path>,paths:&Value)->Result<Option<PathBuf>>{
     let k=key(raw["key"].as_str().context("Attachment key")?)?;
     if let Some(p)=paths.get(k){return Ok(Some(path(p)?));}
-    let Some(root)=root else{return Ok(None);};
     let mode=raw["data"]["linkMode"].as_str().unwrap_or("");
+    if mode=="linked_file"{
+        if let Some(raw_path)=raw["data"]["path"].as_str().filter(|s|!s.trim().is_empty()){
+            let p=PathBuf::from(raw_path);
+            if p.is_absolute()&&p.exists(){return Ok(Some(p));}
+        }
+        return Ok(None);
+    }
+    let Some(root)=root else{return Ok(None);};
     if !matches!(mode,"imported_file"|"imported_url"){return Ok(None);}
     let name=raw["data"]["filename"].as_str().filter(|s|!s.is_empty());
     let Some(name)=name else{return Ok(None);};
@@ -232,8 +257,7 @@ fn inspect(mut client:Client,kind:&str,id:u64,item_key:&str,storage_root:Option<
     ensure!(paths.as_object().unwrap().keys().all(|k|used.contains(k)),"Explicit attachment path refers to an unregistered child");
     let final_item=client.object(&format!("{prefix}/items/{item_key}"),item_key,kind,actual_id)?;
     ensure!(final_item==item,"Zotero parent record changed during inspection; retry");
-    let stable=client.server_id.is_some()&&client.library_version.is_some()&&client.observations.iter().all(|o|
-        o["server_id"].as_str()==client.server_id.as_deref()&&o["library_version"].as_str()==client.library_version.as_deref());
+    let stable=local_version_consistent(&client);
     Ok(json!({"schema_version":1,"raw":item,"library":final_item["library"],"item_key":item_key,
         "collection_records":collections,"collection_ancestry":ancestry,"collection_issues":issues,
         "children":children,"attachment_children":descendant,"attachments":attachments,
@@ -250,8 +274,7 @@ pub fn catalog(kind:&str,id:u64,mut progress:impl FnMut(usize,usize,&str))->Resu
     let items=client.all(&format!("{prefix}/items/top"),kind,id,&mut progress)?;
     let actual=items.first().map(|r|r["library"]["id"].as_u64().unwrap()).or(if id>0{Some(id)}else{None});
     ensure!(items.iter().all(|r|r["library"]["id"].as_u64()==actual),"Zotero catalog spans more than one actual library");
-    let stable=client.server_id.is_some()&&client.library_version.is_some()&&client.observations.iter().all(|o|
-        o["server_id"].as_str()==client.server_id.as_deref()&&o["library_version"].as_str()==client.library_version.as_deref());
+    let stable=local_version_consistent(&client);
     Ok(json!({"schema_version":1,"library":{"type":kind,"id":actual},"items":items,
         "pagination_complete":true,"local_version_consistent":stable,"api_reads":client.observations,
         "attachment_downloaded":false,"zotero_modified":false,"source_fidelity":"not_assessed","boundary":BOUNDARY}))
@@ -267,9 +290,67 @@ mod tests{
     fn bounded_http_framing(){
         let raw=b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n";
         assert_eq!(decode_http(Cursor::new(raw)).unwrap().body,b"{}");
+        let joined=b"HTTP/1.1 200 OK\r\nVary: Origin\r\nVary: Accept\r\nCache-Control: no-cache\r\nCache-Control: no-store\r\nPragma: no-cache\r\nPragma: x\r\nAccess-Control-Expose-Headers: X-A\r\nAccess-Control-Expose-Headers: X-B\r\nWarning: 199 a\r\nWarning: 199 b\r\nContent-Length: 2\r\n\r\n{}";
+        let res=decode_http(Cursor::new(joined)).unwrap();
+        assert_eq!(res.headers["vary"],"Origin, Accept");
+        assert_eq!(res.headers["cache-control"],"no-cache, no-store");
+        assert_eq!(res.headers["pragma"],"no-cache, x");
+        assert_eq!(res.headers["access-control-expose-headers"],"X-A, X-B");
+        assert_eq!(res.headers["warning"],"199 a, 199 b");
         assert!(decode_http(Cursor::new(b"HTTP/1.1 302 Found\r\nLocation: http://other/\r\n\r\n")).is_err());
         assert!(decode_http(Cursor::new(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n{}")).is_err());
         assert!(decode_http(Cursor::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n")).is_err());
+        let huge_cl=format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{{}}",MAX_HTTP_BODY+1);
+        assert!(decode_http(Cursor::new(huge_cl.as_bytes())).is_err());
+        let huge_chunk=format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{{}}\r\n0\r\n\r\n",MAX_HTTP_BODY+1);
+        assert!(decode_http(Cursor::new(huge_chunk.as_bytes())).is_err());
+        assert!(decode_http_with_limit(Cursor::new(b"HTTP/1.1 200 OK\r\n\r\nabcde"),4).is_err());
+        assert_eq!(decode_http_with_limit(Cursor::new(b"HTTP/1.1 200 OK\r\n\r\nabcd"),4).unwrap().body,b"abcd");
+    }
+    #[test]
+    fn local_version_consistency_allows_absent_server_id_but_rejects_mismatch(){
+        let addr=SocketAddr::from((Ipv4Addr::LOCALHOST,23119));
+        let mut ok_absent=Client::new(addr);
+        ok_absent.library_version=Some("12".into());
+        ok_absent.observations=vec![
+            json!({"server_id":null,"library_version":"12"}),
+            json!({"server_id":null,"library_version":"12"}),
+        ];
+        assert!(local_version_consistent(&ok_absent));
+
+        let mut mixed_present=Client::new(addr);
+        mixed_present.server_id=Some("srv-1".into());
+        mixed_present.library_version=Some("12".into());
+        mixed_present.observations=vec![
+            json!({"server_id":null,"library_version":"12"}),
+            json!({"server_id":"srv-1","library_version":"12"}),
+        ];
+        assert!(!local_version_consistent(&mixed_present));
+
+        let mut disappeared=Client::new(addr);
+        disappeared.server_id=Some("srv-1".into());
+        disappeared.library_version=Some("12".into());
+        disappeared.observations=vec![
+            json!({"server_id":"srv-1","library_version":"12"}),
+            json!({"server_id":null,"library_version":"12"}),
+        ];
+        assert!(!local_version_consistent(&disappeared));
+
+        let mut missing_ver=Client::new(addr);
+        missing_ver.observations=vec![json!({"server_id":null,"library_version":null})];
+        assert!(!local_version_consistent(&missing_ver));
+    }
+    #[test]
+    fn linked_file_resolves_absolute_path_without_storage_root(){
+        let dir=tempfile::tempdir().unwrap();
+        let file=dir.path().join("linked.pdf");
+        fs::write(&file,b"%PDF-1.4\n").unwrap();
+        let raw=json!({"key":"ATTACH09","data":{"linkMode":"linked_file","path":path_text(&file).unwrap()}});
+        let out=attachment(&raw,None,&json!({}));
+        assert_eq!(out["availability"],"readable");
+        assert_eq!(out["file"]["path"],path_text(&files::canonical(&file).unwrap()).unwrap());
+        let missing=json!({"key":"ATTACH10","data":{"linkMode":"linked_file","path":dir.path().join("missing.pdf").to_string_lossy()}});
+        assert_eq!(attachment(&missing,None,&json!({}))["availability"],"path_unresolved");
     }
     #[test]
     fn actual_loopback_read_retains_raw_item_children_ancestors_and_no_download(){

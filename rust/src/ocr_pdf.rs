@@ -4,7 +4,7 @@
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
 use std::{collections::BTreeMap,fs,io::Write,path::{Path,PathBuf}};
-use crate::{check_ledger,check_write,files,ocr_backend,pdfcraft_backend::Backend,path,path_text,parse_json,pipeline};
+use crate::{check_ledger,check_write,files,ocr_backend,pdfcraft_backend::Backend,path,path_text,parse_json};
 
 const SCHEMA:u64=1;
 const BOUNDARY:&str="Page routing and independently bound native/OCR hypotheses only. No inferred completeness, accepted translation, merged text, or source fidelity. Review scanned, hybrid, formula, table and uncertain pages against their originals.";
@@ -102,8 +102,7 @@ pub fn classify(native:&Value,structure:&Value)->Value{
 }
 fn safe_root(p:&Path)->Result<PathBuf>{
     match fs::symlink_metadata(p){
-        Ok(m)=>{ensure!(m.is_dir()&&!m.file_type().is_symlink(),"OCR output must be a real directory");
-            #[cfg(windows)]{use std::os::windows::fs::MetadataExt;ensure!(m.file_attributes()&0x400==0,"OCR output directory is a reparse point");}},
+        Ok(m)=>ensure!(m.is_dir()&&!files::is_linked(p,&m),"OCR output must be a real directory"),
         Err(e) if e.kind()==std::io::ErrorKind::NotFound=>fs::create_dir_all(p)?,
         Err(e)=>return Err(e.into())
     }

@@ -19,13 +19,8 @@ fn segment(s:&str)->Result<()>{
     Ok(())
 }
 fn relative(s:&str)->Result<PathBuf>{let mut p=PathBuf::new();for v in s.split('/'){segment(v)?;p.push(v);}Ok(p)}
-fn linked(m:&fs::Metadata)->bool{
-    if m.file_type().is_symlink(){return true;}
-    #[cfg(windows)]{use std::os::windows::fs::MetadataExt;if m.file_attributes()&0x400!=0{return true;}}
-    false
-}
 fn actual_root(p:&Path)->Result<PathBuf>{
-    let m=fs::symlink_metadata(p)?;ensure!(m.is_dir()&&!linked(&m),"Expected real directory");
+    let m=fs::symlink_metadata(p)?;ensure!(m.is_dir()&&!files::is_linked(p,&m),"Expected real directory");
     files::canonical(p)
 }
 /// Check every existing parent, including case/normalization aliases, without
@@ -44,7 +39,7 @@ fn target(root:&Path,raw:&str,directory:bool)->Result<PathBuf>{
         p.push(name);
         match fs::symlink_metadata(&p){
             Ok(m)=>{
-                ensure!(!linked(&m)&&(if directory||i+1<count{m.is_dir()}else{m.is_file()}),"Unsafe linked or wrong-type vault target");
+                ensure!(!files::is_linked(&p,&m)&&(if directory||i+1<count{m.is_dir()}else{m.is_file()}),"Unsafe linked or wrong-type vault target");
                 ensure!(files::canonical(&p)?.starts_with(root),"Target escapes vault root");
             }
             Err(e) if e.kind()==std::io::ErrorKind::NotFound=>missing=true,
@@ -54,7 +49,7 @@ fn target(root:&Path,raw:&str,directory:bool)->Result<PathBuf>{
 }
 fn record(p:&Path)->Result<Option<Value>>{
     match fs::symlink_metadata(p){
-        Ok(m)=>{ensure!(!linked(&m)&&m.is_file(),"Unsafe existing target");Ok(Some(check_ledger::bind_file(p)?))},
+        Ok(m)=>{ensure!(!files::is_linked(p,&m)&&m.is_file(),"Unsafe existing target");Ok(Some(check_ledger::bind_file(p)?))},
         Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),
         Err(e)=>Err(e.into())
     }
@@ -171,7 +166,7 @@ use std::io::{self,Write};
 const TX_BOUNDARY:&str="Exact file write/readback only. Locks coordinate native writers sharing the backup root, not external editors. Rollback preserves later user changes and all possibly shared assets. No scientific acceptance or Zotero sync is inferred.";
 const NOTE_LIMIT:u64=32*1024*1024;
 const RESOURCE_LIMIT:u64=4*1024*1024*1024;
-fn hash<'a>(v:&'a Value)->Result<&'a str>{v.as_str().filter(|s|sha(s)).context("Actual SHA-256 required")}
+fn hash(v:&Value)->Result<&str>{v.as_str().filter(|s|sha(s)).context("Actual SHA-256 required")}
 fn prior(v:&Value)->Result<Option<&str>>{if v.is_null(){Ok(None)}else{Ok(Some(hash(v)?))}}
 fn verify_prior(p:&Path,h:Option<&str>)->Result<Option<Value>>{
     let current=record(p)?;

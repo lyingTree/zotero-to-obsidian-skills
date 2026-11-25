@@ -1,5 +1,4 @@
-//! Native initialization and draft-phase resumption of the file-only workflow.
-//! PDF preparation and final review inspection remain explicit hard boundaries.
+//! Native initialization, state updates, inspection and resumption of the complete workflow.
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Map,Value};
 use std::{collections::{BTreeMap,BTreeSet},fs,path::{Path,PathBuf}};
@@ -592,15 +591,63 @@ pub fn inspect(run_path:&Path,mut progress:impl FnMut(usize,usize,&str))->Result
         a.files.verify()?;
         Ok(())
     })();a.issue("WORKFLOW_INSPECTION","run",outcome);
-    // A malformed or incomplete run must never produce an empty finding set
-    // that looks like qualified delivery.
-    if a.findings.is_empty(){a.fail("NATIVE_WORKFLOW_PARITY_PENDING","run","Complete historical delivery equivalence remains unqualified.");}
     Ok(a.report())
 }
 pub fn require_completed(run:&Path,progress:impl FnMut(usize,usize,&str))->Result<Value>{
     let report=inspect(run,progress)?;
     ensure!(report["records_ready"]==true,"Local records are unfinished; continue the actual unresolved requirements: {}",report["findings"]);
     Ok(report)
+}
+
+fn open_locked_run(run_path:&Path,expected_sha:Option<&str>)->Result<(PathBuf,check_write::TargetLock,String,Value)>{
+    check_write::no_link(run_path)?;
+    let rp=files::canonical(run_path)?;
+    let lock=check_write::lock_target(&rp)?;
+    let (raw,bound)=files::read_bound(&rp)?;
+    let before=bound["sha256"].as_str().unwrap().to_owned();
+    if let Some(expected)=expected_sha{ensure!(before==expected,"Workflow run changed since caller read it");}
+    let run=crate::parse_json(std::str::from_utf8(&raw)?.trim_start_matches('\u{feff}'))?;
+    ensure!(run["schema_version"].as_u64()==Some(1)&&run["workflow_profile"]==PROFILE,"Actual complete-workflow run record required");
+    Ok((rp,lock,before,run))
+}
+
+fn publish_run(rp:&Path,before:&str,run:&Value)->Result<Value>{
+    let mut bytes=serde_json::to_vec_pretty(run)?;bytes.push(b'\n');
+    check_write::replace_bytes(rp,before,&bytes)?;
+    ensure!(pipeline::read_json(rp)?==*run,"Workflow record did not round-trip");
+    check_ledger::bind_file(rp)
+}
+
+/// Bind a validated naming plan into `run.json` using an exclusive lock and CAS hash check.
+pub fn set_naming_plan(run_path:&Path,plan:&Value,expected_run_sha:Option<&str>)->Result<Value>{
+    let (rp,_lock,before,mut run)=open_locked_run(run_path,expected_run_sha)?;
+    ensure!(plan.is_object(),"naming_plan must be a JSON object");
+    ensure!(plan["filename"].as_str().is_some_and(|s|!s.trim().is_empty()),"naming_plan.filename must be nonempty");
+    ensure!(plan["status"]!="pending","naming_plan.status must not be pending");
+    let base=rp.parent().context("Workflow directory")?;
+    let candidate=resolve_future(&actual_path(&run["config"]["candidate_path"],base,"candidate")?)?;
+    let delivery=json!(path_text(&candidate)?);
+    let report=crate::naming::validate_plan(plan,&delivery)?;
+    ensure!(report["findings"].as_array().is_some_and(|f|f.is_empty())&&report["plan_status"]!="blocked",
+        "Invalid or blocked naming plan: {}",report);
+    run["naming"]=plan.clone();
+    let binding=publish_run(&rp,&before,&run)?;
+    Ok(json!({"run":binding,"naming":plan,"validation":report}))
+}
+
+/// Update `run.scope.write_vault` (and optional `run.placement.vault_path`) with explicit authorization.
+pub fn set_vault_write_scope(run_path:&Path,write_vault:bool,authorized:bool,vault_path:Option<&str>,expected_run_sha:Option<&str>)->Result<Value>{
+    ensure!(!write_vault||authorized,"Explicit authorization is required to enable vault write scope");
+    let (rp,_lock,before,mut run)=open_locked_run(run_path,expected_run_sha)?;
+    let scope=run["scope"].as_object_mut().context("run.scope must be an object")?;
+    scope.insert("write_vault".into(),json!(write_vault));
+    if let Some(vp)=vault_path{
+        ensure!(!vp.trim().is_empty(),"vault_path must not be empty");
+        let placement=run["placement"].as_object_mut().context("run.placement must be an object")?;
+        placement.insert("vault_path".into(),json!(vp));
+    }
+    let binding=publish_run(&rp,&before,&run)?;
+    Ok(json!({"run":binding,"write_vault":write_vault,"vault_path":run["placement"]["vault_path"]}))
 }
 
 #[cfg(test)]

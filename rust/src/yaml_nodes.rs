@@ -30,7 +30,7 @@ impl Document{
         let mut seen=HashSet::new();
         while let Some(Node{kind:Kind::Alias(anchor),..})=self.nodes.get(id){
             if !seen.insert(id){return None;}
-            id=*self.anchors.get(anchor)?;
+            id = *self.anchors.get(anchor)?;
         }Some(id)
     }
     pub fn line(&self,id:Option<usize>)->Option<usize>{self.nodes.get(self.resolve(id?)?).map(|n|n.line)}
@@ -45,7 +45,7 @@ impl Document{
         if !seen.insert(id){return None;}
         let Kind::Map(items)=&self.nodes[id].kind else{return None;};
         let mut merges=Vec::new();
-        for pair in items.chunks_exact(2){
+        for pair in items.as_chunks::<2>().0{
             let key=self.resolve(pair[0])?;
             let Kind::Scalar(value,merge)=&self.nodes[key].kind else{continue;};
             if *merge{merges.push(pair[1]);}
@@ -106,9 +106,9 @@ pub fn load(payload:&str)->Result<Document,Failure>{
     // second-key source mark, not a guessed document line.
     for node in &doc.nodes{
         let Kind::Map(items)=&node.kind else{continue;};
-        if items.len()%2!=0{return Err(failure(node.line,"incomplete YAML mapping"));}
+        if !items.len().is_multiple_of(2){return Err(failure(node.line,"incomplete YAML mapping"));}
         let mut seen=HashSet::new();
-        for pair in items.chunks_exact(2){
+        for pair in items.as_chunks::<2>().0{
             let Some(key)=doc.resolve(pair[0])else{return Err(failure(doc.nodes[pair[0]].line,"unresolved YAML key alias"));};
             if let Kind::Scalar(value,false)=&doc.nodes[key].kind{
                 if !seen.insert(value){return Err(failure(doc.nodes[pair[0]].line,format!("duplicate key: {value}")));}

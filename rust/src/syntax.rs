@@ -20,8 +20,8 @@ pub fn lines(text:&str)->Vec<Line>{
     result
 }
 pub fn row_at(rows:&[Line],at:usize)->usize{rows.partition_point(|r|r.start<=at).saturating_sub(1)}
-pub fn body<'a>(text:&'a str,row:Line)->&'a str{&text[row.start..row.body_end]}
-pub fn whole<'a>(text:&'a str,row:Line)->&'a str{&text[row.start..row.end]}
+pub fn body(text:&str,row:Line)->&str{&text[row.start..row.body_end]}
+pub fn whole(text:&str,row:Line)->&str{&text[row.start..row.end]}
 pub fn ch_at(text:&str,p:usize)->Option<char>{text.get(p..)?.chars().next()}
 pub fn escaped(text:&str,p:usize)->bool{text.as_bytes()[..p].iter().rev().take_while(|b|**b==b'\\').count()%2==1}
 pub fn balanced(text:&str,pos:usize,open:char,close:char)->Option<usize>{

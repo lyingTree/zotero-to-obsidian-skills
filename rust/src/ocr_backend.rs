@@ -95,11 +95,7 @@ fn local(root:&Path,v:&Value)->Result<PathBuf>{
         }
         p.push(part);
         let meta=fs::symlink_metadata(&p)?;
-        ensure!(!meta.file_type().is_symlink(),"Refusing a linked OCR resource");
-        #[cfg(windows)]{
-            use std::os::windows::fs::MetadataExt;
-            ensure!(meta.file_attributes()&0x400==0,"Refusing a reparse-point OCR resource");
-        }
+        ensure!(!files::is_linked(&p,&meta),"Refusing a linked or reparse-point OCR resource");
     }
     check_write::no_link(&p)?;
     let p=files::canonical(&p)?;
@@ -184,11 +180,7 @@ fn all_package_files(data:&Value,root:&Path,manifest:&Value)->Result<std::collec
 }
 fn real_directory(p:&Path)->Result<()>{
     let meta=fs::symlink_metadata(p)?;
-    ensure!(meta.is_dir()&&!meta.file_type().is_symlink(),"OCR store must be a real directory: {}",p.display());
-    #[cfg(windows)]{
-        use std::os::windows::fs::MetadataExt;
-        ensure!(meta.file_attributes()&0x400==0,"Refusing a reparse-point OCR directory");
-    }
+    ensure!(meta.is_dir()&&!files::is_linked(p,&meta),"OCR store must be a real directory: {}",p.display());
     Ok(())
 }
 fn check_installed_contents(root:&Path,expected:&std::collections::BTreeMap<String,Value>)->Result<()>{
@@ -575,7 +567,7 @@ fn read_rgb(png:&Path,expected_sha:Option<&str>)->Result<(image::RgbImage,Value)
         drop(raw);
         // Explicitly composite transparency over white, rather than silently
         // ignoring alpha or allowing hidden pixels into an OCR hypothesis.
-        let rgb:Vec<u8>=rgba.as_raw().chunks_exact(4).flat_map(|p|{
+        let rgb:Vec<u8>=rgba.as_raw().as_chunks::<4>().0.iter().flat_map(|p|{
             let a=u32::from(p[3]);[0usize,1,2].map(|c|((u32::from(p[c])*a+255*(255-a)+127)/255) as u8)
         }).collect();
         drop(rgba);

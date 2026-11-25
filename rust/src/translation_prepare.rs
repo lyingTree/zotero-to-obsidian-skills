@@ -1,6 +1,6 @@
 //! Pending translation scaffolds and source location expansion. No generated
 //! decision, terminology hit, or source location asserts semantic correctness.
-use crate::{docx,files,path_text,pipeline};
+use crate::{docx,files,pipeline};
 use anyhow::{anyhow,ensure,Context,Result};
 use serde_json::{json,Map,Value};
 use std::{collections::{HashMap,HashSet},fs,io::Write,path::{Path,PathBuf}};

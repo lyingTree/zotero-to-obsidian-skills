@@ -82,7 +82,7 @@ impl<'a> Targets<'a>{
                     .with_context(||format!("{id}: candidate lines need a valid one-based inclusive range."))?;
                 let digest=self.line_hashes.entry(bounds).or_insert_with(||{
                     let (a,b)=bounds;
-                    files::digest(self.candidate[self.lines[a-1].start..self.lines[b-1].end].as_bytes())
+                    files::digest(self.candidate.as_bytes()[self.lines[a-1].start..self.lines[b-1].end].as_ref())
                 });
                 ensure!(target["sha256"]==digest.as_str(),"{id}: candidate line-range sha256 does not match the actual text.");
             }

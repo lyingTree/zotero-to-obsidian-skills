@@ -24,14 +24,31 @@
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "deterministic_stage_checks.build_properties",
+  "args": ["<待写入属性的 Markdown 原文文本>"],
+  "kwargs": {
+    "item_type": "<已确认文献类型>",
+    "confirmed": "<已核定的当前来源模板字段对象>"
+  }
 }
 ```
-    record_file_checks(checks_path, work_root.joinpath("properties-file-checks.json"),
-                       stage="properties", before=content_input, after=properties_draft,
-                       mode="new", item_type=confirmed_item_type)
+
+将返回文本独占写入目标草稿文件后，再分别调用 `deterministic_stage_checks.audit_properties`（`args: ["<before 文件>", "<after 文件>"]`，`kwargs: {"mode": "new", "item_type": "<已确认文献类型>"}`）与 `deterministic_stage_checks.record_file_checks` 写入审计记录：
+
+```json
+{
+  "schema_version": 1,
+  "operation": "deterministic_stage_checks.record_file_checks",
+  "args": ["<实际 checks_path>", "work/properties-file-checks.json"],
+  "kwargs": {
+    "stage": "properties",
+    "before": "<before 文件>",
+    "after": "<after 文件>",
+    "mode": "new",
+    "item_type": "<已确认文献类型>"
+  }
+}
+```
 
 修复模式调用 repair_properties(content_input.read_bytes())，另存候选，然后用 mode="repair" 复核。函数不重序列化未知属性，不猜测属性值；源语义或无法独立判断的项仍需核验。记录函数仅接收阶段与实际输入路径，由内部审计函数实时计算；不接收模型撰写的决策报告。报告及输入文件均进入哈希绑定证据。先确保当前任务独占检查账本的写入权限，已解决的其他项不会批量替换，绑定文件变化或冲突会阻断。单条记录只对应一个实际 A ID；C ID 的辅助结果不会自动提升为未分类约束的通过。
 

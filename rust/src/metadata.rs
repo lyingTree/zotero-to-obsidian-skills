@@ -37,7 +37,7 @@ pub fn collection_ancestry(item:&Value,records:&Value,complete:bool)->Result<Val
     for record in records{
         let key=record.get("key").and_then(Value::as_str).filter(|s|!s.is_empty()).ok_or_else(||anyhow!("collection key missing or inconsistent"))?;
         let data=record.get("data").filter(|v|v.is_object()).ok_or_else(||anyhow!("invalid collection API record"))?;
-        ensure!(data.get("key").map_or(true,|v|v.as_str()==Some(key)),"collection key missing or inconsistent");
+        ensure!(data.get("key").is_none_or(|v|v.as_str()==Some(key)),"collection key missing or inconsistent");
         ensure!(!index.contains_key(key),"duplicate collection key: {key}");
         if record.get("library").and_then(identity)!=Some(id){
             issues.push(json!({"key":key,"reason":"collection_library_unverified_or_different"}));continue;

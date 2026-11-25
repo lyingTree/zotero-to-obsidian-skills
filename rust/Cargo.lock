@@ -3328,7 +3328,7 @@ dependencies = [
 
 [[package]]
 name = "z2o-native"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3506,12 +3506,3 @@ dependencies = [
  "zune-core",
 ]
 
-[[patch.unused]]
-name = "krilla"
-version = "0.8.2"
-source = "git+https://github.com/storytold/craft-libs?rev=0a6e42b80bfd586aee6ee1144aa98cf1ea37a844#0a6e42b80bfd586aee6ee1144aa98cf1ea37a844"
-
-[[patch.unused]]
-name = "linesweeper"
-version = "0.5.0"
-source = "git+https://github.com/storytold/craft-libs?rev=0a6e42b80bfd586aee6ee1144aa98cf1ea37a844#0a6e42b80bfd586aee6ee1144aa98cf1ea37a844"

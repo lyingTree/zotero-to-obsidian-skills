@@ -117,6 +117,7 @@ pub struct RegionOptions<'a>{
     pub page:u64,pub bbox:&'a Value,pub coordinate_system:&'a Value,pub destination:&'a Path,pub margin:f64,pub dpi:u64,
     pub expected:Option<&'a str>,pub context:Option<&'a Path>,pub context_margin:f64,pub context_dpi:u64,
 }
+#[allow(clippy::too_many_arguments)]
 pub fn inspect_crop_boundaries(source:&Path,page:u64,bbox:&Value,coords:&Value,dest:&Path,margin:f64,dpi:u64,expected:Option<&str>)->Result<Value>{
     ensure!(*coords==coordinates()&&(72..=1200).contains(&dpi)&&margin.is_finite()&&margin>0.,"Invalid coordinates, context dpi or margin");
     let mut pdf=Backend::open(source,expected)?;let (_,_,bounds,_)=pdf.geometry(page)?;

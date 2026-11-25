@@ -82,17 +82,18 @@ fn citation_preview_grammar_applies_to_unmapped_delivery_objects_and_calls() {
         ("ref-note",false), ("ref-0",false), ("ref-3-part-2",false), ("ref-X-0002",false),
     ].into_iter().enumerate() {
         let report=run(i,anchor,false,false);
-        assert_eq!(has(&report,"OUTPUT_OBJECT_UNMAPPED",anchor),recognized,"{report}");
-        assert_eq!(has(&report,"OUTPUT_CITATION_UNMAPPED",anchor),recognized,"{report}");
+        assert!(has(&report,"OUTPUT_OBJECT_UNMAPPED",anchor)==recognized,"{report}");
+        assert!(has(&report,"OUTPUT_CITATION_UNMAPPED",anchor)==recognized,"{report}");
         assert!(!has(&report,"DELIVERY_HANDOFF","manifest"),"{report}");
-        assert!(has(&report,"NATIVE_DELIVERY_PARITY_PENDING","manifest"));
-        assert_eq!(report["structurally_consistent"],false);
+        assert_eq!(report["structurally_consistent"],!recognized,"{report}");
     }
     // A genuine mapped reference and its mapped caller remain valid.
     let mapped=run(7,"ref1",true,true);
     assert!(!has(&mapped,"OUTPUT_OBJECT_UNMAPPED","ref1"));
     assert!(!has(&mapped,"OUTPUT_CITATION_UNMAPPED","ref1"));
     assert!(!has(&mapped,"DELIVERY_HANDOFF","manifest"),"{mapped}");
+    assert_eq!(mapped["structurally_consistent"],true,"{mapped}");
+    assert_eq!(mapped["native_subset_consistent"],true,"{mapped}");
     // Registered explicit bibliography IDs remain recognized even when their
     // candidate anchor is custom and not understood by Citation Preview.
     let custom=run(8,"shared-reading-note",true,false);
@@ -143,6 +144,7 @@ fn bound_delivery_manifests_reject_unknown_versions_and_report_malformed_edge_po
         }else{
             assert!(report["stage_reports"]["source_provenance"].is_null(),"{report}");
         }
-        assert!(findings.iter().any(|x|x["code"]=="NATIVE_DELIVERY_PARITY_PENDING"));
+        assert!(!findings.iter().any(|x|x["code"]=="NATIVE_DELIVERY_PARITY_PENDING"),"{report}");
+        assert_eq!(report["structurally_consistent"],false,"{report}");
     }
 }

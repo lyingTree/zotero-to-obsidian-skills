@@ -302,8 +302,9 @@ fn pdf_figure_locators_validate_actual_calls_in_the_native_cli(){
         let findings=r["findings"].as_array().unwrap();
         assert_eq!(findings.iter().any(|f|f["code"]=="SOURCE_UNIT"&&f["object_id"]=="image-unit"),!accepted,"{r}");
         assert_eq!(findings.iter().any(|f|f["code"]=="DELIVERY_HANDOFF"&&f["message"].as_str().unwrap().contains("MAP_UNIT_XREF")),!accepted,"{r}");
-        assert!(findings.iter().any(|f|f["code"]=="PDF_FULL_PROVENANCE_UNMIGRATED"));
-        assert!(findings.iter().any(|f|f["code"]=="NATIVE_DELIVERY_PARITY_PENDING"));
+        assert!(!findings.iter().any(|f|f["code"]=="PDF_FULL_PROVENANCE_UNMIGRATED"),"{r}");
+        assert!(!findings.iter().any(|f|f["code"]=="NATIVE_DELIVERY_PARITY_PENDING"),"{r}");
+        assert_eq!(r["stage_reports"]["source_provenance"]["source_checks_complete"],true,"{r}");
     }
 }
 
@@ -370,7 +371,8 @@ fn figure_review_writer_and_audit_share_physical_pdf_locators(){
     let findings=reply["result"]["findings"].as_array().unwrap();
     assert!(findings.iter().any(|f|f["code"]=="FIG_REVIEW_RECORD"&&f["object_id"]=="fig"&&
         f["message"].as_str().unwrap().contains("bbox or image_xref")),"{reply}");
-    assert!(findings.iter().any(|f|f["code"]=="NATIVE_DELIVERY_PARITY_PENDING"));
+    assert!(!findings.iter().any(|f|f["code"]=="NATIVE_DELIVERY_PARITY_PENDING"),"{reply}");
+    assert_eq!(reply["result"]["structurally_consistent"],false,"{reply}");
 
     // A hash-bound but malformed snapshot must yield a finding, not panic.
     save(&snap,&json!(["invalid snapshot"]));

@@ -6,7 +6,7 @@ type Rect=(usize,usize,usize,usize);
 #[derive(Clone,Debug,serde::Serialize,PartialEq,Eq)]
 pub struct GridFinding{pub code:&'static str,pub identity:String,pub message:String}
 fn fail(out:&mut Vec<GridFinding>,code:&'static str,id:&str,message:impl Into<String>){out.push(GridFinding{code,identity:id.into(),message:message.into()});}
-fn ids<'a>(items:&'a[Value],rows:bool)->Option<Vec<&'a str>>{
+fn ids(items:&[Value],rows:bool)->Option<Vec<&str>>{
     let mut result=Vec::with_capacity(items.len());let mut seen=HashSet::new();
     for row in items{
         let key=row["id"].as_str().filter(|s|!s.is_empty()&&(!rows||*s!="header"))?;

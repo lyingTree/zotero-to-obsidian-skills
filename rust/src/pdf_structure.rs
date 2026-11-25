@@ -40,7 +40,7 @@ fn inherited<'a>(doc:&'a Document,mut id:ObjectId,key:&[u8])->Result<Option<&'a 
         ensure!(seen.insert(id),"PDF page-tree cycle");
         let d=doc.get_object(id)?.as_dict()?;
         if let Ok(value)=d.get(key){return Ok(Some(deref(doc,value)?));}
-        match d.get(b"Parent"){Ok(Object::Reference(p))=>id=*p,Ok(_)=>return Err(anyhow!("Invalid PDF page parent")),Err(_)=>return Ok(None)}
+        match d.get(b"Parent"){Ok(Object::Reference(p))=>id = *p,Ok(_)=>return Err(anyhow!("Invalid PDF page parent")),Err(_)=>return Ok(None)}
     }Err(anyhow!("PDF page-tree depth exceeds limit"))
 }
 fn ordered(b:[f64;4])->[f64;4]{[b[0].min(b[2]),b[1].min(b[3]),b[0].max(b[2]),b[1].max(b[3])]}
@@ -80,6 +80,7 @@ impl Pdf{
     }
     pub(crate) fn geometry_record(&self,n:u64)->Result<Value>{Ok(self.geometry(n)?.value())}
     pub fn len(&self)->usize{self.pages.len()}
+    pub fn is_empty(&self)->bool{self.pages.is_empty()}
     fn page(&self,n:u64)->Result<ObjectId>{let n=u32::try_from(n)?;self.pages.get(&n).copied().context("page_number must name an actual PDF page")}
     fn geometry(&self,n:u64)->Result<Geometry>{
         let id=self.page(n)?;let doc=&self.doc;
@@ -220,6 +221,7 @@ impl Scan<'_>{
     fn issue(&mut self,code:&str,container:ObjectId,index:usize,reason:String){
         self.issues.push(json!({"code":code,"container_xref":container.0,"operation_index":index,"reason":reason}));
     }
+    #[allow(clippy::too_many_arguments)]
     fn walk(&mut self,bytes:&[u8],resources:&Dictionary,container:ObjectId,mut ctm:Matrix,forms:&[ObjectId],names:&[String],effects:&[String],clips:&[Clip])->Result<()>{
         ensure!(forms.len()<=MAX_FORM&&bytes.len()<=MAX_CONTENT,"PDF content/form limit exceeded");
         let content=Content::decode(bytes)?;let pdf=self.pdf;let doc=&pdf.doc;
@@ -535,7 +537,7 @@ fn image_samples(doc:&Document,stream:&lopdf::Stream,mask:bool)->Result<Samples>
         }else{
             let a=v.as_array()?;
             ensure!(a.len()==2*channels,"PAGE_RENDER_REQUIRED: invalid Decode array length");
-            for (channel,pair) in a.chunks_exact(2).enumerate(){
+            for (channel,pair) in a.as_chunks::<2>().0.iter().enumerate(){
                 let low=number(deref(doc,&pair[0])?)?;let high=number(deref(doc,&pair[1])?)?;
                 ensure!((low,high)==(0.,1.)||(low,high)==(1.,0.),"PAGE_RENDER_REQUIRED: non-identity/non-inverting Decode");
                 invert[channel]=low==1.;
@@ -757,31 +759,13 @@ fn finite_rect(v:&Value)->Option<[f64;4]>{
 pub fn valid_pdf_bbox(bbox:&Value,page_rect:&Value)->bool{
     finite_rect(bbox).zip(finite_rect(page_rect)).is_some_and(|(b,p)|inside(p,b))
 }
-#[cfg(test)]
-mod geometry_helpers_tests{
-    use super::*;
-    #[test]
-    fn reject_invalid_and_out_of_page_boxes(){
-        let page=json!([0,0,100,200]);
-        assert!(valid_pdf_bbox(&json!([0,0,100,200]),&page));
-        for b in [json!([0,0,101,200]),json!([1,0,0,200]),json!([0,0,0,200]),json!([false,0,99,200]),json!([0,0,null,200]),json!([0,0,1])]{assert!(!valid_pdf_bbox(&b,&page));}
-        assert!(!valid_pdf_bbox(&page,&json!([0,0,0,0])));
-    }
-}
-
 
 /// Retain the actual invoked object and optional mask streams in a source-
 /// scoped immutable object store. Native standalone images are supplementary
 /// candidates, not replacements for the raw streams or rendered page.
 fn object_store_dir(p:&Path)->Result<PathBuf>{
     match fs::symlink_metadata(p){
-        Ok(m)=>{
-            ensure!(m.is_dir()&&!m.file_type().is_symlink(),"Refusing linked/non-directory image object store");
-            #[cfg(windows)]{
-                use std::os::windows::fs::MetadataExt;
-                ensure!(m.file_attributes()&0x400==0,"Refusing reparse-point image object store");
-            }
-        },
+        Ok(m)=>ensure!(m.is_dir()&&!files::is_linked(p,&m),"Refusing linked/non-directory image object store"),
         Err(e) if e.kind()==std::io::ErrorKind::NotFound=>fs::create_dir_all(p)?,
         Err(e)=>return Err(e.into())
     }
@@ -828,8 +812,10 @@ pub fn index_page_with_objects(source:&Path,page:u64,object_directory:Option<&Pa
         let xref=u32::try_from(row["image_xref"].as_u64().context("Actual image XRef")?)?;
         let generation=u16::try_from(row["generation"].as_u64().context("Actual generation")?)?;
         let id=(xref,generation);
-        if !streams.contains_key(&id){streams.insert(id,store_stream(&pdf,id,&root,&before)?);}
-        let raw=&streams[&id];
+        let raw=match streams.entry(id){
+            std::collections::btree_map::Entry::Occupied(e)=>e.into_mut(),
+            std::collections::btree_map::Entry::Vacant(e)=>e.insert(store_stream(&pdf,id,&root,&before)?),
+        };
         ensure!(raw["encoded_stream_sha256"]==row["encoded_stream_sha256"],"Actual encoded object differs from index");
         row["encoded_stream"]=raw.clone();
         // Soft and explicit masks are independent object dependencies;
@@ -839,13 +825,11 @@ pub fn index_page_with_objects(source:&Path,page:u64,object_directory:Option<&Pa
             if let Some(x)=locator["xref"].as_u64(){
                 let mid=(u32::try_from(x)?,u16::try_from(locator["generation"].as_u64().context("Mask generation")?)?);
                 ensure!(mid!=id,"Recursive image mask");
-                if !streams.contains_key(&mid){
-                    match store_stream(&pdf,mid,&root,&before){
-                        Ok(v)=>{streams.insert(mid,v);},
-                        Err(e)=>{streams.insert(mid,json!({"image_xref":mid.0,"generation":mid.1,"status":"unresolved","reason":format!("{e:#}")}));},
-                    }
-                }
-                row[format!("{key}_stream")]=streams[&mid].clone();
+                let entry=streams.entry(mid).or_insert_with(||match store_stream(&pdf,mid,&root,&before){
+                    Ok(v)=>v,
+                    Err(e)=>json!({"image_xref":mid.0,"generation":mid.1,"status":"unresolved","reason":format!("{e:#}")}),
+                });
+                row[format!("{key}_stream")]=entry.clone();
             }else if locator["direct_or_other"]==true{
                 row[format!("{key}_stream")]=json!({"status":"unresolved_direct_or_other","review_required":true});
             }
@@ -866,4 +850,15 @@ pub fn index_page_with_objects(source:&Path,page:u64,object_directory:Option<&Pa
     result["source_fidelity"]=json!("not_assessed");
     result["image_evidence_ready"]=json!(false);
     Ok(result)
+}
+#[cfg(test)]
+mod geometry_helpers_tests{
+    use super::*;
+    #[test]
+    fn reject_invalid_and_out_of_page_boxes(){
+        let page=json!([0,0,100,200]);
+        assert!(valid_pdf_bbox(&json!([0,0,100,200]),&page));
+        for b in [json!([0,0,101,200]),json!([1,0,0,200]),json!([0,0,0,200]),json!([false,0,99,200]),json!([0,0,null,200]),json!([0,0,1])]{assert!(!valid_pdf_bbox(&b,&page));}
+        assert!(!valid_pdf_bbox(&page,&json!([0,0,0,0])));
+    }
 }

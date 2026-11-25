@@ -1,6 +1,6 @@
 //! Translation-review record validation. Resolved locators, scope closure and
 //! recorded decisions never establish semantic fidelity or observed actions.
-use crate::{files,parse_json,path,path_text,syntax,docx,pdf_structure,translation_prepare};
+use crate::{files,parse_json,syntax,docx,pdf_structure,translation_prepare};
 use anyhow::{anyhow,ensure,Context,Result};
 use serde::Serialize;
 use serde_json::{json,Map,Value};

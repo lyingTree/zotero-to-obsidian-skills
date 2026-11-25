@@ -1,8 +1,8 @@
 <%*
 /* 用法：Templater 新建笔记或在空白笔记插入本模板。书目从 Zotero Desktop 本地 API 读取，需已启用本地 API。
-单位、邮箱、通讯身份与中文译名由提示框中的原文核对资料提供；这些不是 Templater 内置变量。
+单位、邮箱、通讯身份与中文译名由提示框中的原文核对资料提供；这些不是 Templater 内置变量。参考文献区域保留原文标题、不加中文译名（脚本会自动移除参考文献小节内全角括号（）中的中文翻译片段，英文半角括号原样保留）。
 不得把参考文献中的邮箱或来源不明的邮箱填写为作者邮箱。没有证据时保留空邮箱，不加通讯星号。
-完整正文由最后一个多行提示框输入。有摘要时，只写一个独立的「## 摘要」，下一行紧接摘要首段，移除段首摘要标签；原文无摘要时省略。正文从首个 H2 起编号。学位论文摘要后直接进入第一章；如有引言，先进入引言再进入第一章，不插入目录等前置内容；不加引文行、页码映射、处理说明和书目备存。图像内文字保持原样，不追加无来源的图内转录或解释。图内真正数据表另转为中文可编辑 Rich Table 副本，并保留完整原图。保留图与题注、表格和公式。仅删除经原文确认的段落编号。标题与数字引文按模板输入提示预排。参考文献区一律为逐条编号列表「1. 2. 3. …」，每条一行编号条目，紧接参考文献标题；禁止使用 [^脚注] 形式罗列参考文献（若原文/旧稿用 [^obsref-N] 之类脚注定义整批参考文献，须改为编号列表）。作者—年份引文只链接原显示文字，如 [Hines (1960)](<#^ref-22>)、（[Hines, 1960](<#^ref-22>)）。同作者多年份分别链接，如（[Emanuel, 2005](<#^ref-1>), [2013](<#^ref-2>)）。作者—年份引文及原刊脚注保留原形式。citationLinks 只处理待链接的作者—年份引文。
+完整正文由最后一个多行提示框输入。有摘要时，只写一个独立的「## 摘要」，下一行紧接摘要首段，移除段首摘要标签；原文无摘要时省略。正文从首个 H2 起编号。学位论文摘要后直接进入第一章；如有引言，先进入引言再进入第一章，不插入目录等前置内容；不加引文行、页码映射、处理说明和书目备存。图像内文字保持原样，不追加无来源的图内转录或解释。图内真正数据表另转为中文可编辑 Rich Table 副本，并保留完整原图。保留图与题注、表格和公式。仅删除经原文确认的段落编号。标题与数字引文按模板输入提示预排。参考文献区一律为逐条编号列表「1. 2. 3. …」，每条一行编号条目，紧接参考文献标题；禁止使用 [^脚注] 形式罗列参考文献（若原文/旧稿用 [^obsref-N] 之类脚注定义整批参考文献，须改为编号列表）。作者—年份引文只链接原显示文字，如 [Hines (1960)](<#^ref-22>)、（[Hines, 1960](<#^ref-22>)）。同作者多年份分别链接，如（[Emanuel, 2005](<#^ref-1>), [2013](<#^ref-2>)）。作者—年份引文及原刊脚注保留原形式。参考文献可靠匹配时用完整条目信息作为库内链接显示文字，不能只写“库内全文”。引文须链接对应参考条目锚点；citationLinks 只处理待链接的作者—年份引文。
 编号引用写「公式3b」，「控制方程」「状态方程」「方程组」按数学含义使用。删除中文与数字、拉丁字母、行内数学之间的多余空格，保留英文词间、数值与拉丁字母单位之间及语法所需空格。含希腊字母的行内数学整体用 $…$，保留上下标、重音和运算关系。
 库内出链以完整书目作显示文字。所有Rich Table默认locked:true（禁用图形化编辑），包括已有表及多sheet；主题grid。正文图号、表号保留完整编号，中文标签按排版规范，分别链接对应图片块或完整 Rich Table 的稳定锚点；图块依次为图片、下方题注、图锚，相邻行之间无空行；子图指向包含该面板的完整图，组合编号须逐项核实，跨图/跨表范围不能可靠拆分则保留并报告。排除题注自身、图题注、表内容和参考书目。表题注放入 Rich Table 的 title。表锚顶格独占闭合围栏的下一行，围栏与表锚之间零空行，表锚与后文之间一空行。正文公式引用统一写「公式＋原编号」并链接准确公式块；原编号用数学块内的 \tag{n} 显示在公式右侧，保留原(数字)格式，不在公式下方另写式(n)；数学表达式及既有tag保持原样，锚点仍放在数学环境之外；不把公式本身编号、数学环境、题注或参考文献误当正文引用，组合/范围须逐项核对。人工来源页码的括号形式均核查，原文有意义的页码保留。*/
 function richTables(text,parseYaml,stringifyYaml){
@@ -227,6 +227,14 @@ function formatEquationNumbering(body){
  for(const edit of edits.sort((a,b)=>b.start-a.start))body=body.slice(0,edit.start)+edit.value+body.slice(edit.end);
  return body;
 }
+function stripReferenceTranslations(body){
+ // 参考文献区域不保留中文译名：仅移除参考文献小节内全角括号（…）中夹带中文的翻译片段，英文半角括号（如 (FVCOM)、(Eds.)）原样保留。
+ const header=findBibliography(body);
+ if(!header)return body;
+ const head=body.slice(0,header.index),tail=body.slice(header.index);
+ const cleaned=tail.replace(/（[^（）]*[\u3400-\u9fff][^（）]*）/g,'');
+ return head+cleaned;
+}
 function validateAbstract(body,isThesis){
  const lines=body.split(/\r?\n/),headings=[];
  const abstractName=/(?:[中英]文)?摘要|Abstract/i;
@@ -281,6 +289,7 @@ function validateSourceAdditions(body){
  }
 }
 function render(d,profile,body,key){
+ body=stripReferenceTranslations(body);
  const labels={journalArticle:'期刊论文',thesis:'学位论文',conferencePaper:'会议论文',preprint:'预印本'},type=labels[d.itemType];if(!type)throw Error('Unsupported actual Zotero type');
  const year=Number(String(d.date).match(/(?:18|19|20)\d{2}/)?.[0]);if(!year)throw Error('Missing verified publication year');
  if(!profile.authors?.length||!profile.affiliations?.length)throw Error('Authors and affiliations required');
@@ -298,10 +307,10 @@ function render(d,profile,body,key){
  const prepared=prepareFigureLinks(prepareBody(body.replace(/\r\n/g,'\n'),profile),profile);
   const converted=richTables(prepared,tp.obsidian.parseYaml,tp.obsidian.stringifyYaml);
   const withTableLinks=prepareTableLinks(converted.text,profile,tp.obsidian.parseYaml);
-  converted.text=formatEquationNumbering(prepareEquationLinks(withTableLinks,profile));return {text:yaml.join('\n')+'\n'+head+converted.text.trimEnd()+'\n\n---\n\n[Zotero 原条目](zotero://select/library/items/'+key+')\n',tables:converted.tables};
+  converted.text=formatEquationNumbering(prepareEquationLinks(withTableLinks,profile));if(/^\|[\s:|-]+\|\s*$/m.test(converted.text.replace(/```[\s\S]*?```/g,'')))throw Error('表格只能用 Rich Table 数据块，禁止 Markdown 管道表');return {text:yaml.join('\n')+'\n'+head+converted.text.trimEnd()+'\n\n---\n\n[Zotero 原条目](zotero://select/library/items/'+key+')\n',tables:converted.tables};
 }
 function safeFilename(year,authors,title){let author=authors.length===1?authors[0]:authors.length===2?authors.join(' and '):authors[0]+' et al';const clean=s=>s.replace(/[<>:"/\\|?*]/g,c=>({'/':'／',':':'：','?':'？','*':'＊','"':'＂','<':'＜','>':'＞','\\':'＼','|':'｜'}[c])).replace(/[ .]+$/,'');let prefix=clean(year+'-'+author+'-'),tail='';for(const ch of clean(title)){if(prefix.length+tail.length+ch.length+3>250)break;tail+=ch;}return prefix+tail.replace(/[ .]+$/,'');}
-const expectedType="preprint";
+const expectedType="thesis";
 const current=tp.file.content||'';
 if(current.trim()&&!current.includes('const expectedType='))throw new Error('请在空白笔记使用模板；已有文献先备份并单独排版，避免重复正文。');
 const key=(await tp.system.prompt('Zotero 条目 key（8 位），本地 API 只读获取书目', '', true)).trim();
@@ -322,11 +331,11 @@ if(existing.length&&!isolatedTest)throw new Error('同一文件名已存在：'+
 let outputFilename=filename;
 if(isolatedTest){const chars=Array.from(filename),suffix='（临时测试）';while(chars.join('').length+suffix.length+3>250)chars.pop();outputFilename=chars.join('')+suffix;if(tp.app.vault.getAbstractFileByPath(target.parent.path+'/'+outputFilename+'.md'))throw new Error('临时输出已存在，先核查，不覆盖。');}
 const initial={originalTitle:d.title,titleZh:((d.extra||'').match(/(?:^|\n)titleTranslation:\s*([^\n]+)/)||[])[1]||'',keywords:(d.tags||[]).map(t=>t.tag),authors:names.map(name=>({name,email:'',units:[],corresponding:false})),affiliations:[{id:'1',name:''}],citationLinks:[],figureTargets:[],figureLinks:[],tableTargets:[],tableLinks:[],tableExcludedContexts:[],equationTargets:[],equationLinks:[],equationExcludedContexts:[],originalPageReferences:[]};
-const json=await tp.system.prompt('按原 PDF 核对作者、单位编号、邮箱、通讯身份；无来源的邮箱/星号留空。保留完整作者姓名。citationLinks按原PDF内链或唯一书目信息核实，填写原引用text、参考编号reference和出现次序occurrence（从1开始）；未确定不猜配。原文有意义的页码可在originalPageReferences准确列出。figureTargets逐图填number、完整图片嵌入行image和完整题注caption；figureLinks填原文text、number、occurrence及可选唯一context。tableTargets填number和完整caption（Rich Table 的 title，或紧邻表格的旧题注）；tableLinks同样填text、number、occurrence、可选context，非正文表注在tableExcludedContexts准确列出。目标及映射按原文核实。数字引文在输入稿中提前完成整组方括号、上标与链接，覆盖题注、脚注文字和表格。citationLinks 只填尚未链接的作者—年份引文。公式引用填写equationTargets(number、含原文tag的完整math；旧独立编号label仅用于导入核对，输出自动归入数学块)及equationLinks(text、number、occurrence、可选唯一context)；非正文公式说明可在equationExcludedContexts列出，未编号公式不造号。',JSON.stringify(initial,null,2),true,true);
+const json=await tp.system.prompt('按原 PDF 核对作者、单位编号、邮箱、通讯身份；作者与单位名称照录原文，不翻译；无来源的邮箱/星号留空。保留完整作者姓名。citationLinks按原PDF内链或唯一书目信息核实，填写原引用text、参考编号reference和出现次序occurrence（从1开始）；未确定不猜配。原文有意义的页码可在originalPageReferences准确列出。figureTargets逐图填number、完整图片嵌入行image和完整题注caption；figureLinks填原文text、number、occurrence及可选唯一context。tableTargets填number和完整caption（Rich Table 的 title，或紧邻表格的旧题注）；tableLinks同样填text、number、occurrence、可选context，非正文表注在tableExcludedContexts准确列出。目标及映射按原文核实。数字引文在输入稿中提前完成整组方括号、上标与链接，覆盖题注、脚注文字和表格。citationLinks 只填尚未链接的作者—年份引文。公式引用填写equationTargets(number、含原文tag的完整math；旧独立编号label仅用于导入核对，输出自动归入数学块)及equationLinks(text、number、occurrence、可选唯一context)；非正文公式说明可在equationExcludedContexts列出，未编号公式不造号。',JSON.stringify(initial,null,2),true,true);
 const profile=JSON.parse(json);
 if(profile.authors.length!==authorRows.length||profile.authors.some(a=>!a.name)||profile.affiliations.some(a=>!a.name))throw new Error('作者人数或单位未完成核对');
 if(profile.authors.some(a=>a.email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a.email)))throw new Error('邮箱格式错误');
-const body=await tp.system.prompt('粘贴唯一版本完整正文：有摘要时，开头单独一行写「## 摘要」，首段紧接下一行，移除段首摘要标签；原文无摘要时省略。学位论文摘要后直接进入第一章；如有引言，先进入引言再进入第一章，不插入目录等前置内容；保留图、题注和公式；不追加无来源的图内转录或解释，不加页码映射及备存；图内真正数据表另转为中文可编辑 Rich Table 副本，原图保持完整；参考文献区须为逐条编号列表（1. 2. 3. …），每条一行，紧接标题，不用 [^脚注] 罗列；正文从首个 H2 起连续分级编号（1、1.1、1.1.1），含主文「## N 参考文献」和补充材料内「### M.K 参考文献」，N、M.K 用实际节序号。每组数字引文统一用一对可见的 ASCII 方括号 []，方括号和引文一起置于 <sup> 内。原刊无括号时补齐，已有括号时统一为一对方括号。连续范围用 ASCII -，保留编号和其他分隔符，各显式编号链接对应书目。作者—年份引文和原刊脚注保留原形式。编号引用写「公式3b」，「控制方程」「状态方程」「方程组」按数学含义使用。删除中文与数字、拉丁字母、行内数学之间的多余空格，保留英文词间、数值与拉丁字母单位之间及语法所需空格。含希腊字母的行内数学整体用 $…$，保留上下标、重音和运算关系。正文图号、表号、公式编号须分别链接对应图片块/表题注/公式块锚点，正文引文（作者—年份或数字）须链接对应参考条目锚点；同一作者的多篇年份（如 Emanuel, 2005, 2013）须为每个年份分别链接各自条目，不得只链接一个年份；参考文献条目在有可靠对应时给出库内笔记 [[链接]]，有 DOI/URL 等外部来源时保留外部链接，无则不强造。仅删除经原文确认的段落编号。库内链接显示完整参考条目。表格转 Rich Table grid','',true,true);
+const body=await tp.system.prompt('粘贴唯一版本完整正文：有摘要时，开头单独一行写「## 摘要」，首段紧接下一行，移除段首摘要标签；原文无摘要时省略。学位论文摘要后直接进入第一章；如有引言，先进入引言再进入第一章，不插入目录等前置内容；保留图、题注和公式；不追加无来源的图内转录或解释，不加页码映射及备存；图内真正数据表另转为中文可编辑 Rich Table 副本，原图保持完整；参考文献保留原文标题、不加中文译名；参考文献区须为逐条编号列表（1. 2. 3. …），每条一行，紧接标题，不用 [^脚注] 罗列；正文从首个 H2 起连续分级编号（1、1.1、1.1.1），含主文「## N 参考文献」和补充材料内「### M.K 参考文献」，N、M.K 用实际节序号。每组数字引文统一用一对可见的 ASCII 方括号 []，方括号和引文一起置于 <sup> 内。原刊无括号时补齐，已有括号时统一为一对方括号。连续范围用 ASCII -，保留编号和其他分隔符，各显式编号链接对应书目。作者—年份引文和原刊脚注保留原形式。编号引用写「公式3b」，「控制方程」「状态方程」「方程组」按数学含义使用。删除中文与数字、拉丁字母、行内数学之间的多余空格，保留英文词间、数值与拉丁字母单位之间及语法所需空格。含希腊字母的行内数学整体用 $…$，保留上下标、重音和运算关系。正文图号、表号、公式编号须分别链接对应图片块/表题注/公式块锚点，正文引文（作者—年份或数字）须链接对应参考条目锚点；同一作者的多篇年份（如 Emanuel, 2005, 2013）须为每个年份分别链接各自条目，不得只链接一个年份；参考文献条目在有可靠对应时给出库内笔记 [[链接]]，有 DOI/URL 等外部来源时保留外部链接，无则不强造。仅删除经原文确认的段落编号。库内链接显示完整参考条目。表格转 Rich Table grid','',true,true);
 if(!body.trim())throw new Error('完整正文为空，停止生成');
 const result=render(d,profile,body,key);
 if(target&&target.basename!==outputFilename)await tp.file.rename(outputFilename);

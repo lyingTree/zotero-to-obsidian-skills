@@ -133,3 +133,71 @@ pub fn audit_translation_binding(record:&Path,actual:&Path,kind:&str)->Result<Va
     Ok(json!({"stage":"translation","inputs":[record_binding,{"path":actual["path"],"sha256":actual["sha256"]}],
         "checks":{(id):decision(id,value,&reason)},"source_fidelity":"not_assessed"}))
 }
+pub fn prepend_env_path(var:&str,dir:&Path)->std::ffi::OsString{
+    let mut paths=vec![dir.to_path_buf()];
+    if let Some(existing)=std::env::var_os(var).filter(|v|!v.is_empty()){
+        paths.extend(std::env::split_paths(&existing).filter(|p|!p.as_os_str().is_empty()));
+    }
+    std::env::join_paths(paths).unwrap_or_else(|_|dir.as_os_str().to_os_string())
+}
+pub(crate) fn is_name_surrogate_reparse_tag(tag:u32)->bool{
+    (tag&0x2000_0000)!=0||matches!(tag,0xA000_0003|0xA000_000C)
+}
+pub fn is_linked(path:&Path,meta:&fs::Metadata)->bool{
+    if meta.file_type().is_symlink(){return true;}
+    #[cfg(windows)]{
+        use std::os::windows::{ffi::OsStrExt,fs::MetadataExt};
+        if meta.file_attributes()&0x400==0{return false;}
+        #[repr(C)]
+        struct FileTime{low:u32,high:u32}
+        #[repr(C)]
+        #[allow(dead_code)]
+        struct Win32FindDataW{
+            attrs:u32,created:FileTime,accessed:FileTime,written:FileTime,
+            size_high:u32,size_low:u32,reserved0:u32,reserved1:u32,
+            file_name:[u16;260],alt_name:[u16;14],
+        }
+        #[link(name="kernel32")]
+        unsafe extern "system"{
+            fn FindFirstFileW(file_name:*const u16,data:*mut Win32FindDataW)->*mut core::ffi::c_void;
+            fn FindClose(handle:*mut core::ffi::c_void)->i32;
+        }
+        const INVALID_HANDLE:*mut core::ffi::c_void=(-1isize) as *mut core::ffi::c_void;
+        let mut wide:Vec<u16>=path.as_os_str().encode_wide().collect();
+        while wide.len()>1&&matches!(wide.last().copied(),Some(0x2F|0x5C))&&!(wide.len()==3&&wide[1]==0x3A){wide.pop();}
+        wide.push(0);
+        let mut data=std::mem::MaybeUninit::<Win32FindDataW>::zeroed();
+        let handle=unsafe{FindFirstFileW(wide.as_ptr(),data.as_mut_ptr())};
+        if handle.is_null()||handle==INVALID_HANDLE{return true;}
+        let data=unsafe{let _=FindClose(handle);data.assume_init()};
+        is_name_surrogate_reparse_tag(data.reserved0)
+    }
+    #[cfg(not(windows))]{let _=path;false}
+}
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test]
+    fn prepend_env_path_keeps_target_dir_first_and_preserves_existing_entries(){
+        let dir=Path::new(if cfg!(windows){r"C:\z2o\bin"}else{"/opt/z2o/bin"});
+        let missing=prepend_env_path("Z2O_MISSING_TEST_ENV_PATH",dir);
+        assert_eq!(std::env::split_paths(&missing).collect::<Vec<_>>(),vec![dir.to_path_buf()]);
+        let path=prepend_env_path("PATH",dir);
+        let entries:Vec<PathBuf>=std::env::split_paths(&path).collect();
+        assert_eq!(entries.first().map(PathBuf::as_path),Some(dir));
+        if let Some(existing)=std::env::var_os("PATH").filter(|v|!v.is_empty()){
+            let expected:usize=std::env::split_paths(&existing).filter(|p|!p.as_os_str().is_empty()).count();
+            assert_eq!(entries.len(),expected+1);
+        }
+    }
+    #[test]
+    fn surrogate_reparse_tag_classification_allows_cloud_placeholders_and_blocks_links(){
+        assert!(is_name_surrogate_reparse_tag(0xA000_0003));
+        assert!(is_name_surrogate_reparse_tag(0xA000_000C));
+        assert!(is_name_surrogate_reparse_tag(0x2000_0001));
+        assert!(!is_name_surrogate_reparse_tag(0x9000_001A));
+        assert!(!is_name_surrogate_reparse_tag(0x9000_F01A));
+        assert!(!is_name_surrogate_reparse_tag(0x8000_0017));
+        assert!(!is_name_surrogate_reparse_tag(0));
+    }
+}

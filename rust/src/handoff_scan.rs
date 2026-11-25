@@ -12,6 +12,7 @@ pub struct Span{pub start:usize,pub end:usize}
 impl Span{
     pub fn contains(self,b:Self)->bool{self.start<=b.start&&b.start<b.end&&b.end<=self.end}
     pub fn len(self)->usize{self.end-self.start}
+    pub fn is_empty(self)->bool{self.len()==0}
 }
 #[derive(Clone)]
 pub struct Occurrence{pub span:Span,pub locator:Value,pub href:String,pub label:String,pub image:bool,pub syntax:&'static str}
@@ -292,7 +293,7 @@ impl Candidate{
             let rows=syntax::lines(&self.lf);
             ensure!(a>=1&&a<=b&&b<=rows.len(),"MAP_TARGET_LINES");
             let (a,b)=(rows[a-1].start,rows[b-1].end);
-            ensure!(v["sha256"]==files::digest(self.lf[a..b].as_bytes()),"MAP_TARGET_LINES_HASH");self.raw_span(a,b)
+            ensure!(v["sha256"]==files::digest(&self.lf.as_bytes()[a..b]),"MAP_TARGET_LINES_HASH");self.raw_span(a,b)
         }else{
             let anchor=self.anchors.get(v["anchor"].as_str().context("MAP_TARGET_ANCHOR")?).context("MAP_TARGET_ANCHOR: absent")?;
             let rows=syntax::lines(&self.raw);let idx=syntax::row_at(&rows,anchor.start);

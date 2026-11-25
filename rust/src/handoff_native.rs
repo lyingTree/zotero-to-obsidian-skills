@@ -374,7 +374,8 @@ impl Ctx{
 }
 fn owner(targets:&BTreeMap<String,Span>,span:Span)->Option<&str>{
     let mut result=None;let mut size=usize::MAX;
-    for(id,s)in targets{if !s.contains(span){continue;}if s.len()<size{size=s.len();result=Some(id.as_str());}else if s.len()==size{result=None;}}result
+    for(id,s)in targets{if !s.contains(span){continue;}
+        if s.len()<size{size=s.len();result=Some(id.as_str());} else if s.len()==size{result=None;}}result
 }
 fn future(p:&Path)->Result<PathBuf>{
     let p=std::path::absolute(p)?;if p.exists(){return files::canonical(&p);}

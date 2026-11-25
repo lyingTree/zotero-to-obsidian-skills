@@ -6,7 +6,7 @@ use base64::{engine::general_purpose::STANDARD,Engine as _};
 use serde_json::{json,Value};
 use std::{collections::{BTreeMap,BTreeSet},fs,io::{BufReader,Read,Seek,SeekFrom,Write},net::{Ipv4Addr,SocketAddr,TcpListener,TcpStream},
     path::{Path,PathBuf},process::{Child,Command,ExitStatus,Stdio},time::{Duration,Instant},thread};
-use crate::{check_ledger,check_write,files,path,path_text,parse_json};
+use crate::{check_write,files,path,parse_json};
 pub const UPSTREAM:&str="c21a3ca524263ef8166cb6d350864b10c3056b61";
 pub const LLAMA_RELEASE:&str="b11901";
 pub const JEV_LLAMA_RELEASE:&str="b11928";
@@ -22,6 +22,7 @@ fn release_for(kind:&str)->Result<&'static str>{
 const BOUNDARY:&str="Actual local MiniCPM inference candidate, not verified transcription. Jev class-1 probability is a model score, not a correctness decision. Candidate render association, source content, formulas and tables require independent review. GPU offload evidence is runtime-reported, not a benchmark.";
 const GIB:u64=1024*1024*1024;
 const MAX_IMAGE:u64=32*1024*1024;
+pub const DEFAULT_MAX_TOKENS:u64=2048;
 fn text<'a>(v:&'a Value,label:&str)->Result<&'a str>{v.as_str().filter(|s|!s.is_empty()).with_context(||format!("{label} required"))}
 fn hash(v:&Value)->Result<&str>{let s=text(v,"SHA-256")?;ensure!(s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)),"Actual lowercase SHA-256 required");Ok(s)}
 fn relative(s:&str)->Result<PathBuf>{
@@ -29,8 +30,7 @@ fn relative(s:&str)->Result<PathBuf>{
     let p=PathBuf::from(s);ensure!(p.is_relative(),"Absolute package path forbidden");Ok(p)
 }
 fn no_link(p:&Path)->Result<fs::Metadata>{
-    let m=fs::symlink_metadata(p)?;ensure!(!m.file_type().is_symlink(),"Linked model/engine file prohibited");
-    #[cfg(windows)]{use std::os::windows::fs::MetadataExt;ensure!(m.file_attributes()&0x400==0,"Reparse-point model/engine file prohibited");}
+    let m=fs::symlink_metadata(p)?;ensure!(!files::is_linked(p,&m),"Linked model/engine file prohibited");
     Ok(m)
 }
 fn local(root:&Path,r:&str)->Result<PathBuf>{
@@ -136,7 +136,7 @@ impl Package{
             _=>bail!("Unknown model kind"),
         };
         ensure!(model["path"]!=projector["path"]&&draft.as_ref().is_none_or(|b|b["path"]!=model["path"]&&b["path"]!=projector["path"]),"Model resources must differ");
-        let p=Self{binding:b,kind:kind.into(),release,cpu,gpu,gpu_error,model,projector,draft};p.verify_models()?;Ok(p)
+        Ok(Self{binding:b,kind:kind.into(),release,cpu,gpu,gpu_error,model,projector,draft})
     }
     fn verify_models(&self)->Result<()>{verify(&self.binding)?;verify_weight(&self.model)?;verify_weight(&self.projector)?;if let Some(b)=&self.draft{verify_weight(b)?;}Ok(())}
     fn report(&self,e:&EngineFiles)->Value{json!({"manifest":self.binding,"kind":self.kind,"model":self.model,"projector":self.projector,
@@ -178,9 +178,9 @@ fn command(e:&EngineFiles)->Command{
     // Ignore inherited model/server overrides and proxies. GPU drivers may
     // still come from the platform's installed driver/runtime environment.
     for(k,_)in std::env::vars_os(){let s=k.to_string_lossy().to_ascii_uppercase();if s.starts_with("LLAMA_")||s.ends_with("_PROXY"){cmd.env_remove(k);}}
-    cmd.env("PATH",dir);
-    #[cfg(target_os="linux")]{cmd.env("LD_LIBRARY_PATH",dir);cmd.env_remove("LD_PRELOAD");}
-    #[cfg(target_os="macos")]{cmd.env("DYLD_LIBRARY_PATH",dir);cmd.env_remove("DYLD_INSERT_LIBRARIES");}
+    cmd.env("PATH",files::prepend_env_path("PATH",dir));
+    #[cfg(target_os="linux")]{cmd.env("LD_LIBRARY_PATH",files::prepend_env_path("LD_LIBRARY_PATH",dir));cmd.env_remove("LD_PRELOAD");}
+    #[cfg(target_os="macos")]{cmd.env("DYLD_LIBRARY_PATH",files::prepend_env_path("DYLD_LIBRARY_PATH",dir));cmd.env_remove("DYLD_INSERT_LIBRARIES");}
     cmd
 }
 fn log_offload(p:&Path)->Result<Option<(u64,u64)>>{
@@ -426,39 +426,84 @@ fn attempts(p:&Package,acceleration:&str,timeout:Duration,route:&str,body:&Value
     }
     Ok(json!({"status":"blocked","attempts":log,"result":null,"execution_mode":null}))
 }
-pub fn recognize(png:&Path,sha:&str,manifest:&Path,msha:&str,category:&str,acceleration:&str,timeout:u64)->Result<Value>{
-    ensure!((5..=1800).contains(&timeout),"Invalid inference timeout");
-    let p=Package::load(manifest,msha,"minicpm-ocr")?;
-    let (img,url)=image(png,sha)?;
-    let body=json!({"model":"z2o-minicpm","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":url}},{"type":"text","text":prompt(category)?}]}],
-        "temperature":0,"max_tokens":512,"stream":false});
-    let mut r=attempts(&p,acceleration,Duration::from_secs(timeout),"/v1/chat/completions",&body,recognition)?;
+pub struct RecognizeOptions<'a>{
+    pub image_sha:&'a str,pub manifest:&'a Path,pub manifest_sha:&'a str,
+    pub category:&'a str,pub acceleration:&'a str,pub timeout:u64,pub max_tokens:u64,
+}
+fn recognition_request_body(url:&str,category:&str,max_tokens:u64)->Result<Value>{
+    ensure!((1..=4096).contains(&max_tokens),"Invalid max_tokens");
+    Ok(json!({"model":"z2o-minicpm","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":url}},{"type":"text","text":prompt(category)?}]}],
+        "temperature":0,"max_tokens":max_tokens,"stream":false}))
+}
+pub fn recognize(png:&Path,opt:RecognizeOptions<'_>)->Result<Value>{
+    ensure!((5..=1800).contains(&opt.timeout),"Invalid inference timeout");
+    ensure!((1..=4096).contains(&opt.max_tokens),"Invalid max_tokens");
+    let p=Package::load(opt.manifest,opt.manifest_sha,"minicpm-ocr")?;
+    let (img,url)=image(png,opt.image_sha)?;
+    let body=recognition_request_body(&url,opt.category,opt.max_tokens)?;
+    let mut r=attempts(&p,opt.acceleration,Duration::from_secs(opt.timeout),"/v1/chat/completions",&body,recognition)?;
     verify(&img)?;
-    r["schema_version"]=json!(1);r["source_image"]=img;r["category"]=json!(category);
+    r["schema_version"]=json!(1);r["source_image"]=img;r["category"]=json!(opt.category);r["max_tokens"]=json!(opt.max_tokens);
     if r["status"]!="blocked"{r["status"]=json!(if r["result"]["truncated"]==true{"truncated_review_required"}else{"minicpm_candidate_review_required"});}
     r["source_fidelity"]=json!("not_assessed");r["acceptance_ready"]=json!(false);r["boundary"]=json!(BOUNDARY);Ok(r)
 }
-pub fn score(original:&Path,original_sha:&str,render:&Path,render_sha:&str,candidate:&Path,candidate_sha:&str,
-    manifest:&Path,msha:&str,category:&str,acceleration:&str,timeout:u64)->Result<Value>{
-    prompt(category)?;ensure!((5..=1800).contains(&timeout),"Invalid inference timeout");
-    let p=Package::load(manifest,msha,"jev")?;
-    let (source_image,url)=image(original,original_sha)?;
-    let (rendered,render_url)=self::image(render,render_sha)?;
-    check_write::no_link(candidate)?;ensure!(fs::metadata(candidate)?.len()<=1024*1024,"Candidate text exceeds budget");
-    let(raw,b)=files::read_bound(candidate)?;ensure!(raw.len()<=1024*1024&&b["sha256"]==candidate_sha,"Candidate text changed");
+pub struct ScoreOptions<'a>{
+    pub original_sha:&'a str,pub render:&'a Path,pub render_sha:&'a str,
+    pub candidate:&'a Path,pub candidate_sha:&'a str,pub manifest:&'a Path,
+    pub manifest_sha:&'a str,pub category:&'a str,pub acceleration:&'a str,pub timeout:u64,
+}
+pub fn score(original:&Path,opt:ScoreOptions<'_>)->Result<Value>{
+    prompt(opt.category)?;ensure!((5..=1800).contains(&opt.timeout),"Invalid inference timeout");
+    let p=Package::load(opt.manifest,opt.manifest_sha,"jev")?;
+    let (source_image,url)=image(original,opt.original_sha)?;
+    let (rendered,render_url)=self::image(opt.render,opt.render_sha)?;
+    check_write::no_link(opt.candidate)?;ensure!(fs::metadata(opt.candidate)?.len()<=1024*1024,"Candidate text exceeds budget");
+    let(raw,b)=files::read_bound(opt.candidate)?;ensure!(raw.len()<=1024*1024&&b["sha256"]==opt.candidate_sha,"Candidate text changed");
     let reading=std::str::from_utf8(&raw)?;ensure!(!reading.trim().is_empty(),"Empty candidate text");
     // Exact official llama.cpp Jev request: original first, render second;
     // no extra instructions or second softmax.
     let body=json!({"state":reading,"files":[url,render_url],"questions":{"consistency":{"type":"choice","criteria":{"0":null,"1":null}}}});
-    let mut r=attempts(&p,acceleration,Duration::from_secs(timeout),"/v1/systemone",&body,probabilities)?;
+    let mut r=attempts(&p,opt.acceleration,Duration::from_secs(opt.timeout),"/v1/systemone",&body,probabilities)?;
     verify(&source_image)?;verify(&rendered)?;verify(&b)?;
     r["schema_version"]=json!(1);r["source_image"]=source_image;r["candidate_render"]=rendered;r["candidate_text_file"]=b;
-    r["category"]=json!(category);r["render_semantics_verified"]=json!(false);
+    r["category"]=json!(opt.category);r["render_semantics_verified"]=json!(false);
     if r["status"]!="blocked"{r["status"]=json!("jev_score_review_required");}
     r["source_fidelity"]=json!("not_assessed");r["acceptance_ready"]=json!(false);r["boundary"]=json!(BOUNDARY);Ok(r)
 }
+pub fn inspect(manifest:&Path,sha:&str,kind:&str)->Result<Value>{
+    let p=Package::load(manifest,sha,kind)?;
+    Ok(json!({"manifest":p.binding,"cpu":p.report(&p.cpu),"gpu":p.gpu.as_ref().map(|e|p.report(e)),
+        "gpu_error":p.gpu_error,"runtime_loaded":false,"qualified":false,"boundary":BOUNDARY}))
+}
+pub struct RegionOptions<'a>{
+    pub page:u64,pub bbox:&'a Value,pub coordinates:&'a Value,pub dpi:u64,pub source_sha:&'a str,
+    pub manifest:&'a Path,pub manifest_sha:&'a str,pub category:&'a str,pub acceleration:&'a str,pub timeout:u64,pub max_tokens:u64,
+}
+pub fn recognize_pdf_region(source:&Path,destination:&Path,opt:RegionOptions<'_>)->Result<Value>{
+    ensure!(*opt.coordinates==json!({"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"}),"Explicit unrotated PDF-point coordinates required");
+    ensure!((72..=600).contains(&opt.dpi),"Invalid region dpi");
+    ensure!((1..=4096).contains(&opt.max_tokens),"Invalid max_tokens");
+    let b=opt.bbox.as_array().filter(|a|a.len()==4).context("Four finite bbox points required")?;
+    let mut bbox=[0.;4];for(i,n)in b.iter().enumerate(){bbox[i]=n.as_f64().filter(|n|n.is_finite()).context("Invalid bbox")?;}
+    ensure!(bbox[0]<bbox[2]&&bbox[1]<bbox[3],"Empty bbox");
+    let mut pdf=crate::pdfcraft_backend::Backend::open(source,Some(opt.source_sha))?;
+    fs::create_dir_all(destination)?;
+    let root=files::canonical(destination)?;
+    ensure!(no_link(&root)?.is_dir(),"Actual evidence directory required");
+    let attempt=tempfile::Builder::new().prefix("minicpm-region-").tempdir_in(&root)?.keep();
+    let png=attempt.join("region.png");let render=pdf.render(opt.page,Some(bbox),opt.dpi,&png)?;
+    let r=recognize(&png,RecognizeOptions{image_sha:hash(&render["asset"]["sha256"])?,manifest:opt.manifest,manifest_sha:opt.manifest_sha,
+        category:opt.category,acceleration:opt.acceleration,timeout:opt.timeout,max_tokens:opt.max_tokens});
+    pdf.verify()?;
+    let mut r=r.unwrap_or_else(|e|json!({"schema_version":1,"status":"minicpm_blocked","reason":format!("{e:#}"),"source_fidelity":"not_assessed","acceptance_ready":false}));
+    r["source_pdf"]=pdf.source_binding().clone();r["page"]=json!(opt.page);r["bbox"]=opt.bbox.clone();
+    r["coordinate_system"]=opt.coordinates.clone();r["render"]=render;
+    let b=crate::runtime_reports::save_new_report(&attempt.join("recognition.json"),&r)?;
+    r["record"]=b;Ok(r)
+}
 #[cfg(test)]
 mod tests{
+    use crate::check_ledger;
     #[test]
     fn weight_binding_preserves_the_regular_digest_and_rejects_same_size_changes(){
         let temp=tempfile::tempdir().unwrap();
@@ -613,35 +658,21 @@ exit 19
         fs::write(&p,"load_tensors: offloaded 25/25 layers to GPU\n").unwrap();
         assert_eq!(log_offload(&p).unwrap(),Some((25,25)));
     }
-}
-
-
-pub fn inspect(manifest:&Path,sha:&str,kind:&str)->Result<Value>{
-    let p=Package::load(manifest,sha,kind)?;
-    Ok(json!({"manifest":p.binding,"cpu":p.report(&p.cpu),"gpu":p.gpu.as_ref().map(|e|p.report(e)),
-        "gpu_error":p.gpu_error,"runtime_loaded":false,"qualified":false,"boundary":BOUNDARY}))
-}
-pub struct RegionOptions<'a>{
-    pub page:u64,pub bbox:&'a Value,pub coordinates:&'a Value,pub dpi:u64,pub source_sha:&'a str,
-    pub manifest:&'a Path,pub manifest_sha:&'a str,pub category:&'a str,pub acceleration:&'a str,pub timeout:u64,
-}
-pub fn recognize_pdf_region(source:&Path,destination:&Path,opt:RegionOptions<'_>)->Result<Value>{
-    ensure!(*opt.coordinates==json!({"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"}),"Explicit unrotated PDF-point coordinates required");
-    ensure!((72..=600).contains(&opt.dpi),"Invalid region dpi");
-    let b=opt.bbox.as_array().filter(|a|a.len()==4).context("Four finite bbox points required")?;
-    let mut bbox=[0.;4];for(i,n)in b.iter().enumerate(){bbox[i]=n.as_f64().filter(|n|n.is_finite()).context("Invalid bbox")?;}
-    ensure!(bbox[0]<bbox[2]&&bbox[1]<bbox[3],"Empty bbox");
-    let mut pdf=crate::pdfcraft_backend::Backend::open(source,Some(opt.source_sha))?;
-    fs::create_dir_all(destination)?;
-    let root=files::canonical(destination)?;
-    ensure!(no_link(&root)?.is_dir(),"Actual evidence directory required");
-    let attempt=tempfile::Builder::new().prefix("minicpm-region-").tempdir_in(&root)?.keep();
-    let png=attempt.join("region.png");let render=pdf.render(opt.page,Some(bbox),opt.dpi,&png)?;
-    let r=recognize(&png,hash(&render["asset"]["sha256"])?,opt.manifest,opt.manifest_sha,opt.category,opt.acceleration,opt.timeout);
-    pdf.verify()?;
-    let mut r=r.unwrap_or_else(|e|json!({"schema_version":1,"status":"minicpm_blocked","reason":format!("{e:#}"),"source_fidelity":"not_assessed","acceptance_ready":false}));
-    r["source_pdf"]=pdf.source_binding().clone();r["page"]=json!(opt.page);r["bbox"]=opt.bbox.clone();
-    r["coordinate_system"]=opt.coordinates.clone();r["render"]=render;
-    let b=crate::runtime_reports::save_new_report(&attempt.join("recognition.json"),&r)?;
-    r["record"]=b;Ok(r)
+    #[test]
+    fn max_tokens_defaults_to_2048_and_validates_bounds(){
+        assert_eq!(DEFAULT_MAX_TOKENS,2048);
+        let body=recognition_request_body("data:image/png;base64,AA==","text",DEFAULT_MAX_TOKENS).unwrap();
+        assert_eq!(body["max_tokens"],2048);
+        let custom=recognition_request_body("data:image/png;base64,AA==","table",4096).unwrap();
+        assert_eq!(custom["max_tokens"],4096);
+        assert!(recognition_request_body("data:image/png;base64,AA==","text",0).is_err());
+        assert!(recognition_request_body("data:image/png;base64,AA==","text",4097).is_err());
+        let tmp=tempfile::tempdir().unwrap();
+        let req_img=tmp.path().join("x.png");let req_man=tmp.path().join("m.json");
+        fs::write(&req_img,b"").unwrap();fs::write(&req_man,b"{}").unwrap();
+        let err=crate::invoke(json!({"schema_version":1,"operation":"prepare_source_inventory.recognize_minicpm_region",
+            "args":[req_img],"kwargs":{"expected_image_sha256":"0".repeat(64),"package_manifest":req_man,
+            "expected_package_sha256":"0".repeat(64),"category":"text","max_tokens":0}})).unwrap_err();
+        assert!(format!("{err:#}").contains("Invalid max_tokens"));
+    }
 }

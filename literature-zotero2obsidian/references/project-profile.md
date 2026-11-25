@@ -38,8 +38,8 @@
 | 项 | 默认值 |
 |---|---|
 | 文献根 | `<vault_root>/文献` |
-| 模板 | `<literature_root>/template/`，按实际 itemType 选期刊论文、学位论文、会议论文或预印本 |
-| 术语表 | `<literature_root>/template/术语表.md` |
+| 模板 | `<literature_root>/template/`，按实际 itemType 选 `journal-article.md`、`thesis.md`、`conference-paper.md` 或 `preprint.md` |
+| 术语表 | `<literature_root>/template/glossary.md` |
 | 附件资源 | `<assets_resource_dir>`（默认 `attachments`，图与视频同目录） |
 | 工作根 | `<project_root>/Backups/literature-pipeline/`，解析后必须位于 vault 之外；不满足时按运行预检选择库外位置 |
 | Rich Table 数据版本 | 按实际模板采用 v2 或 v3，逐工作表检查数据 |

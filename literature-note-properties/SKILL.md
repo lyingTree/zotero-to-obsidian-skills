@@ -1,6 +1,6 @@
 ---
 name: literature-note-properties
-version: v2.0.2
+version: v2.0.3
 description: 按文献类型及既有模板构建或修复 Obsidian 文献 YAML 属性，保留人工自定义字段。只处理属性，不重写题头、正文或参考文献。
 ---
 

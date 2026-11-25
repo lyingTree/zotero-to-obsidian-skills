@@ -7,9 +7,17 @@
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "format_helpers.build_figure_block",
+  "args": [
+    [
+      {"target": "assets/example-left.png", "alt": "图S8"},
+      {"target": "assets/example-right.png", "alt": "图S8"}
+    ]
+  ],
+  "kwargs": {
+    "caption": "**图S8：** 已逐项核对的来源题注。",
+    "anchor": "fig-s8"
+  }
 }
 ```
 

@@ -48,14 +48,26 @@
 
 准备函数不修改来源清单，不添加 inventory 指针，不覆盖旧复核记录。来源清单、术语表或候选改变后保留旧记录，新建修订文件；按变化重新核对受影响目标。仅更新哈希不能使旧结论继续有效。后续排版改动行号时，重新绑定实际最终 Markdown 中的对应片段。
 
-在工作目录的 JSON 请求文件中导入技能函数。`unit_ids` 由本次完整来源盘点确定，不按关键词自动选段。完整 PDF 流程从已有 `run.json` 读取实际路径：初始化通常把清单和术语记录放在 `work/evidence/`，候选位置由本次配置指定，不从固定文件名推断。下面的运行记录路径、来源块 ID 和候选片段须替换为本次实际值：
+在工作目录的 JSON 请求文件中填写本次 `run.json` 对应的实际路径并调用 `prepare_translation_review.prepare_translation_review`。`unit_ids` 由本次完整来源盘点确定，不按关键词自动选段。完整 PDF 流程从已有 `run.json` 读取实际路径：初始化通常把清单和术语记录放在 `work/evidence/`，候选位置由本次配置指定，不从固定文件名推断。下面的运行记录路径、来源块 ID 和候选片段须替换为本次实际值：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "prepare_translation_review.prepare_translation_review",
+  "args": [
+    "<实际 run.records.source_inventory>",
+    "<实际 run.config.candidate_path>",
+    "<实际 run.records.translation_review>"
+  ],
+  "kwargs": {
+    "unit_ids": ["<source-a-paragraph-k>"],
+    "glossary_path": "<实际 run.config.glossary_path 或 null>",
+    "candidate_locations": {
+      "<source-a-paragraph-k>": [
+        {"quote": "<本次译稿中可唯一定位的完整原样片段>"}
+      ]
+    }
+  }
 }
 ```
 
@@ -94,16 +106,18 @@
 
 ## 逐段待办与范围计划
 
-准备清单后先用 `translation_review_tasks.py` 查看实际待办。它按“范围 → 当前单元 → 全局记录”的顺序读取现有台账，当前单元未就绪时不会跳到后面的单元。它只显示已有目标，不判断语义，不填写状态，也不按对象类型自动排除内容。
+准备清单后先用 `translation_review_tasks.next_review_task` 查看实际待办。它按“范围 → 当前单元 → 全局记录”的顺序读取现有台账，当前单元未就绪时不会跳到后面的单元。它只显示已有目标，不判断语义，不填写状态，也不按对象类型自动排除内容。
 
 在本次 JSON 请求文件里使用：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "translation_review_tasks.next_review_task",
+  "args": ["<实际 prepared_path>", []],
+  "kwargs": {
+    "scope_limit": 8
+  }
 }
 ```
 
@@ -120,14 +134,27 @@
 
 `unit` 给出完整原位置、实际候选片段、17个独立检查问题、10类扫描状态和14组逐处记录字段。原文片段与候选片段不会被静默截断；显示中省略的重复绑定仍在完整台账内。数值检查不能代替单位检查；用文字表达的时间尺度同样具有单位。完整性检查落实到实际命题，不能用概括性动作替代来源明确的动作。术语查询仍由实际读取和取舍产生。
 
-按下一节短入口完成本段后，再执行：
+按下一节短入口完成本段后，再依次校验当前单元记录完整性、保存新草稿并查看下一待办：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "translation_review_tasks.require_unit_records",
+  "args": ["<实际 prepared_path>", "<累计 decisions 数组>"],
+  "kwargs": {
+    "unit_id": "<当前 unit_id>"
+  }
+}
+```
+
+```json
+{
+  "schema_version": 1,
+  "operation": "translation_review_writer.save_decision_draft",
+  "args": ["<实际 prepared_path>", "<累计 decisions 数组>"],
+  "kwargs": {
+    "output_path": "<actual_new_checkpoint_path>"
+  }
 }
 ```
 
@@ -143,18 +170,78 @@
 
 ## 逐段短入口与增量保存
 
-`scripts/translation_review_writer.py` 提供 `ReviewWriter`。先用上节的真实 `prepare_translation_review()` 建立台账，再加载它。来源身份和全部来源位置从准备台账读取；每段只绑定一次完整候选位置。之后短调用里的状态、理由和独立比较仍由实际复核者逐项填写，文件路径、哈希、重复 evidence 和术语总表指针由入口展开。17 个检查、10 类扫描和 14 组 occurrence 不变；没有调用的目标继续是 `pending`。
+`translation_review_writer.*` 入口延续原 `ReviewWriter` 短调用协议。先用上节的真实 `prepare_translation_review.prepare_translation_review` 建立台账，再以该路径和当前 `decisions` 数组逐步推进。来源身份和全部来源位置从准备台账读取；每段只绑定一次完整候选位置。之后短调用里的状态、理由和独立比较仍由实际复核者逐项填写，文件路径、哈希、重复 evidence 和术语总表指针由入口展开。17 个检查、10 类扫描和 14 组 occurrence 不变；没有调用的目标继续是 `pending`。
 
-下面只是接口形状；变量须来自本段真实阅读与选择，不是可直接套用的结论。可运行的全虚构单段闭环见 [compact_review_example.py](compact_review_example.py)。它从实际准备函数开始，保存与恢复短决定，再调用原样的最终校验器。
+下面只是接口形状；变量须来自本段真实阅读与选择，不是可直接套用的结论。完整方法列表及增量保存方式见 [Rust 运行入口](../../literature-zotero2obsidian/references/rust-entrypoints.md#翻译复核)：
 
 ```json
-{
-  "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
-}
+[
+  {
+    "schema_version": 1,
+    "operation": "translation_review_writer.ReviewWriter.unit",
+    "args": ["<实际 prepared_path>", "<累计 decisions 数组>"],
+    "kwargs": {"unit_id": "<unit_id>", "candidate_locations": "<actual_complete_candidate_locations>"}
+  },
+  {
+    "schema_version": 1,
+    "operation": "translation_review_writer.select_source",
+    "args": ["<实际 prepared_path>", "<上一步返回的 decisions>"],
+    "kwargs": {"unit_id": "<unit_id>", "selector": {"quote": "<exact_source_excerpt>"}}
+  },
+  {
+    "schema_version": 1,
+    "operation": "translation_review_writer.select_candidate",
+    "args": ["<实际 prepared_path>", "<上一步返回的 decisions>"],
+    "kwargs": {"unit_id": "<unit_id>", "selector": {"quote": "<exact_candidate_excerpt>"}}
+  },
+  {
+    "schema_version": 1,
+    "operation": "translation_review_writer.UnitReview.occurrence",
+    "args": ["<实际 prepared_path>", "<上一步返回的 decisions>"],
+    "kwargs": {
+      "unit_id": "<unit_id>",
+      "kind": "claims",
+      "occurrence_id": "<claim_id>",
+      "source": "<select_source 返回的 selector>",
+      "candidate": "<select_candidate 返回的 selector>",
+      "status": "<claim_status>",
+      "reason": "<claim_reason>"
+    }
+  },
+  {
+    "schema_version": 1,
+    "operation": "translation_review_writer.UnitReview.check",
+    "args": ["<实际 prepared_path>", "<上一步返回的 decisions>"],
+    "kwargs": {"unit_id": "<unit_id>", "name": "completeness", "status": "<completeness_status>", "reason": "<completeness_reason>"}
+  },
+  {
+    "schema_version": 1,
+    "operation": "translation_review_writer.UnitReview.term",
+    "args": ["<实际 prepared_path>", "<上一步返回的 decisions>"],
+    "kwargs": {"unit_id": "<unit_id>", "term_id": "<term_id>", "original": "<original_term>", "category": "<primary_category>", "source": "<source selector>", "aliases": ["<actual_aliases>"]}
+  },
+  {
+    "schema_version": 1,
+    "operation": "translation_review_writer.TermReview.search",
+    "args": ["<实际 prepared_path>", "<上一步返回的 decisions>"],
+    "kwargs": {"unit_id": "<unit_id>", "term_id": "<term_id>", "mode": "full_phrase", "query": "<actual_query>", "interpretation": "<query_interpretation>"}
+  },
+  {
+    "schema_version": 1,
+    "operation": "translation_review_writer.TermReview.decide",
+    "args": ["<实际 prepared_path>", "<上一步返回的 decisions>"],
+    "kwargs": {"unit_id": "<unit_id>", "term_id": "<term_id>", "decision": "<term_decision>", "translation": "<chosen_translation>", "reason": "<contextual_reason>", "matches": ["<explicitly_chosen_hit_ids>"]}
+  },
+  {
+    "schema_version": 1,
+    "operation": "translation_review_writer.UnitReview.scan",
+    "args": ["<实际 prepared_path>", "<上一步返回的 decisions>"],
+    "kwargs": {"unit_id": "<unit_id>", "category": "<primary_category>", "status": "<category_status>", "candidate_ids": ["<term_id>"], "reason": "<category_reason>"}
+  }
+]
 ```
+
+上面每步按顺序单独保存并执行 `z2o invoke`（若无别名改用 `TermReview.search_status`），最后用 `translation_review_writer.save_decision_draft` 写入新草稿文件（如 `work/translation-decisions-paragraph-01.json`）；草稿不冒充完成台账。
 
 `source` 应覆盖待比较的实际术语上下文；`original_term` 必须出现在所选片段里。同一个已注册候选可以被多个类别明确引用，不必为每一类复制候选；其主类别也必须实际包含该候选。`search()` 执行真实 `GlossaryIndex` 查询，保存原样行号、词条 ID、命中原文和调用方的解释；它记录 `searched`，不决定同义或采用。`decide()` 的 `matches` 只接受本候选真实查询返回的 ID，保存时会重跑查询核对。完整短语和词族不能用未查询的“不适用”代替。未收录术语的 `unlisted` 决定另外要求明确 `resolution_basis`；`not_a_term`、未决与不采用理由同样由复核者填写。
 
@@ -164,20 +251,23 @@
 2. 用 `next_review_task(writer)` 确认当前段。用 `writer.unit(unit_id, candidate_locations=...)` 完成该段自己的检查、术语扫描及逐次 occurrence，再调用 `require_unit_records()`；尚未完成时继续本段，不能把上一段的结论复制给下一段。
 3. 完成当前批次后写另一个新草稿。也可以随时 `writer.save(new_partial_review_path, terminology_path=new_partial_terminology_path)`，保存可检查的部分台账并查看实际 `pending_ids`；保存成功不表示已经就绪。
 4. 所有实际应译单元完成后，明确填写 `writer.source_issues_review(status, reason)`；范围和排除条件已经在逐段判断前完成。发现源文疑点时，用 `unit.issue(issue_id, source, description, candidate_readings, disposition, status, reason)` 保留各个读法与处理，不用总括结论代替疑点记录。
-5. 明确调用 `writer.terminology_review("reviewed", covered_units=actual_reviewed_unit_ids, no_unlisted_reason=actual_empty_set_reason_if_applicable)` 和 `writer.review("reviewed")`，再保存新的正式台账与术语文件：
+5. 明确调用 `translation_review_writer.ReviewWriter.terminology_review`（`status: "reviewed"`, `covered_units`, 可选 `no_unlisted_reason`）和 `translation_review_writer.ReviewWriter.review`（`status: "reviewed"`），再保存新的正式台账与术语文件：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "translation_review_writer.save_review",
+  "args": ["<实际 prepared_path>", "<累计 decisions 数组>"],
+  "kwargs": {
+    "output_path": "<实际 final_review_path>",
+    "terminology_path": "<实际 final_terminology_path>"
+  }
 }
 ```
 
-`save()` 返回原有 `validate_translation_review()` 的报告，不返回文件路径，也不替任何目标填写通过。已存在的输出文件会被拒绝，原准备台账不会被改写。完整流程中，先在实际 `run`／inventory 计划里登记本次新的复核与术语路径，再固定清单和准备骨架；不要用覆盖初始化台账的方式绕过保护。生成的术语总表沿用交付检查器的契约，采用项的 `glossary_locator` 是实际词表绝对路径加 `#L行号`，逐候选的查询与命中仍保存结构化定位。
+`save_review` 返回原有 `validate_translation_review` 的报告，不返回文件路径，也不替任何目标填写通过。已存在的输出文件会被拒绝，原准备台账不会被改写。完整流程中，先在实际 `run`／inventory 计划里登记本次新的复核与术语路径，再固定清单和准备骨架；不要用覆盖初始化台账的方式绕过保护。生成的术语总表沿用交付检查器的契约，采用项的 `glossary_locator` 是实际词表绝对路径加 `#L行号`，逐候选的查询与命中仍保存结构化定位。
 
-**候选后续有改动时保留旧版本。** 可把已经完成的本段短调用保存在自己的 JSON 请求文件里，边译边记录；每次需要绑定结果时针对实际候选版本准备新台账。最终版本稳定后，在新台账里重新选择实际片段、核对受改动影响的判断，再执行已明确核对的短调用。`from_draft()` 只恢复原绑定仍有效的草稿；它不换哈希、不跨版本迁移旧结论。旧候选追加了一段、行号变化、来源清单或词表变化，都会要求重新准备并明确处理，不能靠重新保存旧对象获得新版本结论。这样既可以从第一段开始实际复核，也不会把早期草稿的通过状态自动带到最终稿。
+**候选后续有改动时保留旧版本。** 可把已经完成的本段短调用保存在自己的工作目录 JSON 决定序列里，边译边记录；每次需要绑定结果时针对实际候选版本准备新台账。最终版本稳定后，在新台账里重新选择实际片段、核对受改动影响的判断，再重放已明确核对的短调用。`translation_review_writer.restore_decision_draft` 只恢复原绑定仍有效的草稿；它不换哈希、不跨版本迁移旧结论。旧候选追加了一段、行号变化、来源清单或词表变化，都会要求重新准备并明确处理，不能靠重新保存旧决定获得新版本结论。这样既可以从第一段开始实际复核，也不会把早期草稿的通过状态自动带到最终稿。
 
 ### 位置、重复片段与可见转录
 
@@ -188,9 +278,17 @@
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "translation_review_writer.select_source",
+  "args": ["<实际 prepared_path>", "<累计 decisions 数组>"],
+  "kwargs": {
+    "unit_id": "<实际 unit_id>",
+    "selector": {
+      "text": "<visible_transcription>",
+      "page": "<actual_page>",
+      "bbox": "<actual_box>",
+      "observation_basis": "<actual_observation_basis>"
+    }
+  }
 }
 ```
 
@@ -201,9 +299,40 @@ Rich Table 的译文可能位于 YAML 转义字符串中。选择实际源码片
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "translation_review_writer.select_candidate",
+  "args": ["<实际 prepared_path>", "<累计 decisions 数组>"],
+  "kwargs": {
+    "unit_id": "<实际 unit_id>",
+    "selector": {
+      "quote": "<actual_yaml_source_fragment>",
+      "lines": "<actual_source_lines>",
+      "comparison_text": "<explicit_decoded_cell_text>",
+      "interpretation_basis": "<actual_decoding_or_rendering_basis>"
+    }
+  }
+}
+```
+
+然后以 `UnitReview.occurrence` 记录 `table_cells`，并在 `comparison` 中传入单元格归属：
+
+```json
+{
+  "schema_version": 1,
+  "operation": "translation_review_writer.UnitReview.occurrence",
+  "args": ["<实际 prepared_path>", "<上一步返回的 decisions>"],
+  "kwargs": {
+    "unit_id": "<实际 unit_id>",
+    "kind": "table_cells",
+    "occurrence_id": "<cell_id>",
+    "source": "<source selector>",
+    "candidate": "<select_candidate 返回的 selector>",
+    "status": "<cell_status>",
+    "reason": "<cell_reason>",
+    "comparison": {
+      "source_cell": {"table_id": "<source_table_id>", "row": "<source_row>", "column": "<source_column>"},
+      "candidate_cell": {"table_id": "<candidate_table_id>", "row": "<candidate_row>", "column": "<candidate_column>"}
+    }
+  }
 }
 ```
 
@@ -224,13 +353,13 @@ Rich Table 的译文可能位于 YAML 转义字符串中。选择实际源码片
 
 未知 ID、错页 ID、重复 ID、缺少实际 bbox 会报错，不会猜测替代块。没有 block 文字时只保留真实 bbox，不伪造 OCR。空 `blocks` 不能单独提供定位；已有独立 bbox／quote 的视觉对象可继续使用该实际定位。此展开不改变来源清单；准备函数随后核验实际 PDF 与清单 SHA-256。它不判断所选 block 的阅读顺序、语义或是否构成完整段落，来源盘点者仍须实际确认。
 
-需要查看展开结果时，可在同一个调用脚本中使用：
+需要查看展开结果时，可直接调用 `prepare_translation_review.expand_source_locations`（再由人确认这些实际 block 是否覆盖了完整应译段）：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
+  "operation": "prepare_translation_review.expand_source_locations",
+  "args": ["<source-inventory.json 中本次 unit 对象>", "<source-inventory.json 中对应 source 对象>"],
   "kwargs": {}
 }
 ```
@@ -315,14 +444,23 @@ Rich Table 的译文可能位于 YAML 转义字符串中。选择实际源码片
 
 完整短语匹配采用英文词边界。`shared_token_family` 只表示核心词相同，例如来源的 `radial spacing` 可能检索出术语表中的 `radial velocity`；这条线索有助于核对方向，但不能把整个“径向速度”直接替换到间距语境。程序没有判断同义关系、专业类别或译义，也不宣布已经穷举术语。
 
-独立翻译任务可在自己的 JSON 请求文件中使用同一索引：
+独立翻译任务可在自己的 JSON 请求文件中使用同一术语索引（分别按完整术语调用 `GlossaryIndex.search`，按原段调用 `GlossaryIndex.suggest` 取得词族线索）：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
+  "operation": "glossary_candidates.GlossaryIndex.search",
+  "args": ["<实际 glossary_path>", "<actual_source_term>"],
   "kwargs": {}
+}
+```
+
+```json
+{
+  "schema_version": 1,
+  "operation": "glossary_candidates.GlossaryIndex.suggest",
+  "args": ["<实际 glossary_path>", "<original_paragraph>"],
+  "kwargs": {"max_family_entries": 8}
 }
 ```
 
@@ -417,13 +555,17 @@ Rich Table 的译文可能位于 YAML 转义字符串中。选择实际源码片
 
 ## 检查记录并处理诊断
 
-在同一工作脚本中读取实际文件，不通过命令行拼接记录：
+在同一工作流中读取实际文件并执行复核台账校验，不通过命令行拼接记录：
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
+  "operation": "validate_translation_review.validate_translation_review",
+  "args": [
+    "<实际 review_path>",
+    "<实际 inventory_path>",
+    "<实际 candidate_path>"
+  ],
   "kwargs": {}
 }
 ```
@@ -449,7 +591,7 @@ Rich Table 的译文可能位于 YAML 转义字符串中。选择实际源码片
 
 ## 完整单段示例
 
-先阅读[Rust 运行入口](../../literature-zotero2obsidian/references/rust-entrypoints.md)，了解一块记录如何从待核到完成。在自己的 JSON 请求文件中导入它的 `demonstrate()`，传入一个尚不存在的工作目录。示例只生成自带的四句虚构材料，不接收本次论文或译稿。
+先阅读[Rust 运行入口](../../literature-zotero2obsidian/references/rust-entrypoints.md#翻译复核)，了解单段记录的完整检查目标、短调用流程及最终校验器的验证方式；填写真实任务时每一条理由均须来自本次实际来源与候选的比较。
 
 示例分别给出 17 个检查目标的判断。每个不适用项都有对应的具体条件。10 个术语类别分别保存扫描结果。实际出现的命题、方向、否定、条件、指代、修饰、强度、数值和单位分别定位。三个术语候选保留真实查询，包括零命中、缩写命中和仅相关词族命中的区别。
 
@@ -459,7 +601,7 @@ Rich Table 的译文可能位于 YAML 转义字符串中。选择实际源码片
 
 ## 一个事实对应多个单目标
 
-使用[可运行脚本示例](fill_review_example.py)了解单项填写。`demonstrate(新的工作目录)` 创建只有虚构方片与边框句子的 PDF、Markdown、术语表及实际哈希，自动展开真实 block ID，只填写一个逐处方位事实。其他检查仍为待核，最终 `records_ready` 为 `False`。示例不读取任何真实论文、候选答案或历史评分。
+若在同一位置已通过人工核对确认了真实来源事实（如方位关系或结构对照），应在 `checks.json` 中为对应条目分别引用该精确事实记录的 JSON Pointer。
 
 同一已经实际核对的事实可以同时支持 `TRN-C68` 和 `TRN-A14`，两条目标分别记录自己的 ID、范围、理由和结果，并引用同一事实记录的精确 JSON Pointer。不要为复用证据重新编造一次动作；也不要把这两个目标的通过扩大到整节、整份技能或全部 `TRN-*`。示例的 `example-atomic-links.json` 只是两个目标的说明片段，不能代替完整 `checks.json`。
 

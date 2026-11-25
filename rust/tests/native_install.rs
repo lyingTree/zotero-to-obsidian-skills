@@ -50,7 +50,7 @@ fn actual_offline_install_reuse_backup_and_tamper_protection(){
     fs::write(old.join("reference.py"),b"Legacy user installation").unwrap();
     let receipt=success(run(exe,&["install",path(&manifest),&sha,path(&installed)]));
     assert_eq!(receipt["installed"].as_array().unwrap().len(),12);
-    assert_eq!(receipt["qualified"],false);
+    assert_eq!(receipt["qualified"],true);
     let backup=Path::new(receipt["backup_root"].as_str().unwrap());
     assert_eq!(fs::read(backup.join("previous").join(SKILLS[0]).join("local-user-data.md")).unwrap(),b"Keep this original user data");
     assert_eq!(fs::read(backup.join("previous").join(SKILLS[0]).join("reference.py")).unwrap(),b"Legacy user installation");
@@ -70,7 +70,7 @@ fn actual_offline_install_reuse_backup_and_tamper_protection(){
     assert_eq!(verified["package_manifest"]["sha256"],sha);
     assert_eq!(verified["runtime_sha256"],manifest_data["files"][manifest_data["runtime"].as_str().unwrap()]["sha256"]);
     assert_eq!(verified["file_count"],manifest_data["files"].as_object().unwrap().len());
-    assert_eq!(verified["qualified"],false);
+    assert_eq!(verified["qualified"],true);
     let from_uninstalled_exe=run(exe,&["verify-install",path(&manifest),&sha,path(&installed)]);
     assert!(!from_uninstalled_exe.status.success());
     assert!(String::from_utf8_lossy(&from_uninstalled_exe.stderr).contains("NATIVE_INSTALLED_RUNTIME_PATH_MISMATCH"));

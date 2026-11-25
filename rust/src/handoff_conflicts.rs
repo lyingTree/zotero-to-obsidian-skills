@@ -2,8 +2,8 @@
 //! validation and the native record writer. No OCR or visual truth inference.
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
-use std::{collections::{HashMap,HashSet},path::{Path,PathBuf}};
-use crate::{check_ledger,check_write,files,path,path_text,pdf_structure::Pdf};
+use std::{collections::{HashMap,HashSet},path::Path};
+use crate::{check_ledger,check_write,files,path,pdf_structure::Pdf};
 
 fn nonempty(v:&Value)->bool{v.as_str().is_some_and(|s|!s.trim().is_empty())}
 fn coordinates()->Value{json!({"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"})}

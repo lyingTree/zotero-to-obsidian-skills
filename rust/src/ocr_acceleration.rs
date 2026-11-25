@@ -34,9 +34,9 @@ fn run_worker(v:&Value,timeout:Duration)->Result<Value>{
     // bound runtime. Keep installed system driver discovery; no shell.
     let runtime=path(&v["runtime_path"])?;let dir=runtime.parent().context("Runtime directory")?;
     cmd.current_dir(dir);
-    #[cfg(target_os="linux")]{cmd.env("LD_LIBRARY_PATH",dir);cmd.env_remove("LD_PRELOAD");}
-    #[cfg(target_os="macos")]{cmd.env("DYLD_LIBRARY_PATH",dir);cmd.env_remove("DYLD_INSERT_LIBRARIES");}
-    #[cfg(windows)]{cmd.env("PATH",dir);}
+    #[cfg(target_os="linux")]{cmd.env("LD_LIBRARY_PATH",files::prepend_env_path("LD_LIBRARY_PATH",dir));cmd.env_remove("LD_PRELOAD");}
+    #[cfg(target_os="macos")]{cmd.env("DYLD_LIBRARY_PATH",files::prepend_env_path("DYLD_LIBRARY_PATH",dir));cmd.env_remove("DYLD_INSERT_LIBRARIES");}
+    #[cfg(windows)]{cmd.env("PATH",files::prepend_env_path("PATH",dir));}
     if v["provider"]==CPU{cmd.env("CUDA_VISIBLE_DEVICES","").env("HIP_VISIBLE_DEVICES","");}
     let mut child=cmd.spawn()?;
     let begin=Instant::now();
@@ -146,6 +146,7 @@ impl Settings{
 #[derive(Default)]
 pub struct JobState{resolved:Option<(String,String)>,gpu_failure:Option<Value>}
 impl JobState{
+    #[allow(clippy::too_many_arguments)]
     pub fn run(&mut self,png:&Path,image_sha:&str,cpu:&Path,cpu_sha:&str,profile:&str,layout:&str,cfg:&Settings)->Result<Value>{
         cfg.binding()?;
         if self.resolved.is_none(){

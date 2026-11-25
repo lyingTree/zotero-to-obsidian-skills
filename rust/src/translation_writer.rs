@@ -1,7 +1,7 @@
 //! Stateless native translation decisions. Rebuild from the immutable
 //! prepared file and explicit ordered commands, not caller-supplied conclusions
 //! about file identity, search results or candidate locations.
-use crate::{files,path,path_text,parse_json,pipeline,translation_prepare as prep,translation_validate as tv,glossary,syntax};
+use crate::{files,path,parse_json,pipeline,translation_prepare as prep,translation_validate as tv,glossary,syntax};
 use anyhow::{anyhow,ensure,Context,Result};
 use serde_json::{json,Value,Map};
 use std::{collections::{BTreeMap,BTreeSet,HashMap,HashSet},fs,io::Write,path::{Path,PathBuf}};
@@ -615,7 +615,8 @@ pub fn replay(prepared:&Path,commands:&Value)->Result<Writer>{
 /// Explicit native equivalents of the reference ReviewWriter, UnitReview
 /// and TermReview public mutation methods. A request carries the original
 /// preparation and the prior short-call log, not a mutable review ledger.
-pub const PUBLIC_DECISION_METHODS:&[(&str,&str,&[&str],&[(&str,Option<&str>)])]=&[
+type PublicDecisionMethod=(&'static str,&'static str,&'static [&'static str],&'static [(&'static str,Option<&'static str>)]);
+pub const PUBLIC_DECISION_METHODS:&[PublicDecisionMethod]=&[
     ("ReviewWriter.scope","scope",&["status","reason"],&[]),
     ("ReviewWriter.exclude","exclude",&["unit_id","condition","reason"],&[]),
     ("ReviewWriter.source_issues_review","source_issues_review",&["status","reason"],&[]),

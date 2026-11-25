@@ -20,6 +20,8 @@ $ErrorActionPreference = "Stop"
 if (-not $SkillsRoot) {
   if ($env:Z2O_SKILLS_ROOT) {
     $SkillsRoot = $env:Z2O_SKILLS_ROOT
+  } elseif (Test-Path (Join-Path $PSScriptRoot "rust\Cargo.toml")) {
+    throw "Refusing to install into the source repository root ($PSScriptRoot). Pass -SkillsRoot <dir> or set Z2O_SKILLS_ROOT."
   } else {
     $SkillsRoot = $PSScriptRoot
   }
@@ -56,6 +58,13 @@ New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
 
 function Get-FileSha256Hex([string]$path) {
   return (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Invoke-Git([string[]]$GitArgs) {
+  & git @GitArgs
+  if ($LASTEXITCODE -ne 0) {
+    throw "git $($GitArgs -join ' ') failed with exit code $LASTEXITCODE"
+  }
 }
 
 try {
@@ -130,25 +139,40 @@ try {
     if (Get-Command git -ErrorAction SilentlyContinue) {
       Write-Host "==> Fetching pinned external skills (obsidian-cli@$obsidianRev, zotero-skills@$zoteroRev) ..."
       $obsTmp = Join-Path $tmpRoot "obsidian-skills"
-      & git init -q $obsTmp
-      & git -C $obsTmp remote add origin "https://github.com/obsidianmd/obsidian-skills.git"
-      & git -C $obsTmp fetch -q --depth 1 origin $obsidianRev
-      & git -C $obsTmp checkout -q FETCH_HEAD
+      Invoke-Git @("init", "-q", $obsTmp)
+      Invoke-Git @("-C", $obsTmp, "remote", "add", "origin", "https://github.com/obsidianmd/obsidian-skills.git")
+      Invoke-Git @("-C", $obsTmp, "fetch", "-q", "--depth", "1", "origin", $obsidianRev)
+      Invoke-Git @("-C", $obsTmp, "checkout", "-q", "FETCH_HEAD")
+      $obsSkillSrc = Join-Path $obsTmp "plugins\obsidian\skills\obsidian-cli"
+      $obsLicenseSrc = Join-Path $obsTmp "LICENSE"
+      if (-not (Test-Path $obsSkillSrc -PathType Container) -or -not (Test-Path $obsLicenseSrc -PathType Leaf)) {
+        throw "Cloned obsidian-skills is missing expected skill files."
+      }
       $dstObs = Join-Path $resolvedSkillsRoot "obsidian-cli"
       if (Test-Path $dstObs) { Remove-Item $dstObs -Recurse -Force }
-      Copy-Item (Join-Path $obsTmp "plugins\obsidian\skills\obsidian-cli") $dstObs -Recurse -Force
-      Copy-Item (Join-Path $obsTmp "LICENSE") (Join-Path $dstObs "LICENSE") -Force
+      Copy-Item $obsSkillSrc $dstObs -Recurse -Force
+      Copy-Item $obsLicenseSrc (Join-Path $dstObs "LICENSE") -Force
 
       $zotTmp = Join-Path $tmpRoot "zotero-skills"
-      & git init -q $zotTmp
-      & git -C $zotTmp remote add origin "https://github.com/WenyuChiou/zotero-skills.git"
-      & git -C $zotTmp fetch -q --depth 1 origin $zoteroRev
-      & git -C $zotTmp checkout -q FETCH_HEAD
+      Invoke-Git @("init", "-q", $zotTmp)
+      Invoke-Git @("-C", $zotTmp, "remote", "add", "origin", "https://github.com/WenyuChiou/zotero-skills.git")
+      Invoke-Git @("-C", $zotTmp, "fetch", "-q", "--depth", "1", "origin", $zoteroRev)
+      Invoke-Git @("-C", $zotTmp, "checkout", "-q", "FETCH_HEAD")
+      $zotSkillSrc = Join-Path $zotTmp "skills\zotero-skills"
+      $zotScriptsSrc = Join-Path $zotTmp "scripts"
+      $zotLicenseSrc = Join-Path $zotTmp "LICENSE"
+      $zotReqSrc = Join-Path $zotTmp "requirements.txt"
+      if (-not (Test-Path $zotSkillSrc -PathType Container) -or -not (Test-Path $zotScriptsSrc -PathType Container) -or -not (Test-Path $zotLicenseSrc -PathType Leaf)) {
+        throw "Cloned zotero-skills is missing expected skill files."
+      }
       $dstZot = Join-Path $resolvedSkillsRoot "zotero-skills"
       if (Test-Path $dstZot) { Remove-Item $dstZot -Recurse -Force }
-      Copy-Item (Join-Path $zotTmp "skills\zotero-skills") $dstZot -Recurse -Force
-      Copy-Item (Join-Path $zotTmp "scripts") (Join-Path $dstZot "scripts") -Recurse -Force
-      Copy-Item (Join-Path $zotTmp "LICENSE") (Join-Path $dstZot "LICENSE") -Force
+      Copy-Item $zotSkillSrc $dstZot -Recurse -Force
+      Copy-Item $zotScriptsSrc (Join-Path $dstZot "scripts") -Recurse -Force
+      if (Test-Path $zotReqSrc -PathType Leaf) {
+        Copy-Item $zotReqSrc (Join-Path $dstZot "requirements.txt") -Force
+      }
+      Copy-Item $zotLicenseSrc (Join-Path $dstZot "LICENSE") -Force
     } else {
       Write-Warning "git not found on PATH; skipped external skills (obsidian-cli, zotero-skills)."
     }

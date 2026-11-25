@@ -1,6 +1,6 @@
 ---
 name: literature-fulltext-extract
-version: v2.0.2
+version: v2.0.3
 description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF 按页 OCR 及 DOCX、HTML、EPUB、文本等格式，修复版面断行并保留来源定位。不负责翻译或写入 Obsidian。
 ---
 
@@ -12,6 +12,7 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 
 - item.json 已确认的主全文及附件哈希。
 - 读取[交接约定](../literature-zotero2obsidian/references/pipeline-contract.md)；涉及项目路径、模板、工具或阻断级别时读取[项目配置](../literature-zotero2obsidian/references/project-profile.md)。
+- 如需本地 OCR、表格/公式识别或 MiniCPM/Jev，读取[OCR、表格/公式识别与 MiniCPM/Jev 指南](../literature-zotero2obsidian/references/ocr-and-minicpm.md)。
 
 ## 执行步骤
 

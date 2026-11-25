@@ -33,6 +33,7 @@ pub fn prepare_docx_sources(sources:&Value,root:&Path,roles:&Value,glossary:Opti
 pub fn prepare_sources(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dpi:u64,ocr:Option<&crate::pdf_inventory::OcrSettings>,progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
     prepare_impl(sources,root,roles,glossary,dpi,ocr,false,progress)
 }
+#[allow(clippy::too_many_arguments)]
 fn prepare_impl(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dpi:u64,ocr:Option<&crate::pdf_inventory::OcrSettings>,docx_only:bool,mut progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
     let map=sources.as_object().filter(|m|!m.is_empty()).context("Provide at least one source PDF or DOCX")?;
     ensure!((72..=600).contains(&dpi),"dpi must be between 72 and 600");

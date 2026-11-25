@@ -12,10 +12,40 @@ if [ "$#" -gt 4 ]; then
 fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SKILLS_ROOT="${1:-${Z2O_SKILLS_ROOT:-$SCRIPT_DIR}}"
+SKILLS_ROOT="${1:-${SKILLS_ROOT:-${Z2O_SKILLS_ROOT:-}}}"
+if [ -z "$SKILLS_ROOT" ]; then
+  if [ -f "$SCRIPT_DIR/rust/Cargo.toml" ]; then
+    echo "Refusing to install into the source repository root ($SCRIPT_DIR). Pass [skills-root] or set SKILLS_ROOT=/path/to/skills." >&2
+    exit 1
+  fi
+  SKILLS_ROOT="$SCRIPT_DIR"
+fi
+
+lock_revision() {
+  local dep="$1"
+  local lock_file="${SCRIPT_DIR}/dependencies.lock.json"
+  [ -f "$lock_file" ] || return 0
+  awk -v dep="\"${dep}\"[[:space:]]*:[[:space:]]*\\{" '
+    !found && $0 ~ dep { found = 1; depth = 1; next }
+    found {
+      if ($0 ~ /"revision"[[:space:]]*:/) {
+        line = $0
+        sub(/^.*"revision"[[:space:]]*:[[:space:]]*"/, "", line)
+        sub(/".*$/, "", line)
+        print line
+        exit
+      }
+      if ($0 ~ /\{/) depth++
+      if ($0 ~ /\}/) { depth--; if (depth <= 0) exit }
+    }
+  ' "$lock_file"
+}
+
 VERSION="${2:-${Z2O_VERSION:-}}"
-OBSIDIAN_REF="${3:-${Z2O_OBSIDIAN_SKILLS_REF:-b110b2f8e9eb1f287892f937050dfd40af862cbb}}"
-ZOTERO_REF="${4:-${Z2O_ZOTERO_SKILLS_REF:-e5c11e744fab34d9dd322319195249daf735c2b1}}"
+OBSIDIAN_REF="${3:-${Z2O_OBSIDIAN_SKILLS_REF:-$(lock_revision "obsidian-cli")}}"
+OBSIDIAN_REF="${OBSIDIAN_REF:-b110b2f8e9eb1f287892f937050dfd40af862cbb}"
+ZOTERO_REF="${4:-${Z2O_ZOTERO_SKILLS_REF:-$(lock_revision "zotero-skills")}}"
+ZOTERO_REF="${ZOTERO_REF:-e5c11e744fab34d9dd322319195249daf735c2b1}"
 REPO="${Z2O_REPO:-lyingTree/zotero-to-obsidian-skills}"
 
 OS="$(uname -s)"
@@ -39,11 +69,16 @@ esac
 if [ -z "$VERSION" ] && [ -f "$SCRIPT_DIR/VERSION" ]; then
   VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION")"
 fi
+if [ -z "$VERSION" ]; then
+  VERSION="$(curl -fsSL -H "User-Agent: z2o-installer" "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 \
+    | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/')"
+fi
 if [ -n "$VERSION" ] && [[ "$VERSION" != v* ]]; then
   VERSION="v$VERSION"
 fi
 if [ -z "$VERSION" ]; then
-  echo "Version tag is required (or place VERSION file next to install.sh)." >&2
+  echo "Could not determine release version tag from VERSION file or GitHub releases." >&2
   exit 1
 fi
 
@@ -96,6 +131,10 @@ if [ "${Z2O_SKIP_EXTERNAL_DEPENDENCIES:-0}" != "1" ] && command -v git >/dev/nul
   git -C "$OBS_TMP" remote add origin "https://github.com/obsidianmd/obsidian-skills.git"
   git -C "$OBS_TMP" fetch -q --depth 1 origin "$OBSIDIAN_REF"
   git -C "$OBS_TMP" checkout -q FETCH_HEAD
+  if [ ! -d "${OBS_TMP}/plugins/obsidian/skills/obsidian-cli" ] || [ ! -f "${OBS_TMP}/LICENSE" ]; then
+    echo "Cloned obsidian-skills is missing expected skill files." >&2
+    exit 1
+  fi
   rm -rf "${SKILLS_ROOT}/obsidian-cli"
   cp -R "${OBS_TMP}/plugins/obsidian/skills/obsidian-cli" "${SKILLS_ROOT}/obsidian-cli"
   cp "${OBS_TMP}/LICENSE" "${SKILLS_ROOT}/obsidian-cli/LICENSE"
@@ -105,9 +144,16 @@ if [ "${Z2O_SKIP_EXTERNAL_DEPENDENCIES:-0}" != "1" ] && command -v git >/dev/nul
   git -C "$ZOT_TMP" remote add origin "https://github.com/WenyuChiou/zotero-skills.git"
   git -C "$ZOT_TMP" fetch -q --depth 1 origin "$ZOTERO_REF"
   git -C "$ZOT_TMP" checkout -q FETCH_HEAD
+  if [ ! -d "${ZOT_TMP}/skills/zotero-skills" ] || [ ! -d "${ZOT_TMP}/scripts" ] || [ ! -f "${ZOT_TMP}/LICENSE" ]; then
+    echo "Cloned zotero-skills is missing expected skill files." >&2
+    exit 1
+  fi
   rm -rf "${SKILLS_ROOT}/zotero-skills"
   cp -R "${ZOT_TMP}/skills/zotero-skills" "${SKILLS_ROOT}/zotero-skills"
   cp -R "${ZOT_TMP}/scripts" "${SKILLS_ROOT}/zotero-skills/scripts"
+  if [ -f "${ZOT_TMP}/requirements.txt" ]; then
+    cp "${ZOT_TMP}/requirements.txt" "${SKILLS_ROOT}/zotero-skills/requirements.txt"
+  fi
   cp "${ZOT_TMP}/LICENSE" "${SKILLS_ROOT}/zotero-skills/LICENSE"
 fi
 

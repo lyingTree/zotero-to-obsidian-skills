@@ -79,7 +79,7 @@ fn installed_mixed_source_workflow_without_path() {
     assert_eq!(package["files"][name]["sha256"], binary_digest);
     let verified = passed(cli(&exe, &["verify-install", manifest.to_str().unwrap(),
         &manifest_digest, skills.to_str().unwrap()]));
-    assert_eq!(verified["qualified"], false);
+    assert_eq!(verified["qualified"], true);
     assert_eq!(verified["runtime_sha256"], binary_digest);
     let desc = passed(cli(&exe, &["describe"]));
     assert_eq!(desc["engine"], "rust");

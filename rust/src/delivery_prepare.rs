@@ -90,6 +90,7 @@ impl ManifestPlan{
         Ok(())
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn prepare_manifest(inventory:&Path,candidate:&Path,deliveries:&Value,dest:&Path,root:Option<&Path>,
     translation:Option<&Path>,edges:bool,update:Option<&check_write::CandidateUpdate>)->Result<ManifestPlan>{
     let (raw,inv_binding)=files::read_bound(inventory)?;

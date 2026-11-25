@@ -6,14 +6,27 @@
 
 只有图像对象的 bbox 会遗漏 PDF 另外绘制的文字，甚至只截掉一个起首字母。开始裁剪时先把拟用的框交给 `inspect_crop_boundaries(...)`；它读取来源 PDF 的文字绘制记录，逐边列出**与当前框相交、但有部分内容留在框外的文字**，并生成能看到框外区域的上下文图。无需先自填四边通过状态。
 
-将下面内容保存为自己的工作脚本，并让 `pdf_image_objects.py` 所在的 `scripts` 目录可导入。页码和候选框从本次源页或实际对象索引读取；这里不预填任何论文坐标。
+将下面内容保存为工作目录中的 JSON 请求文件，通过 `z2o invoke` 调用 `pdf_image_objects.inspect_crop_boundaries`。页码和候选框从本次源页或实际对象索引读取；这里不预填任何论文坐标。
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "pdf_image_objects.inspect_crop_boundaries",
+  "args": ["<实际 source.path>"],
+  "kwargs": {
+    "page_number": "<本次页码整数>",
+    "bbox": ["<x0>", "<y0>", "<x1>", "<y1>"],
+    "coordinate_system": {
+      "space": "pdf_page",
+      "unit": "pt",
+      "origin": "top_left",
+      "x_axis": "right",
+      "y_axis": "down",
+      "rotation": "unrotated"
+    },
+    "context_destination": "work/candidate-context.png",
+    "expected_source_sha256": "<实际 source.sha256>"
+  }
 }
 ```
 
@@ -130,18 +143,23 @@
 
 ## 原图对象索引与导出
 
-先运行 [prepare_source_inventory.prepare_sources](../../literature-zotero2obsidian/scripts/prepare_source_inventory.prepare_sources) 的 `prepare_sources(...)`。每页的 `image_index.occurrences` 给出实际 PDF 内容流中调用的 `image_xref`、资源名、调用位置、完整对象 `bbox` 及六项 `transform`。嵌套 Form 的调用链单独保存。对象身份来自实际 `Do` 调用；相同解码像素不会被当作相同 xref，资源表中的未使用图片也不会被列为实际出现。
+先运行 [Rust 运行入口](../../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `prepare_source_inventory.prepare_sources`。每页的 `image_index.occurrences` 给出实际 PDF 内容流中调用的 `image_xref`、资源名、调用位置、完整对象 `bbox` 及六项 `transform`。嵌套 Form 的调用链单独保存。对象身份来自实际 `Do` 调用；相同解码像素不会被当作相同 xref，资源表中的未使用图片也不会被列为实际出现。
 
 每份来源的 `image_objects` 按 xref 去重。每个对象登记 `original_encoded_extension`、`extracted_extension`、原始提取文件 `raw_asset` 的路径与 SHA-256，以及 SMask 的 xref、编码、文件哈希和透明度范围。复用同一 xref 的页面共用一个提取文件。JPEG 等独立编码保留原编码；PDF 的 Flate 等采样流本来没有独立图片扩展名，此时 `original_encoded_extension` 为 `null`，`extracted_extension` 说明无损封装后的实际格式。`raw_asset` 是原对象的诊断文件，带蒙版时直接复制它会丢失独立蒙版。
 
-查看源页后，在自己的工作脚本中设置已选中的页码和 xref，再调用 [pdf_image_objects.py](../../literature-zotero2obsidian/scripts/pdf_image_objects.py)。下面的常量需要填写本次来源中的真实值；目标路径不写扩展名时，由实际输出编码决定扩展名。
+查看源页后，按实际选中的页码与 xref 填写请求，调用 [Rust 运行入口](../../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `pdf_image_objects.export_image_object`。下面字段须填写本次来源中的真实值；目标路径不写扩展名时，由实际输出编码决定扩展名。
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "pdf_image_objects.export_image_object",
+  "args": ["<实际 source.path>"],
+  "kwargs": {
+    "page_number": "<本次页码整数>",
+    "image_xref": "<本次 image_xref 整数>",
+    "destination": "output/assets/selected-figure",
+    "expected_source_sha256": "<实际 source.sha256>"
+  }
 }
 ```
 
@@ -159,14 +177,29 @@ PDF Form 的 BBox 可用任意一对对角点表示，工具先规范化坐标�
 
 PDF 中存在旋转、镜像、斜切或非等比显示时，独立原编码图片可能改变图件的显示方式，导出函数也会明确要求页面渲染。`render_page_region(...)` 的输入仍使用未旋转 PDF 点坐标，输出图片保留源页实际显示方向。
 
-当图由多个对象组成，或独立导出不能保留 PDF 的显示效果时，先按本文开头运行边界取证，并在完整源页上确定全部图件内容。以完整对象 bbox 为起点；对象外仍有属于图件的标注时，扩展到这些标注的实际边界。然后使用 `render_page_region(...)` 渲染已经确认的页面范围。函数要求明确的未旋转 PDF 点坐标，默认向四周各加 6 pt 安全边距，实际边距受页面边界限制并逐边登记。这个默认值只是起点，不能代替目视核对；返回的 `boundary_check` 会对实际输出范围继续做来源检查。
+当图由多个对象组成，或独立导出不能保留 PDF 的显示效果时，先按本文开头运行边界取证，并在完整源页上确定全部图件内容。以完整对象 bbox 为起点；对象外仍有属于图件的标注时，扩展到这些标注的实际边界。然后使用 `pdf_image_objects.render_page_region` 渲染已经确认的页面范围。函数要求明确的未旋转 PDF 点坐标，默认向四周各加 6 pt 安全边距，实际边距受页面边界限制并逐边登记。这个默认值只是起点，不能代替目视核对；返回的 `boundary_check` 会对实际输出范围继续做来源检查。
 
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "pdf_image_objects.render_page_region",
+  "args": ["<实际 source.path>"],
+  "kwargs": {
+    "page_number": "<本次页码整数>",
+    "bbox": ["<x0>", "<y0>", "<x1>", "<y1>"],
+    "coordinate_system": {
+      "space": "pdf_page",
+      "unit": "pt",
+      "origin": "top_left",
+      "x_axis": "right",
+      "y_axis": "down",
+      "rotation": "unrotated"
+    },
+    "destination": "output/assets/selected-figure.png",
+    "margin_pt": 6,
+    "dpi": 300,
+    "expected_source_sha256": "<实际 source.sha256>"
+  }
 }
 ```
 
@@ -211,9 +244,12 @@ PDF 中存在旋转、镜像、斜切或非等比显示时，独立原编码图�
 ```json
 {
   "schema_version": 1,
-  "operation": "note_pipeline.process_content",
-  "args": [],
-  "kwargs": {}
+  "operation": "prepare_source_inventory.record_figure_edges",
+  "args": ["work/figure-reviews.json", "synthetic-figure", 0],
+  "kwargs": {
+    "source_location_indices": [0],
+    "observations": "<查看四边后逐边填写 left/right/top/bottom 的 status 与 observation>"
+  }
 }
 ```
 

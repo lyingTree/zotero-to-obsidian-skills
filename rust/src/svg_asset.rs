@@ -86,7 +86,7 @@ fn geometry_value(name: &str, value: &str) -> Result<()> {
         "d" => !value.trim().is_empty() && svgtypes::PathParser::from(value).all(|v| v.is_ok()),
         "points" => {
             let mut count = 0usize;
-            svgtypes::NumberListParser::from(value).all(|v|{count+=1;v.is_ok()}) && count >= 4 && count%2==0
+            svgtypes::NumberListParser::from(value).all(|v|{count+=1;v.is_ok()}) && count >= 4 && count.is_multiple_of(2)
         },
         "transform" | "gradientTransform" => svgtypes::TransformListParser::from(value).all(|v|v.is_ok()),
         "viewBox" => value.parse::<svgtypes::ViewBox>().is_ok(),
@@ -249,6 +249,6 @@ pub(crate) fn validate(bytes: &[u8]) -> Result<()> {
     let mut pixmap = tiny_skia::Pixmap::new((w*scale).ceil().max(1.) as u32,(h*scale).ceil().max(1.) as u32)
         .context("FIGURE_SVG_RENDER: invalid bounded canvas")?;
     resvg::render(&tree,tiny_skia::Transform::from_scale(scale,scale),&mut pixmap.as_mut());
-    ensure!(pixmap.data().chunks_exact(4).any(|px|px[3]!=0), "FIGURE_SVG_RENDER: no visible vector pixels");
+    ensure!(pixmap.data().as_chunks::<4>().0.iter().any(|px|px[3]!=0), "FIGURE_SVG_RENDER: no visible vector pixels");
     Ok(())
 }

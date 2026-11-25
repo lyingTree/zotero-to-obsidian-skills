@@ -2,7 +2,7 @@
 //! modify source text or infer that a model score is a calibrated probability.
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
-use std::{collections::{BTreeMap,HashSet},path::{Path,PathBuf},fs};
+use std::{collections::{BTreeMap,HashSet},path::Path,fs};
 use crate::{files,check_ledger,check_write,path,parse_json};
 
 const MAX_JSON:u64=128*1024*1024;
@@ -44,7 +44,7 @@ fn overlap(a:Box4,b:Box4)->f64{
 }
 fn score(v:&Value)->Option<f64>{v.as_f64().filter(|s|s.is_finite()&&(0. ..=1.).contains(s))}
 fn scientific(s:&str)->bool{
-    s.chars().any(|c|c.is_numeric()||matches!(c,'\u{00b0}'|'\u{00b1}'|'\u{00d7}'|'\u{00f7}'|'\u{2212}'|'\u{221e}'|'\u{2260}'|'\u{2264}'|'\u{2265}'|'\u{00b5}'|'%'|'='|'+'|'^'|'_'|'\\'|'±')||
+    s.chars().any(|c|c.is_numeric()||matches!(c,'\u{00b0}'|'\u{00b1}'|'\u{00d7}'|'\u{00f7}'|'\u{2212}'|'\u{221e}'|'\u{2260}'|'\u{2264}'|'\u{2265}'|'\u{00b5}'|'%'|'='|'+'|'^'|'_'|'\\')||
         ('\u{0370}'..='\u{03ff}').contains(&c)||('\u{2070}'..='\u{209f}').contains(&c)||('\u{2200}'..='\u{22ff}').contains(&c))
 }
 fn whitespace_only(s:&str)->String{s.split_whitespace().collect::<Vec<_>>().join(" ")}
