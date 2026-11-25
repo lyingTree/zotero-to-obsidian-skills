@@ -14,27 +14,27 @@
     "validate_note": "implementation_candidate",
     "deterministic_stage_checks": "implementation_candidate",
     "format_helpers": "implementation_candidate",
-    "validate_delivery": "partial",
+    "validate_delivery": "implementation_candidate",
     "check_records": "implementation_candidate",
-    "complete_workflow": "partial",
+    "complete_workflow": "implementation_candidate",
     "draft_queue": "implementation_candidate",
-    "handoff_maps": "partial",
-    "mapping_rerun": "partial",
-    "pdf_image_objects": "partial",
-    "prepare_source_inventory": "partial",
+    "handoff_maps": "implementation_candidate",
+    "mapping_rerun": "implementation_candidate",
+    "pdf_image_objects": "implementation_candidate",
+    "prepare_source_inventory": "implementation_candidate",
     "prepare_translation_review": "implementation_candidate",
     "translation_review_tasks": "implementation_candidate",
-    "translation_review_writer": "partial",
+    "translation_review_writer": "implementation_candidate",
     "validate_translation_review": "implementation_candidate"
   },
   "capabilities": {
     "all_original_runtime_operations": {
       "qualified": false,
-      "blocker": "442f0a0 compiled registry verified all 23 modules with zero unmapped public symbols; full historical behavior and platform qualification remain"
+      "blocker": "442f0a0 compiled registry verified all 23 modules with zero unmapped public symbols and all 23 modules are now implementation candidates; full historical behavior and platform qualification remain"
     },
     "pdf_source_geometry_and_image_evidence": {
       "qualified": false,
-      "blocker": "PP-OCR CPU real qualification; optional isolated GPU/CPU fallback integrated into PDF OCR preparation and inventory, with same-profile model bindings; local MiniCPM-OCR/Jev model-bearing Linux/Apple-silicon macOS CI targeted; actual new results, accelerator hardware and full PDF/platform qualification remain; packed 1/2/4-bit samples, explicit Decode inversion and independently bound indirect mask replay added; complete codec/color-space coverage and independent render comparison remain unverified"
+      "blocker": "PP-OCR CPU real qualification; optional isolated GPU/CPU fallback integrated into PDF OCR preparation and inventory, with same-profile model bindings; local MiniCPM-OCR/Jev model-bearing Linux/Apple-silicon macOS CI targeted with prebuilt binary reuse; packed 1/2/4-bit samples, explicit Decode inversion, same-resolution 1-bit explicit Mask composition and independently bound indirect mask replay verified against PyMuPDF pixels on fixtures; complete codec/color-space coverage and full platform qualification remain"
     },
     "docx_source_qualification": {
       "qualified": false,
@@ -42,15 +42,15 @@
     },
     "source_delivery_mapping_and_review_ledger": {
       "qualified": false,
-      "blocker": "Native handoff/rerun and delivery checks now enforce author-affiliation mapping, unmapped bibliography calls and distinct reference anchors; complete historical representations and independent source/figure parity remain; merged historical block partitions, actual rerun source-scope/hash checks and cross-stage resource bindings added; differential verification pending"
+      "blocker": "Native handoff/rerun and delivery checks enforce author-affiliation mapping, unmapped bibliography calls, distinct reference anchors, merged historical block partitions, actual rerun source-scope/hash checks, cross-stage resource bindings and strict manifest/snapshot schema checks with reference differential tests; complete historical representations and independent source/figure parity remain"
     },
     "translation_review_lifecycle": {
       "qualified": false,
-      "blocker": "All reference ReviewWriter/UnitReview/TermReview mutation methods now have explicit native replay-backed operations; expanded per-method differential and full workflow qualification remain; hash-bound decision draft restoration and review publication rechecks added; new regression results pending"
+      "blocker": "All reference ReviewWriter/UnitReview/TermReview mutation methods have explicit native replay-backed operations, hash-bound decision draft restoration and review publication rechecks with differential regression coverage; complete end-to-end workflow qualification remains"
     },
     "native_complete_workflow": {
       "qualified": false,
-      "blocker": "Native mixed PDF/DOCX initialization, draft queue, handoff/rerun and post-draft workflow inspection/resume implemented; final delivery equivalence remains unqualified; exact manifest/map selector and resource-root consistency plus cross-stage evidence revalidation added; new CI and complete historical acceptance required"
+      "blocker": "Native mixed PDF/DOCX initialization, draft queue, handoff/rerun, post-draft manifest/map generation and workflow inspection/resume implemented and differentially tested; final delivery equivalence remains unqualified; new CI and complete historical acceptance required"
     },
     "native_installation_and_external_integration": {
       "qualified": false,
@@ -66,7 +66,7 @@
     },
     "platform_installation_and_release_artifacts": {
       "qualified": false,
-      "blocker": "Earlier Windows x64/ARM64 compilation and native tests passed, Git Bash installer digest handling fixed; official llama.cpp b11901 CPU and optional GPU asset catalog for all five supported targets and native runtime launch matrix added; actual tests pending"
+      "blocker": "Earlier Windows x64/ARM64 compilation and native tests passed, Git Bash installer digest handling fixed; official llama.cpp b11901/b11928 CPU and optional GPU asset catalogs for all five supported targets and native runtime launch matrix added; actual five-platform model smoke and release artifact tests pending"
     },
     "locked_dependencies_and_license_review": {
       "qualified": false,

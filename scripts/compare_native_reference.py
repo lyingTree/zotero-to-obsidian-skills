@@ -1761,6 +1761,228 @@ class NativeHandoffGenerationComparison(unittest.TestCase):
         suite.save(path, view)
         compare(False)
 
+    def test_merged_block_partition_validation_and_rerun_against_reference(self):
+        import test_handoff_maps as suite
+        import mapping_rerun as reference
+        fixture = suite.Fixture(self.root.joinpath("merged-fixture"))
+        self.assertTrue(fixture.write().records_ready)
+        source_map_path = fixture.paths["source_map"]
+        source_map = suite.read(source_map_path)
+        rows = source_map["blocks"]
+        combined_text = "\n".join(row["original_text"] for row in rows)
+        combined = dict(rows[0])
+        combined.pop("source_locator", None)
+        combined.pop("target_unit", None)
+        combined.update({
+            "block_id": "merged-main",
+            "source_id": "main",
+            "source_blocks": [row["block_id"] for row in rows],
+            "source_locators": [row["source_locator"] for row in rows],
+            "joiner": "\n",
+            "original_text": combined_text,
+            "original_sha256": hashlib.sha256(combined_text.encode("utf-8")).hexdigest(),
+            "target_units": ["main-title", "main-body"],
+            "kind": "mixed",
+        })
+        source_map["blocks"] = [combined]
+        suite.save(source_map_path, source_map)
+        paths = {name: str(path) for name, path in fixture.paths.items()}
+        py_valid = fixture.validate()
+        rs_valid = self.invoke("handoff_maps.validate_handoff_maps", str(fixture.inventory_path),
+                               str(fixture.candidate), paths, expected_source_bindings=fixture.expected)
+        self.assertTrue(py_valid.records_ready, py_valid.as_dict())
+        self.assertTrue(rs_valid["records_ready"], rs_valid)
+
+        run_path = self.root.joinpath("merged-run.json")
+        suite.save(run_path, {
+            "schema_version": 1,
+            "records": {"source_inventory": str(fixture.inventory_path), **paths},
+            "config": {"candidate_path": str(fixture.candidate)},
+            "identity": {"sources": [{"id": k, **v} for k, v in fixture.expected.items()]},
+            "scope": {"source_roles": {k: v["role"] for k, v in fixture.expected.items()}},
+        })
+        py_rerun = suite.read(reference.record_mapping_rerun(
+            run_path, fixture.deliveries, self.root.joinpath("py-merged-rerun")))
+        rs_rerun = suite.read(Path(self.invoke(
+            "mapping_rerun.record_mapping_rerun", str(run_path), fixture.deliveries,
+            str(self.root.joinpath("rs-merged-rerun")))))
+        self.assertTrue(rs_rerun["actual_rerun_performed"])
+        self.assertFalse(py_rerun["mapping_equal"])
+        self.assertFalse(rs_rerun["mapping_equal"])
+        for field in ("inputs", "mapping_equal", "baseline_counts", "source_fidelity", "acceptance_status_written"):
+            self.assertEqual(rs_rerun[field], py_rerun[field], field)
+        self.assertEqual([(r["map"], r["collection"], r["id"]) for r in rs_rerun["differences"]],
+                         [(r["map"], r["collection"], r["id"]) for r in py_rerun["differences"]])
+        merged_diff = next(r for r in rs_rerun["differences"] if r["id"] == "merged-main")
+        self.assertEqual(merged_diff["previous"]["source_blocks"], [row["block_id"] for row in rows])
+        self.assertEqual(merged_diff["previous"]["joiner"], "\n")
+        self.assertIsNone(merged_diff["rerun"])
+
+        for bad_change in (
+            lambda b: b.update(joiner=" "),
+            lambda b: b.update(source_blocks=[rows[0]["block_id"], rows[0]["block_id"]]),
+            lambda b: b.update(target_units=["main-title"]),
+            lambda b: b.update(kind=""),
+        ):
+            mutated = json.loads(json.dumps(source_map))
+            bad_change(mutated["blocks"][0])
+            suite.save(source_map_path, mutated)
+            self.assertFalse(fixture.validate().records_ready)
+            self.assertFalse(self.invoke("handoff_maps.validate_handoff_maps", str(fixture.inventory_path),
+                                         str(fixture.candidate), paths,
+                                         expected_source_bindings=fixture.expected)["records_ready"])
+        mutated = json.loads(json.dumps(source_map))
+        mutated["blocks"][0]["kind"] = "paragraph"
+        suite.save(source_map_path, mutated)
+        self.assertFalse(self.invoke("handoff_maps.validate_handoff_maps", str(fixture.inventory_path),
+                                     str(fixture.candidate), paths,
+                                     expected_source_bindings=fixture.expected)["records_ready"])
+
+    def test_strict_delivery_manifest_and_figure_snapshot_schema_against_reference(self):
+        import test_figure_review_records as fig_suite
+        import validate_delivery as delivery
+        fixture = fig_suite.FigureReviewTests(methodName="test_generated_rows_cover_only_actual_figures_and_all_atomic_ids")
+        fixture.setUp()
+        try:
+            fixture.require_edges = True
+            fixture.generate()
+            fixture.bind()
+            manifest_path = fixture.manifest
+            baseline = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+            for version, valid_version in ((2, False), (None, False), (1, True)):
+                current = json.loads(json.dumps(baseline))
+                if version is None:
+                    current.pop("schema_version", None)
+                else:
+                    current["schema_version"] = version
+                manifest_path.write_text(json.dumps(current), encoding="utf-8")
+                py_codes = {f.code for f in delivery.validate_delivery(manifest_path).findings}
+                rs_codes = {f["code"] for f in self.invoke("validate_delivery.validate_delivery", str(manifest_path))["findings"]}
+                self.assertEqual("MANIFEST_VERSION" in py_codes, not valid_version, py_codes)
+                self.assertEqual("MANIFEST_VERSION" in rs_codes, not valid_version, rs_codes)
+
+            manifest_path.write_text(json.dumps(baseline), encoding="utf-8")
+            ledger = json.loads(fixture.review_path.read_text(encoding="utf-8"))
+            snap_path = Path(ledger["inventory"]["path"])
+            snap_data = json.loads(snap_path.read_text(encoding="utf-8"))
+            snap_data["schema_version"] = 2
+            snap_path.write_text(json.dumps(snap_data), encoding="utf-8")
+            ledger["inventory"]["sha256"] = hashlib.sha256(snap_path.read_bytes()).hexdigest()
+            fixture.review_path.write_text(json.dumps(ledger), encoding="utf-8")
+            fixture.bind()
+            py_report = delivery.validate_delivery(manifest_path)
+            rs_report = self.invoke("validate_delivery.validate_delivery", str(manifest_path))
+            self.assertIn("FIG_REVIEW_SNAPSHOT_VERSION", {f.code for f in py_report.findings})
+            self.assertTrue(any(
+                f["code"] == "FIG_REVIEW_REQUIRED" and "snapshot schema_version" in f["message"]
+                for f in rs_report["findings"]), rs_report["findings"])
+        finally:
+            fixture.doCleanups()
+
+    def test_packed_indexed_and_predictor_samples_match_reference_page_pixels(self):
+        import fitz
+        from PIL import Image
+        import zlib
+        source = self.root.joinpath("packed-indexed-diff.pdf")
+        rgb_palette = bytes([20, 40, 60, 80, 120, 160, 200, 220, 240])
+        raw_samples = bytes([0b00011000, 0b10010000])
+        with fitz.open() as document:
+            page = document.new_page(width=90, height=60)
+            pal_xref = document.get_new_xref()
+            document.update_object(pal_xref, "<< >>")
+            document.update_stream(pal_xref, zlib.compress(rgb_palette), compress=False)
+            document.xref_set_key(pal_xref, "Filter", "/FlateDecode")
+            cs_xref = document.get_new_xref()
+            document.update_object(cs_xref, f"[ /Indexed /DeviceRGB 2 {pal_xref} 0 R ]")
+            img_xref = document.get_new_xref()
+            document.update_object(img_xref,
+                f"<< /Type /XObject /Subtype /Image /Width 3 /Height 2 /BitsPerComponent 2 "
+                f"/ColorSpace {cs_xref} 0 R >>")
+            document.update_stream(img_xref, zlib.compress(raw_samples), compress=False)
+            document.xref_set_key(img_xref, "Filter", "/FlateDecode")
+            content = document.get_new_xref()
+            document.update_object(content, "<< >>")
+            document.update_stream(content, b"q 90 0 0 60 0 0 cm /Im Do Q", compress=True)
+            document.xref_set_key(page.xref, "Contents", f"{content} 0 R")
+            document.xref_set_key(page.xref, "Resources", f"<< /XObject << /Im {img_xref} 0 R >> >>")
+            document.save(source)
+
+        out_png = self.root.joinpath("packed-extracted.png")
+        receipt = self.invoke("pdf_image_objects.export_image_object", str(source),
+                              page_number=1, image_xref=img_xref, destination=str(out_png))
+        self.assertEqual(receipt["method"], "lossless_sample_png")
+        self.assertEqual(receipt["source_object"]["pdf_colorspace"], "/Indexed")
+        self.assertEqual(receipt["source_object"]["bits_per_component"], 2)
+        self.assertEqual(receipt["source_fidelity"], "not_assessed")
+        with Image.open(out_png) as extracted, fitz.open(source) as document:
+            self.assertEqual(extracted.mode, "RGB")
+            self.assertEqual(extracted.size, (3, 2))
+            rendered = document[0].get_pixmap(alpha=False, colorspace=fitz.csRGB)
+            for row_idx, y in enumerate((15, 45)):
+                for col_idx, x in enumerate((15, 45, 75)):
+                    self.assertEqual(extracted.getpixel((col_idx, row_idx)), rendered.pixel(x, y))
+
+    def test_docx_workflow_post_draft_manifest_maps_and_inspection_against_reference(self):
+        from test_docx_source_inventory import make_docx, paragraph
+        import complete_workflow as workflow
+        skills = self.root.joinpath("skills")
+        skill = skills.joinpath("synthetic-skill")
+        skill.mkdir(parents=True)
+        skill.joinpath("SKILL.md").write_text(
+            "# Synthetic\n- [ ] [DOCX-A01] A source sentence has a target. <!-- check-type: offline_outcome -->\n",
+            encoding="utf-8")
+        source = self.root.joinpath("source.docx")
+        make_docx(source, paragraph("Synthetic paragraph text."))
+        py_candidate = self.root.joinpath("py-candidate.md")
+        rs_candidate = self.root.joinpath("rs-candidate.md")
+        markdown = "---\n类型: 期刊论文\n年份: 2025\n关键词: []\n期刊名: Synthetic\n---\n# Synthetic\n\nSynthetic paragraph text. ^p1\n"
+        py_candidate.write_text(markdown, encoding="utf-8")
+        rs_candidate.write_text(markdown, encoding="utf-8")
+
+        py_run = workflow.initialize_workflow(
+            skills_root=skills, work_root=self.root.joinpath("py-work"),
+            sources={"main": source}, source_roles={"main": "main"},
+            candidate_path=py_candidate, resource_root=self.root,
+            translation_required=False, progress=lambda *_: None)
+        rs_run = Path(self.invoke(
+            "complete_workflow.initialize_workflow",
+            skills_root=str(skills), work_root=str(self.root.joinpath("rs-work")),
+            sources={"main": str(source)}, source_roles={"main": "main"},
+            candidate_path=str(rs_candidate), resource_root=str(self.root),
+            translation_required=False))
+
+        for run_path in (py_run, rs_run):
+            run_data = json.loads(run_path.read_text(encoding="utf-8"))
+            inv_path = Path(run_data["records"]["source_inventory"])
+            inv = json.loads(inv_path.read_text(encoding="utf-8"))
+            block = inv["sources"][0]["native_blocks"][0]
+            loc = {"basis": "native", "blocks": [block["id"]], "native_locator": block["locator"]}
+            absence = {"status": "absent_in_source", "reason": "Synthetic DOCX without headers.", "evidence": [loc]}
+            inv["sources"][0]["header_fields"] = {k: absence for k in ("title", "authors", "affiliations", "publication_date")}
+            inv["units"] = [{"id": "p1", "source": "main", "kind": "paragraph", "evidence": [loc]}]
+            inv_path.write_text(json.dumps(inv, ensure_ascii=False), encoding="utf-8")
+
+        deliveries = [{"unit": "p1", "target": {"anchor": "p1"}}]
+        workflow.write_manifest(py_run, deliveries)
+        self.invoke("complete_workflow.write_manifest", str(rs_run), deliveries)
+        py_maps = workflow.write_maps(py_run, deliveries)
+        rs_maps = self.invoke("complete_workflow.write_maps", str(rs_run), deliveries)
+        self.assertTrue(py_maps.records_ready, py_maps.as_dict())
+        self.assertTrue(rs_maps["records_ready"], rs_maps)
+
+        py_inspect = workflow.inspect_workflow(py_run).as_dict()
+        rs_inspect = self.invoke("complete_workflow.inspect_workflow", str(rs_run))
+        self.assertFalse(py_inspect["records_ready"])
+        self.assertFalse(rs_inspect["records_ready"])
+        self.assertEqual(rs_inspect["source_fidelity"], py_inspect["source_fidelity"])
+        py_codes = {f["code"] for f in py_inspect["findings"]}
+        rs_codes = {f["code"] for f in rs_inspect["findings"]}
+        self.assertIn("WORKFLOW_NAMING_MISSING", py_codes)
+        self.assertIn("WORKFLOW_NAMING_MISSING", rs_codes)
+        self.assertIn("CHECK_OFFLINE_INCOMPLETE", py_codes)
+        self.assertIn("CHECK_OFFLINE_INCOMPLETE", rs_codes)
+
 
 class NativePublicHelperComparison(unittest.TestCase):
     setUp = ReferenceComparison.setUp

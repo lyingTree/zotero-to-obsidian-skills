@@ -283,3 +283,7 @@ Color-key arrays, placement-dependent stencil images, resampling, compound masks
 #### CI 阶段一：模型实测复用原生构建
 
 Linux x64 与 Apple Silicon 的真实模型任务使用同一次 CI 运行中、对应平台已通过安装测试的原生二进制，不再在推理机器上重复编译 Rust。临时 CI 产物绑定提交、运行、目标架构与文件 SHA-256，保留一天，不是发布资产。推理任务仍须使用官方权重完成同样的双语 OCR / Jev 判别，不变更内存统计或 2 GiB 余量。
+
+#### 阶段二：七个模块差分补齐与实现候选晋升
+
+在 `scripts/compare_native_reference.py` 中新增与 Python 1.1.0 参考实现直接对照的差分回归：历史合并来源块分区（`source_blocks`、`source_locators`、`joiner`、`original_sha256`、`target_units`、`kind: "mixed"`）的校验与实际 rerun 差异比对、严格交付清单版本及图件审阅快照版本校验、packed 2-bit `/Indexed` 调色板无损样本导出与独立 PyMuPDF 页面渲染像素比对、以及草稿后工作流清单生成（`write_manifest`）、映射生成（`write_maps`）与审查（`inspect_workflow`）对照。全部 23 个参考模块在 `native/migration-status.json` 中现均达到 `implementation_candidate`（0 `not_started`、0 `partial`、0 未映射公开符号）；所有 11 项系统级发布门禁、`NATIVE_DELIVERY_PARITY_PENDING`、`NATIVE_WORKFLOW_PARITY_PENDING` 与 `PDF_FULL_PROVENANCE_UNMIGRATED` 保持关闭，直到五平台完整实测与全量历史验收完成。
