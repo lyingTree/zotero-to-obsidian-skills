@@ -1,11 +1,12 @@
 ---
 name: literature-header-format
+version: v2.0.2
 description: 核对并规范文献的原文标题、中文译名、作者、单位、通讯标记和邮箱区域。用于题头构建或修复，不改 YAML 属性及正文论述。
 ---
 
 # 规范标题、作者和单位
 
-本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 
 ## 必要输入
 
@@ -16,7 +17,7 @@ description: 核对并规范文献的原文标题、中文译名、作者、单�
 
 题头阶段属性保护使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 audit_unchanged_properties(stage="header") 直接比较前后实际 YAML 区域字节并生成 HDR-A14 结论。
 
-新候选的题头由 [原生组装入口](../literature-zotero2obsidian/references/native-entrypoints.md#正文组装与机械验收)的 `header` / `metadata` 单元生成。源题名、作者顺序、上标、单位、邮箱与元信息先对源确认，程序负责转义、分行及间距；不让模型再次手工拼接。既有候选用规范化入口处理已能明确识别的格式，角色不明时保留原文并定位报告。
+新候选的题头由 [Rust 组装入口](../literature-zotero2obsidian/references/rust-entrypoints.md#正文组装与机械验收)的 `header` / `metadata` 单元生成。源题名、作者顺序、上标、单位、邮箱与元信息先对源确认，程序负责转义、分行及间距；不让模型再次手工拼接。既有候选用规范化入口处理已能明确识别的格式，角色不明时保留原文并定位报告。
 
 1. 查看所处理来源的题头页图。
 2. 在来源映射中逐项核对题头字段。

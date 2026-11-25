@@ -1,17 +1,18 @@
 ---
 name: literature-zotero2obsidian
+version: v2.0.2
 description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程，支持指定步骤、断点续做和逐篇验收。只改文件名、属性或链接时，转交对应子 skill。
 ---
 
 # Zotero → Obsidian 文献流程
 
-本分支机械操作统一通过 [Rust 原生入口](references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+机械操作统一通过 [Rust 运行入口](references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 
 每条规则的 ID 用于定位对应证据。
 
-验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，不审查应用界面，不要求点击交互、阅读视图、插件显示或原生缓存检查。
+验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，不审查应用界面，不要求点击交互、阅读视图、插件显示或客户端缓存检查。
 
-新建全文任务先读 [原生组装、规范化与验收](references/native-entrypoints.md)。调用 `prepare_source_inventory.prepare_sources` 提取 PDF / 原生 DOCX，建立经来源核对的单元计划，再由 `prepare_content_job()` 固定计划、合同与译文模板。模型按单元 ID 填译文，`process_content()` 负责格式组装、规范化、机械验收和版本保存。已有 Markdown 使用 `process_markdown()`。程序已执行的检查直接采用程序证据，不让模型重复手拼格式或自填机械通过结论。具体内容规则仍以对应子技能为准。
+新建全文任务先读 [Rust 组装、规范化与验收](references/rust-entrypoints.md)。调用 `prepare_source_inventory.prepare_sources` 提取 PDF / DOCX 结构，建立经来源核对的单元计划，再由 `prepare_content_job()` 固定计划、合同与译文模板。模型按单元 ID 填译文，`process_content()` 负责格式组装、规范化、机械验收和版本保存。已有 Markdown 使用 `process_markdown()`。程序已执行的检查直接采用程序证据，不让模型重复手拼格式或自填机械通过结论。具体内容规则仍以对应子技能为准。
 
 只有恢复既有 `complete_pdf_candidate_v1` 工作目录时才沿用[完整候选的开始与收尾](references/complete-workflow.md)和 `resume_workflow()`。保留该旧入口的实际清单、队列和回执，不把新程序的机械状态套用到旧记录。
 

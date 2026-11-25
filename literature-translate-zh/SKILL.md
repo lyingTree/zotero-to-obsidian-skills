@@ -1,11 +1,12 @@
 ---
 name: literature-translate-zh
+version: v2.0.2
 description: 根据已核实的文献语言和项目术语表，将原文 Markdown 完整译成中文；中文文献复用原稿，混合文献按内容块分流。用于全文翻译或已有译文的指定部分修订。
 ---
 
 # 按术语表翻译
 
-本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 
 ## 必要输入
 
@@ -16,7 +17,7 @@ description: 根据已核实的文献语言和项目术语表，将原文 Markdo
 
 从零生成全文时，先使用[逐块产出队列](../literature-zotero2obsidian/references/draft-queue.md)按实际来源写完整中文片段，直到全部范围内内容已产出并组装为候选；记录产出时发现的术语和来源疑点。此时不调用需要已有候选的 `next_review_task()`。
 
-候选存在后，逐段复核先用 `translation_review_tasks.next_review_task` 取得当前段落，再按[原生翻译复核入口](../literature-zotero2obsidian/references/native-entrypoints.md#翻译复核)通过 `translation_review_writer` 的注册操作增量填写。它把明确的单项判断展开为完整台账，避免反复手写相同文件哈希与位置；实际任务逐段依据自己的来源填写。
+候选存在后，逐段复核先用 `translation_review_tasks.next_review_task` 取得当前段落，再按[Rust 翻译复核入口](../literature-zotero2obsidian/references/rust-entrypoints.md#翻译复核)通过 `translation_review_writer` 的注册操作增量填写。它把明确的单项判断展开为完整台账，避免反复手写相同文件哈希与位置；实际任务逐段依据自己的来源填写。
 
 ## 执行步骤
 
@@ -159,7 +160,7 @@ TRN-A17 与 TRN-A25 优先使用 [确定性阶段辅助](../literature-zotero2ob
 
 每次只填一个来源块的一项目标。准备函数会把清单内合法的 `page/basis/blocks` 定位展开为同一页真实 block 的原始文字和边界框，保留原 ID；它不判断这些 block 是否覆盖完整段落。完成填写后调用 `validate_translation_review(path, inventory_path=None, candidate_path=None)`，依次处理其 `findings` 中的具体单元与目标。`records_ready` 仅检查记录是否齐备且无尚未处理的申报状态，`source_fidelity` 始终为 `not_assessed`。不要把检查器无发现改写为译义通过，也不要用它生成不适用理由。
 
-需要填写范例时读取[原生翻译复核入口](../literature-zotero2obsidian/references/native-entrypoints.md#翻译复核)。单项实际事实以明确决定记录，其他项目保持待核。同一事实可以被多个明确单目标 ID 引用，每个 ID 仍分别写范围、理由和结果。
+需要填写范例时读取[Rust 翻译复核入口](../literature-zotero2obsidian/references/rust-entrypoints.md#翻译复核)。单项实际事实以明确决定记录，其他项目保持待核。同一事实可以被多个明确单目标 ID 引用，每个 ID 仍分别写范围、理由和结果。
 
 ## 产物
 

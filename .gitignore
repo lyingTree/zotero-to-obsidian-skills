@@ -1,38 +1,25 @@
-# 编译缓存与二进制
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyc
-*.exe
-*.pyd
-*.dll
-*.so
-*.zi
+# Dependencies / environment
+node_modules/
 
-# 依赖目录（用 requirements.txt 重建，不入库）
-vendor/
-.venv/
-venv/
-
-# 系统与临时文件
+# OS / editor noise
 .DS_Store
 Thumbs.db
-*.log
-*.tmp
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Pipeline runtime scratch (must live outside repo / vault in normal use)
+/Backups/
+/work/
+/drafts/
 *.bak
 
-# 外部依赖（由 install 脚本自动获取，不入库）
+# Local skill dependencies
 /obsidian-cli/
 /zotero-skills/
-
-# 安装暂存、备份、回执和本地配置（不发布用户数据）
-.z2o-*/
-.z2o-*.json
-.z2o-*.lock
-install.local.json
-.env
-.env.*
-.pytest_cache/
-
-# Rust local build output
-/native/target/
+/.z2o-backups/
+/.z2o-install-*/
+/.z2o-stage-*/
+/rust/target/

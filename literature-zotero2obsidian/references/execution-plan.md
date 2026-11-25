@@ -1,13 +1,13 @@
 # 分阶段执行路线
 
-以下保留原逐步执行路线，用于理解阶段和恢复旧版工作记录。新建任务使用 [Python 组装、规范化与验收](deterministic-pipeline.md)，其中机械组装和格式验收由程序统一完成。局部修改仍按用户指定范围执行。先把来源盘点完成，再逐段构建候选；中间检查发现问题时返回对应阶段。阶段名称不是验收结论。
+以下保留原逐步执行路线，用于理解阶段和恢复旧版工作记录。新建任务使用 [Rust 组装、规范化与验收](rust-entrypoints.md)，其中机械组装和格式验收由程序统一完成。局部修改仍按用户指定范围执行。先把来源盘点完成，再逐段构建候选；中间检查发现问题时返回对应阶段。阶段名称不是验收结论。
 
 ## 路线
 
 | 阶段 | 当前任务 | 留存产物 | 下一阶段入口 |
 |---|---|---|---|
 | 0 范围 | 确认实际输入与输出范围 | run.json、checks.json 待填骨架 | [项目配置](project-profile.md) |
-| 1 来源 | 建立每份来源的实际材料 | source-inventory.json、PDF页图、DOCX原生块与媒体 | [来源索引说明](delivery-checks.md) |
+| 1 来源 | 建立每份来源的实际材料 | source-inventory.json、PDF页图、DOCX结构块与媒体 | [来源索引说明](delivery-checks.md) |
 | 2 盘点 | 按实际阅读顺序登记内容单元 | 来源清单、产出队列及来源分组 | [逐块产出](draft-queue.md) |
 | 3 译文 | 将每个单元的完整中文内容落盘 | 来源绑定的片段、translated.md、si.md | [翻译](../../literature-translate-zh/SKILL.md) |
 | 4 结构 | 组装题头与正文对象 | drafts/06 至 08 | [正文排版](../../literature-body-format/SKILL.md) |
@@ -17,7 +17,7 @@
 
 ## 逐项台账贯穿各阶段
 
-完整 PDF/DOCX 任务先调用[完整流程入口](complete-workflow.md)的 `initialize_workflow()`，它保存实际来源材料并调用 [`check_records.prepare_check_records(...)`](../scripts/check_records.py)，从实际技能文件生成全量 `catalog` 与待填 `checks`。默认待填集合覆盖各技能及 references 中全部 `A` 编号验收；追踪约束时使用 `additional_ids` 明确加入，或选择 `rule_selection="all"`。每个验收 ID 从 `not_verified` 开始，不因阶段结束而整体转为通过。初始化已经生成的来源材料直接复用，不重复调用 `prepare_sources()` 覆盖。
+完整 PDF/DOCX 任务先调用[完整流程入口](complete-workflow.md)的 `initialize_workflow()`，它保存实际来源材料并调用 `check_records.prepare_check_records`，从实际技能文件生成全量 `catalog` 与待填 `checks`。默认待填集合覆盖各技能及 references 中全部 `A` 编号验收；追踪约束时使用 `additional_ids` 明确加入，或选择 `rule_selection="all"`。每个验收 ID 从 `not_verified` 开始，不因阶段结束而整体转为通过。初始化已经生成的来源材料直接复用，不重复调用 `prepare_sources()` 覆盖。
 
 初始化同时注册真实产出队列。阶段2与3用 `resume_workflow(run_path)` 持续取得当前页或当前来源单元；原始来源定位在此时保存，绑定最终候选的三份交付映射待候选存在后再生成。全量台账仍保留，但不能把它当作尚无译文时的产出任务菜单。
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Install the 12 native literature-* skills (with precompiled runtime/z2o)
+# Install the 12 literature-* skills (with precompiled Rust runtime/z2o)
 # from GitHub Releases, plus optional external dependency skills (obsidian-cli, zotero-skills).
-# No Python or local Rust compilation required.
+# No local compilation required.
 #
 # Usage: ./install.sh [skills-root] [version-tag] [obsidian-ref] [zotero-ref]
 set -euo pipefail
@@ -47,7 +47,7 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
- sha256_file() {
+sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum < "$1" | awk '{print $1}' | tr -d '\r'
   else
@@ -85,7 +85,7 @@ chmod +x "$Z2O_BIN"
 MANIFEST_SHA="$(sha256_file "$MANIFEST")"
 
 mkdir -p "$SKILLS_ROOT"
-echo "==> Installing 12 native literature-* skills into ${SKILLS_ROOT} ..."
+echo "==> Installing 12 literature-* skills into ${SKILLS_ROOT} ..."
 "$Z2O_BIN" install "$MANIFEST" "$MANIFEST_SHA" "$SKILLS_ROOT"
 "${SKILLS_ROOT}/literature-zotero2obsidian/runtime/z2o" verify-install "$MANIFEST" "$MANIFEST_SHA" "$SKILLS_ROOT" >/dev/null
 
@@ -108,8 +108,7 @@ if [ "${Z2O_SKIP_EXTERNAL_DEPENDENCIES:-0}" != "1" ] && command -v git >/dev/nul
   rm -rf "${SKILLS_ROOT}/zotero-skills"
   cp -R "${ZOT_TMP}/skills/zotero-skills" "${SKILLS_ROOT}/zotero-skills"
   cp -R "${ZOT_TMP}/scripts" "${SKILLS_ROOT}/zotero-skills/scripts"
-  cp "${ZOT_TMP}/requirements.txt" "${SKILLS_ROOT}/zotero-skills/requirements.txt"
   cp "${ZOT_TMP}/LICENSE" "${SKILLS_ROOT}/zotero-skills/LICENSE"
 fi
 
-echo "==> Native installation complete (${VERSION}, ${TARGET})."
+echo "==> Rust skill installation complete (${VERSION}, ${TARGET})."

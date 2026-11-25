@@ -1,11 +1,12 @@
 ---
 name: literature-internal-links
+version: v2.0.2
 description: 为文献正文中的图、表、公式和引文建立指向本篇对应对象或参考条目的链接，保留原编号与引文显示形式。用于篇内导航构建和断链修复，不匹配其他文献文件。
 ---
 
 # 建立篇内链接
 
-本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 
 ## 必要输入
 
@@ -165,7 +166,7 @@ description: 为文献正文中的图、表、公式和引文建立指向本篇�
 
 ### 图内表新建锚帮助
 
-原生操作 `format_helpers.new_figure_table_anchor` 只生成 LINK-C133 的全新锚。来源 token 和图原编号 token 均由调用方按已有来源登记提供；函数接受 ASCII 字母数字 token，不猜来源身份，不从规范化后的显示号反推原号。
+Rust 操作 `format_helpers.new_figure_table_anchor` 只生成 LINK-C133 的全新锚。来源 token 和图原编号 token 均由调用方按已有来源登记提供；函数接受 ASCII 字母数字 token，不猜来源身份，不从规范化后的显示号反推原号。
 
 已有已核实锚时直接复用；否则调用 `format_helpers.new_figure_table_anchor`，`args` 为空数组，`kwargs` 包含实际 `source_token`、`figure_number_token` 及 `occupied_ids`。使用实际返回的 `result` 作为新锚。
 

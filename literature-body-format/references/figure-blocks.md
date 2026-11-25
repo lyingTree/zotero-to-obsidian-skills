@@ -4,17 +4,13 @@
 
 先按[裁剪与验收规则](../../literature-fulltext-extract/references/figure-crop.md)核对实际图件。下面只演示虚构内容的源码组装；资源路径、题注及图锚都由调用方按当前来源提供。
 
-```python
-from format_helpers import build_figure_block
-
-block = build_figure_block(
-    [
-        {"target": "assets/example-left.png", "alt": "图S8"},
-        {"target": "assets/example-right.png", "alt": "图S8"},
-    ],
-    caption="**图S8：** 已逐项核对的来源题注。",
-    anchor="fig-s8",
-)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 `build_figure_block` 只返回 Markdown 字符串，末尾含一个换行。所有图片行保留两个空格硬换行，题注紧接最后一个图片，独占行图锚紧接题注。组装整篇时让相邻图块/正文之间恰留一个空行。

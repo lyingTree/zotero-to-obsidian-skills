@@ -1,0 +1,76 @@
+[package]
+name = "z2o-native"
+version = "2.0.2"
+edition = "2021"
+rust-version = "1.95"
+description = "Rust deterministic Zotero-to-Obsidian runtime"
+publish = false
+
+[[bin]]
+name = "z2o"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+dunce = "1"
+regex = "1"
+fancy-regex = "=0.16.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+serde-saphyr = "=2.2.0"
+granit-parser = "=2.2.0"
+sha2 = "0.10"
+unicode-normalization = "0.1"
+unicode-casefold = "0.2"
+
+tempfile = "3"
+html-escape = "0.2"
+percent-encoding = "2"
+roxmltree = "0.20"
+# Strictly preflighted, self-contained static SVG only; no fonts, SVGZ or raster loaders.
+resvg = { version = "=0.50.0", default-features = false }
+svg-xml = { package = "roxmltree", version = "=0.21.2" }
+svgtypes = "=0.16.2"
+fs2 = "0.4"
+lopdf = { version = "0.36", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff", "webp", "ico", "pnm"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+
+# Headless PdfCraft core, not the application, GUI or MCP service.
+pdfcraft-render = { git = "https://github.com/storytold/pdfcraft", rev = "6e910675c68dd5092e889065cfe8d0274c1b2742", default-features = false }
+
+craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844", default-features = false, features = ["filters"] }
+# Use the same pinned predictor after verifying exact image-row framing.
+craft-stream-codecs = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844" }
+
+# In-process PP-OCRv6, explicitly lazy-loaded CPU ONNX Runtime. No runtime
+# download or linkage to a vendor GPU SDK. Upstream enables optional EP APIs
+# by target, but z2o registers CPU only.
+ppocr-rs = { git = "https://github.com/dariofinardi/df-ppocr-rs", rev = "b87550b775206655acf84d7fc421ca5bdf745fd3", default-features = false, features = ["native", "example-dynamic"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-28"] }
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
+
+# Cargo does not propagate a dependency workspace's patch table. Match the
+# PDF-only patches from the pinned PdfCraft workspace explicitly.
+[patch.crates-io]
+krilla = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844" }
+hayro = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844" }
+hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844" }
+hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844" }
+hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844" }
+hayro-cmap = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844" }
+hayro-postscript = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844" }
+linesweeper = { git = "https://github.com/storytold/craft-libs", rev = "0a6e42b80bfd586aee6ee1144aa98cf1ea37a844" }
+lopdf = { git = "https://github.com/storytold/pdfcraft", rev = "6e910675c68dd5092e889065cfe8d0274c1b2742" }
+vello_common = { git = "https://github.com/storytold/pdfcraft", rev = "6e910675c68dd5092e889065cfe8d0274c1b2742" }
+vello_cpu = { git = "https://github.com/storytold/pdfcraft", rev = "6e910675c68dd5092e889065cfe8d0274c1b2742" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

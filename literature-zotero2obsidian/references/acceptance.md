@@ -1,10 +1,10 @@
 # 逐篇验收清单
 
-本清单验收 Markdown 文件及其引用资源。用户提供参考 Markdown 时逐项核对其内容和格式要求；文献事实仍回查原始来源。应用界面、点击交互、阅读视图、插件显示和原生缓存均不属于验收步骤。
+本清单验收 Markdown 文件及其引用资源。用户提供参考 Markdown 时逐项核对其内容和格式要求；文献事实仍回查原始来源。应用界面、点击交互、阅读视图、插件显示和客户端缓存均不属于验收步骤。
 
 ## 新任务使用程序生成机械证据
 
-新建任务按 [Python 组装、规范化与验收](deterministic-pipeline.md)运行。`acceptance.json` 直接记录已实现规则的实际期望、实际值、位置和输入版本；`normalization.json` 保存自动修复；`phases.json` 将具体问题归入环节。程序可判断的格式与文件检查不再要求模型重复填写手工台账。
+新建任务按 [Rust 组装、规范化与验收](rust-entrypoints.md)运行。`acceptance.json` 直接记录已实现规则的实际期望、实际值、位置和输入版本；`normalization.json` 保存自动修复；`phases.json` 将具体问题归入环节。程序可判断的格式与文件检查不再要求模型重复填写手工台账。
 
 来源合同由候选生成前的来源计划固定。没有盘点的来源内容、译义、裁图内容和书目身份仍需对源判断，不因机械结果通过而全部置为通过。整体验收继续遵循本页约束；程序报告明确列出实际覆盖范围。合理翻译差异和有来源依据的译注按内容判断。
 
@@ -14,7 +14,7 @@
 
 每个检查 ID 单独记录一个结果。结果取 `passed`、`failed`、`blocked`、`not_verified` 或 `not_applicable`。
 
-使用 [`check_records.py`](../scripts/check_records.py) 保存 `checks.json`。脚本从实际 `skills_root` 下各子技能的 `SKILL.md` 和 `references/*.md` 提取声明；代码示例、注释和行内引用不算新规则。台账中两个集合用途不同：
+使用 `check_records` 保存 `checks.json`。脚本从实际 `skills_root` 下各子技能的 `SKILL.md` 和 `references/*.md` 提取声明；代码示例、注释和行内引用不算新规则。台账中两个集合用途不同：
 
 - `catalog` 保存全部原子约束和验收 ID，以及规则正文、文件位置和实际哈希。
 - `checks` 默认包含所有 `A` 编号验收 ID，包括 references 中的验收项。`rule_selection="all"` 可追踪全部约束与验收；`additional_ids` 可在默认验收集合上加入明确的约束 ID。这两种方式都不能删除默认验收项。
@@ -42,22 +42,15 @@
 
 ### 调用与版本绑定
 
-在工作目录的 Python 调用脚本中设置路径和明确的映射，调用公共函数；不需要命令行参数：
+在工作目录的 JSON 请求文件中设置路径和明确的映射，调用公共函数；不需要命令行参数：
 
-```python
-from pathlib import Path
-from check_records import prepare_check_records, validate_check_records
-
-CHECKS_PATH = prepare_check_records(
-    SKILLS_ROOT,
-    WORK_DIR.joinpath("checks.json"),
-    sources=SOURCE_FILES,
-    candidate_path=CANDIDATE_PATH,
-    scopes=SCOPES_BY_ID,
-    requirement_types=TYPES_BY_ID,
-    inventory_path=WORK_DIR.joinpath("source-inventory.json"),
-)
-report = validate_check_records(CHECKS_PATH)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 `SOURCE_FILES` 是来源 ID 到实际 `Path` 的映射；多个候选可使用 `candidates` 映射代替 `candidate_path`。`scopes` 和类型映射可分阶段填写；没有提供的范围不会自动补全，也没有任何检查被自动置为通过。可选的 `progress(current, total, stage)` 回调可接入进度条。`inventory_path` 只回写 `checks_path` 指针，不把仍在改写的 inventory 自身哈希写入台账。主交付校验器通过该指针绑定台账文件并核对来源、候选版本。
@@ -173,7 +166,7 @@ report = validate_check_records(CHECKS_PATH)
 - [ ] [AC-A43] 本地资源位于所属文献的附件三级目录。 <!-- check-type: offline_outcome -->
 - [ ] [AC-A44] 本地资源引用可按从库根起算的路径解析。 <!-- check-type: offline_outcome -->
 - [ ] [AC-A45] 本地资源哈希与资源清单一致。 <!-- check-type: offline_outcome -->
-- [ ] [AC-A46] 补充视频的原生嵌入有对应验收记录。 <!-- check-type: offline_outcome -->
+- [ ] [AC-A46] 补充视频的内置嵌入有对应验收记录。 <!-- check-type: offline_outcome -->
 - [ ] [AC-A48] 补充视频的转码结果有对应验收记录。 <!-- check-type: offline_outcome -->
 - [ ] [AC-A49] 待提交哈希已记录。 <!-- check-type: offline_outcome -->
 - [ ] [AC-A115] 范围内来源页均进入来源清单。 <!-- check-type: offline_outcome -->

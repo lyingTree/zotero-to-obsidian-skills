@@ -4,7 +4,7 @@
 
 - [检查边界](#检查边界)
 - [准备来源证据](#准备来源证据)
-- [原生 DOCX 证据](#原生-docx-证据)
+- [DOCX 结构证据](#docx-结构证据)
 - [填写原子来源单元](#填写原子来源单元)
 - [记录各来源的题头](#记录各来源的题头)
 - [映射最终候选](#映射最终候选)
@@ -15,7 +15,7 @@
 
 ## 检查边界
 
-[prepare_source_inventory.py](../scripts/prepare_source_inventory.py) 从实际 PDF 生成逐页证据，从 DOCX 保存原生 XML、内容顺序和图片关系。[validate_delivery.py](../scripts/validate_delivery.py) 将这些证据与最终候选关联起来。两者都是本地脚本，不连接 Zotero 或 Obsidian。
+`prepare_source_inventory.prepare_sources` 从实际 PDF 生成逐页证据，从 DOCX 保存原始 XML、内容顺序和图片关系。`validate_delivery.validate_delivery` 将这些证据与最终候选关联起来。两者都是本地脚本，不连接 Zotero 或 Obsidian。
 
 `structurally_consistent: true` 表示已记录的证据链没有发现机器可检出的矛盾。它不表示源清单分类完整，不表示模型确实看过页面，也不表示译文、图件或科学内容正确。报告始终保留 `source_fidelity: not_assessed` 与 `independent_review_required: true`。
 
@@ -25,24 +25,13 @@
 
 完整流程在工作目录的调用脚本中导入函数，把本次参数保存在调用脚本中。保留技能目录内源码不变。独立编辑器使用时也可先将来源准备脚本复制到工作目录，再设置其顶部参数。
 
-```python
-from pathlib import Path
-from prepare_source_inventory import prepare_sources
-
-run_root = Path("本次运行根")
-work = run_root.joinpath("work")
-input_root = run_root.joinpath("input")
-output_root = run_root.joinpath("output")
-skills_root = run_root.joinpath("skills")
-inventory_path = prepare_sources(
-    {
-        "main": input_root.joinpath("main.pdf"),
-        "si_a": input_root.joinpath("supplement.docx"),
-    },
-    work.joinpath("evidence"),
-    source_roles={"main": "main", "si_a": "supplement"},
-    glossary_path=skills_root.joinpath("template", "术语表.md"),
-)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 该调用生成 `source-inventory.json`。每个来源包含实际 PDF 的路径、SHA-256 和页数。每页包含完整 PNG、文字层文件和非空文字块。PNG 的像素哈希与文件哈希分别保留。脚本显示逐页进度，不覆盖已有同名清单。
@@ -55,9 +44,9 @@ inventory_path = prepare_sources(
 
 生成的页面只是待查看证据。文字层与可见页面可能冲突。题头、日期、公式、表格和图件的清单证据采用 `basis: visual`；该标记只是记录所用证据类型，不会替代实际查看页面。
 
-## 原生 DOCX 证据
+## DOCX 结构证据
 
-`prepare_sources()` 与 `initialize_workflow()` 接受同一任务中的 PDF 和 DOCX；不需要先把 Word 伪装成 PDF。DOCX 来源保留原文件哈希，`format: docx`、`pages: []`、`page_count: null` 表明这份原生清单没有宣称分页结果。
+`prepare_sources()` 与 `initialize_workflow()` 接受同一任务中的 PDF 和 DOCX；不需要先把 Word 伪装成 PDF。DOCX 来源保留原文件哈希，`format: docx`、`pages: []`、`page_count: null` 表明这份结构清单没有宣称分页结果。
 
 | 字段 | 保留的实际来源信息 |
 |---|---|
@@ -72,33 +61,33 @@ inventory_path = prepare_sources(
 
 `media_calls` 与逻辑图不是一一对应关系。两个图片调用可以组成同一图的两个面板，同一媒体也可以在多个位置使用。依据原文题注和内容明确分组，再填写 `original_number`；`media-1`、`image2.png` 或 `rId9` 均不是源图号。
 
-文本或表格单元的原生 evidence 写法如下，变量取自已经查看的原生块：
+文本或表格单元的结构 evidence 写法如下，变量取自已经查看的结构块：
 
-```python
-source_evidence = {
-    "basis": "native",
-    "native_locator": block["locator"],
-    "blocks": [block["id"]],
-    "quote": block["text"],
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
 }
 ```
 
-一条原生 evidence 对应一个实际块；跨段单元写多条 evidence。保留题注为自己的文本单元。图件的每件媒体调用则各写一条 evidence：
+一条结构 evidence 对应一个实际块；跨段单元写多条 evidence。保留题注为自己的文本单元。图件的每件媒体调用则各写一条 evidence：
 
-```python
-figure_evidence = {
-    "basis": "native",
-    "native_locator": image_call["locator"],
-    "blocks": [image_call["block_id"]],
-    "media_call": image_call["id"],
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
 }
 ```
 
-原生 evidence 不填写 `page`、`bbox`、`image_xref` 或 PDF 坐标系。`validate_delivery()` 会重新读取源 DOCX，比较原始 XML、块、关系、媒体字节和来源定位。未被图单元使用的实际图片调用返回 `NATIVE_MEDIA_UNMAPPED`。确属来源范围外的装饰调用可在清单顶层的 `excluded_media_calls` 中按 `source`、`media_call`、`reason` 单独记录；理由仍需对源判断。
+结构 evidence 不填写 `page`、`bbox`、`image_xref` 或 PDF 坐标系。`validate_delivery()` 会重新读取源 DOCX，比较原始 XML、块、关系、媒体字节和来源定位。未被图单元使用的实际图片调用返回 `NATIVE_MEDIA_UNMAPPED`。确属来源范围外的装饰调用可在清单顶层的 `excluded_media_calls` 中按 `source`、`media_call`、`reason` 单独记录；理由仍需对源判断。
 
-原生提取不保证重建浮动排版、OMML 数学含义、复杂形状或 Word 的显示变换。保留 `native_issues` 的机器原始记录，在来源的 `native_issue_reviews` 中逐项追加 `{id, status, reason, evidence}`；完成状态使用 `resolved` 或有具体依据的 `not_applicable`。每条 `evidence` 包含实际 `file: {path, sha256}` 与该文件中的 `locator`。需要可见页面时先实际渲染，再引用生成文件；这不赋予原始 DOCX 固定页数。只有说明文字而没有实际核对证据时保持待核。
+结构提取不保证重建浮动排版、OMML 数学含义、复杂形状或 Word 的显示变换。保留 `native_issues` 的机器原始记录，在来源的 `native_issue_reviews` 中逐项追加 `{id, status, reason, evidence}`；完成状态使用 `resolved` 或有具体依据的 `not_applicable`。每条 `evidence` 包含实际 `file: {path, sha256}` 与该文件中的 `locator`。需要可见页面时先实际渲染，再引用生成文件；这不赋予原始 DOCX 固定页数。只有说明文字而没有实际核对证据时保持待核。
 
-原生图的 `prepare_figure_reviews()` 和 `record_figure_edges()` 沿用同一调用入口。生成的 `source_locations` 保存 `native_locator`、`media_call`、`relationship_id` 和 `source_media`，不含 `page_render`。逐项视觉证据用 `kind: source_location` 指向其零起始位置，同时指向 `final_asset`。PDF 继续使用 `source_page`。FIG-A19 的页码目标、FIG-A22 的 PDF 坐标系目标在纯原生材料中按实际条件单独记录不适用，不把原生块序号填成页码。所有图像内容、对应关系、最终文件和四边比较仍逐项完成。
+内嵌图的 `prepare_figure_reviews()` 和 `record_figure_edges()` 沿用同一调用入口。生成的 `source_locations` 保存 `native_locator`、`media_call`、`relationship_id` 和 `source_media`，不含 `page_render`。逐项视觉证据用 `kind: source_location` 指向其零起始位置，同时指向 `final_asset`。PDF 继续使用 `source_page`。FIG-A19 的页码目标、FIG-A22 的 PDF 坐标系目标在纯 DOCX 材料中按实际条件单独记录不适用，不把结构块序号填成页码。所有图像内容、对应关系、最终文件和四边比较仍逐项完成。
 
 ## 填写原子来源单元
 
@@ -154,14 +143,13 @@ figure_evidence = {
 
 在自己的盘点脚本中使用 `handoff_maps.make_source_unit()`，可提前检查合法单元类型、对象编号、图内表分类、表格形状和调用字段。图件的 `contains_table` 是明确的布尔值。表格的 `shape` 使用正整数；`merges` 即使为空也要显式提供。作者单位关系、来源角色和跨单元身份仍由全量交付检查核验，构造成功不代表来源内容已通过。下面变量均取自当前实际来源，不来自候选文字：
 
-```python
-from handoff_maps import make_source_unit
-
-source_call = make_source_unit(
-    UNIT_ID, SOURCE_ID, "citation", SOURCE_LOCATIONS,
-    references=VERIFIED_SOURCE_REFERENCE_IDS,
-    display_text=SOURCE_CALL_TEXT,
-)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 每次文内调用单独圈定自己的来源位置。跨页段落不意味着其中每次调用也跨页；涉及多个源块时，在对应交付条目中用 `origin_block` 明确调用所在块。不能从候选脚注编号反建 source citation 清单，否则无法发现源引文漏掉或指错。
@@ -229,18 +217,13 @@ source_call = make_source_unit(
 
 正文写完后建立 `deliveries` 列表。每个 unit 都有一个最终目标。优先采用稳定块锚或包含足够上下文的唯一原样片段：
 
-```python
-deliveries = [
-    {"unit": "main-title", "target": {"quote": "The complete final title"}},
-    {"unit": "main-ref-1", "target": {"anchor": "ref-1"}},
-    {"unit": "main-equation-1", "target": {"anchor": "eq-1"}},
-    {"unit": "main-table-1", "target": {"anchor": "tbl-1"}},
-    {
-        "unit": "main-figure-1",
-        "target": {"quote": "![[文献/attachments/2020/Example/0123456789abcdef/fig1.png]]  \n**图1：** 完整中文题注。\n^fig-1"},
-        "assets": [{"path": "文献/attachments/2020/Example/0123456789abcdef/fig1.png"}],
-    },
-]
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 示例路径只解释格式，实际路径使用本次核实的年份、首作者与资源桶。`anchor` 只写 ID，不加 `^`。图件目标须覆盖实际嵌入语法；只选题注不足以检查图片路径。所有嵌入的本地资产都须有文件哈希。图件资产还须通过实际图像解码。
@@ -261,15 +244,13 @@ deliveries = [
 
 完整核对后，通过显式参数绑定最终文件：
 
-```python
-manifest_path = write_delivery_manifest(
-    inventory_path,
-    candidate_path,
-    deliveries,
-    work.joinpath("delivery-manifest.json"),
-    resource_root=output_root,
-    translation_review_path=work.joinpath("translation-review.json"),
-)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 检查器验证翻译记录与本次实际文件的身份和哈希。候选、来源或清单在记录之后发生变化时，旧记录不能继续充当最终证据。该绑定检查不判断译义是否正确；每段的语义结论仍由文件内容对照与逐 ID 验收支撑。
@@ -280,28 +261,13 @@ manifest_path = write_delivery_manifest(
 
 以下代码从实际清单和交付映射取值，不通过图号数量猜测对象，也不生成视觉结论：
 
-```python
-import json
-from pathlib import Path
-from prepare_source_inventory import prepare_figure_reviews
-
-inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
-figure_ids = {
-    unit["id"]
-    for unit in inventory["units"]
-    if unit["kind"] == "figure"
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
 }
-final_assets = {
-    delivery["unit"]: [Path(asset["path"]) for asset in delivery["assets"]]
-    for delivery in deliveries
-    if delivery["unit"] in figure_ids
-}
-figure_reviews_path = prepare_figure_reviews(
-    inventory_path,
-    final_assets,
-    work.joinpath("figure-review"),
-    resource_root=output_root,
-)
 ```
 
 相对图片路径按 `resource_root` 解析。实际笔记使用已核实的 vault 根；本示例使用离线 `output_root`。传入的映射须恰好覆盖实际图单元。函数保留跨页定位顺序，验证所引用的实际文件，并给每幅图建立 FIG-A01 至 FIG-A28 共 28 个 `pending` 条目。函数在清单中登记 `figure_reviews_path`，不会覆盖已有台账。
@@ -370,22 +336,16 @@ v2 的 `merges` 位于表模型顶层。v3 的 `merges` 位于对应工作表中
 
 候选文件和清单实际存在后再绑定哈希：
 
-```python
-from validate_delivery import write_delivery_manifest, validate_delivery
-from prepare_source_inventory import progress_bar
-
-manifest_path = write_delivery_manifest(
-    inventory_path,
-    output_root.joinpath("candidate.md"),
-    deliveries,
-    work.joinpath("delivery-manifest.json"),
-    resource_root=output_root,
-)
-report = validate_delivery(manifest_path, progress=progress_bar)
-print(report.to_dict())
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
-检查器重新计算来源 PDF 和候选的哈希。检查器重新确认 PDF 页数。检查器将每页 PNG 的 RGB 像素与该 PDF 页重新渲染的结果比较。检查器从 PDF 重新提取文字块。检查器验证源单元与交付目标的双向映射。现有 `validate_note.py` 同时检查 Rich Table 所有工作表的锁定、主题和本篇断链。交付检查还检查每张工作表是否有来源单元；未映射的后续工作表也会检查合并端点。
+检查器重新计算来源 PDF 和候选的哈希。检查器重新确认 PDF 页数。检查器将每页 PNG 的 RGB 像素与该 PDF 页重新渲染的结果比较。检查器从 PDF 重新提取文字块。检查器验证源单元与交付目标的双向映射。现有 `validate_note.validate_file` 同时检查 Rich Table 所有工作表的锁定、主题和本篇断链。交付检查还检查每张工作表是否有来源单元；未映射的后续工作表也会检查合并端点。
 
 交付目标中的公式、表格和书目锚须属于实际可见对象。代码示例里的同名对象不能代替交付。Rich Table 的引文按 YAML 解码后的可见字段检查，注释不计作调用。既有书目锚的插件兼容提示沿用只读 warning，不据此强制迁移已有链接。
 

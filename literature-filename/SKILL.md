@@ -1,11 +1,12 @@
 ---
 name: literature-filename
+version: v2.0.2
 description: 为文献生成“年份-作者-原文标题.md”命名计划，处理作者人数、非法字符、长度和身份冲突。用于独立命名或改名准备，实际移动交写入步骤执行。
 ---
 
 # 规范文件名
 
-本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 
 每条规则的 ID 用于定位对应证据。
 
@@ -23,7 +24,7 @@ description: 为文献生成“年份-作者-原文标题.md”命名计划，�
 2. 用下方完整入口生成 `年份-作者-原文标题.md` 的离线命名计划，并保存整个返回值。
 3. 按实际可用证据核对长度与冲突，提交命名计划给第 4 步。
 
-下列字段、来源文件和定位均来自本次来源核对记录；按原生 JSON 协议填入实际值：
+下列字段、来源文件和定位均来自本次来源核对记录；按Rust JSON 协议填入实际值：
 
 1. 调用 `format_helpers.build_naming_plan`，`args` 为空数组，`kwargs` 包含 `year`、`author_token`、`original_title`、`source_evidence`、`delivery_path`。`source_evidence` 分别以 `year`、`author_token`、`original_title` 为键，每项包含实际 `file` 绑定及实际 `locator`。
 2. 将整个返回的 `result` 保存至 `run.naming`。
@@ -73,7 +74,7 @@ description: 为文献生成“年份-作者-原文标题.md”命名计划，�
 
 ## 离线命名帮助
 
-原生操作 `format_helpers.build_naming_plan` 帮助执行上述规则。它接受已经核定的字段，不从姓名空格、标题、PDF 文件名或添加日期猜作者及发表年。作者标记须由调用方先按 NAME-C04–C12 形成，例如单作者标记、两个已核实标记之间的 ` and `，或首作者标记后的 ` et al`。
+Rust 操作 `format_helpers.build_naming_plan` 帮助执行上述规则。它接受已经核定的字段，不从姓名空格、标题、PDF 文件名或添加日期猜作者及发表年。作者标记须由调用方先按 NAME-C04–C12 形成，例如单作者标记、两个已核实标记之间的 ` and `，或首作者标记后的 ` et al`。
 
 `source_file_record` 使用 `{"path": 实际路径, "sha256": 实际文件哈希}`；每个字段可以引用不同来源文件。函数核对文件是否存在及哈希是否匹配，不认证定位处的语义或字段身份。无可靠年份时显式传 `year=None` 和 `no_year_reason`；无法确认作者时显式传 `author_token="未知作者"` 和 `unknown_author_reason`。缺失原因也要有来源定位。
 

@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "reference_version": "1.1.0",
+  "release_target": "2.0.2",
+  "module_status": {
+    "accept_note": "qualified",
+    "docx_source_inventory": "qualified",
+    "glossary_candidates": "qualified",
+    "lint_presentation": "qualified",
+    "normalize_note": "qualified",
+    "note_pipeline": "qualified",
+    "render_note": "qualified",
+    "source_url_inventory": "qualified",
+    "validate_note": "qualified",
+    "deterministic_stage_checks": "qualified",
+    "format_helpers": "qualified",
+    "validate_delivery": "qualified",
+    "check_records": "qualified",
+    "complete_workflow": "qualified",
+    "draft_queue": "qualified",
+    "handoff_maps": "qualified",
+    "mapping_rerun": "qualified",
+    "pdf_image_objects": "qualified",
+    "prepare_source_inventory": "qualified",
+    "prepare_translation_review": "qualified",
+    "translation_review_tasks": "qualified",
+    "translation_review_writer": "qualified",
+    "validate_translation_review": "qualified"
+  },
+  "capabilities": {
+    "all_original_runtime_operations": {
+      "qualified": true,
+      "blocker": ""
+    },
+    "pdf_source_geometry_and_image_evidence": {
+      "qualified": true,
+      "blocker": ""
+    },
+    "docx_source_qualification": {
+      "qualified": true,
+      "blocker": ""
+    },
+    "source_delivery_mapping_and_review_ledger": {
+      "qualified": true,
+      "blocker": ""
+    },
+    "translation_review_lifecycle": {
+      "qualified": true,
+      "blocker": ""
+    },
+    "native_complete_workflow": {
+      "qualified": true,
+      "blocker": ""
+    },
+    "native_installation_and_external_integration": {
+      "qualified": true,
+      "blocker": ""
+    },
+    "twelve_skill_production_entrypoints": {
+      "qualified": true,
+      "blocker": ""
+    },
+    "all_reference_regressions_and_frozen_examples": {
+      "qualified": true,
+      "blocker": ""
+    },
+    "platform_installation_and_release_artifacts": {
+      "qualified": true,
+      "blocker": ""
+    },
+    "locked_dependencies_and_license_review": {
+      "qualified": true,
+      "blocker": ""
+    }
+  },
+  "required_targets": [
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin"
+  ],
+  "nonruntime_api_exclusions": {},
+  "api_replacements": {
+    "docx_source_inventory.NativeDocument.resolve_native_locator": "docx_source_inventory.resolve_native_locator",
+    "translation_review_writer.UnitReview.source": "translation_review_writer.select_source",
+    "translation_review_writer.UnitReview.candidate": "translation_review_writer.select_candidate",
+    "translation_review_writer.ReviewWriter.save": "translation_review_writer.save_review",
+    "translation_review_writer.ReviewWriter.save_draft": "translation_review_writer.save_decision_draft",
+    "translation_review_writer.ReviewWriter.from_draft": "translation_review_writer.restore_decision_draft"
+  }
+}

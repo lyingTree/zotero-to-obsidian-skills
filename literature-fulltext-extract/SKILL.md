@@ -1,11 +1,12 @@
 ---
 name: literature-fulltext-extract
+version: v2.0.2
 description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF 按页 OCR 及 DOCX、HTML、EPUB、文本等格式，修复版面断行并保留来源定位。不负责翻译或写入 Obsidian。
 ---
 
 # 提取全文与段落
 
-本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 
 ## 必要输入
 
@@ -14,7 +15,7 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 
 ## 执行步骤
 
-继续以现有逐页/原生清单与来源交付检查为机械证据；实际文件绑定使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md)。页图内容是否正确与源单元是否完整仍须核对。
+继续以现有逐页/结构清单与来源交付检查为机械证据；实际文件绑定使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md)。页图内容是否正确与源单元是否完整仍须核对。
 
 1. 核对每份附件的来源身份。
 2. 生成 PDF 题头页及对象所在页的可读页图。
@@ -23,9 +24,9 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 5. 对照页图复核需要精确转录的字段。
 6. 回查清单中尚无提取结果的对象。
 
-## DOCX 原生入口
+## DOCX 结构入口
 
-正文或 SI 为 `.docx` 时，将原文件直接传给 `prepare_source_inventory.prepare_sources()` 或总入口 `initialize_workflow()`；同一调用可以混合 PDF 与 DOCX。读取返回清单的 `native_blocks`、`media_calls` 和 `native_media`，具体字段见[原生 DOCX 证据](../literature-zotero2obsidian/references/delivery-checks.md#原生-docx-证据)。原生定位使用 XML 部件及子元素路径，没有推定页码。
+正文或 SI 为 `.docx` 时，将原文件直接传给 `prepare_source_inventory.prepare_sources()` 或总入口 `initialize_workflow()`；同一调用可以混合 PDF 与 DOCX。读取返回清单的 `native_blocks`、`media_calls` 和 `native_media`，具体字段见[DOCX 结构证据](../literature-zotero2obsidian/references/delivery-checks.md#docx-结构证据)。结构定位使用 XML 部件及子元素路径，没有推定页码。
 
 先按 `native_blocks` 的顺序提取正文与表格。再按 `media_calls` 的实际 relationship 找原图，并结合前后题注确认逻辑图号。同一图可以对应多个媒体调用；ZIP 中的图片文件名和媒体序号不代表图号。原图文件绑定位于 `native_media[].file`。
 
@@ -171,7 +172,7 @@ PDF 图像先使用 `prepare_sources(...)` 生成的 `image_index` 选择实际�
 
 软连字符与可见连字符同处一个片段时，把整个待核片段一次替换为已核定的读法。不能先把软连字符转换成 `-`，再叠加一个可见连字符。原页有两个可见字符也不能机械去重。涉及跨行断词时，证据区域覆盖词的两部分，裁决原因写明为何保留或去掉该处连字符；不将这一处裁决扩散到全文同形片段。
 
-原生操作 `format_helpers.apply_visible_text_edits` 只应用调用方已经指定的修订。每条 `resolved_edits` 记录包含 `id`、原始文本的 Unicode 码点区间 `start` / `end`（右端不含）、`expected_text`、`visible_page` 和 `decision`。`visible_page` 保存实际页图的最小文件引用、页码、`bbox`、坐标系及核定转写 `text`；`decision` 保存 `status="resolved"`、相同的 `selected_text`、原因、查看人和该查看人提供的 `observed` 声明。调用方负责真实查看行为与读法正确性，函数不认证这两项。
+Rust 操作 `format_helpers.apply_visible_text_edits` 只应用调用方已经指定的修订。每条 `resolved_edits` 记录包含 `id`、原始文本的 Unicode 码点区间 `start` / `end`（右端不含）、`expected_text`、`visible_page` 和 `decision`。`visible_page` 保存实际页图的最小文件引用、页码、`bbox`、坐标系及核定转写 `text`；`decision` 保存 `status="resolved"`、相同的 `selected_text`、原因、查看人和该查看人提供的 `observed` 声明。调用方负责真实查看行为与读法正确性，函数不认证这两项。
 
 将实际 `raw_text_file_record` 与 `resolved_edits` 分别作为 `kwargs.text_file` 和 `kwargs.edits`，调用 `format_helpers.apply_visible_text_edits`。将返回 `result.text_visual_conflicts` 追加到实际来源单元的 `text_visual_conflicts`，用 `result.text` 作为候选文字；原始文字文件不变。
 

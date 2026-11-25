@@ -1,10 +1,10 @@
 # 自动检查与证据边界
 
-对最终候选使用 [validate_note.py](../scripts/validate_note.py) 做只读源码检查。它不连接 Zotero、Obsidian 或网络，不修改笔记，也不自动生成验收通过记录。
+对最终候选使用 `validate_note.validate_file` 做只读源码检查。它不连接 Zotero、Obsidian 或网络，不修改笔记，也不自动生成验收通过记录。
 
 ## 使用方式
 
-在 Python 编辑器中打开脚本，将顶部 `NOTE_PATH` 指向工作目录内的候选稿后运行。Python 依赖列在本技能的 [requirements.txt](../requirements.txt)，由安装器安装。
+在 编辑器中打开脚本，将顶部 `NOTE_PATH` 指向工作目录内的候选稿后运行。
 
 也可以在已有处理脚本中导入 `validate_note(text)` 或 `validate_file(path)`。返回 `Finding` 列表，每项含 `level`、`code`、`line` 和 `message`；行号用于定位源码。路径对象使用 `pathlib.Path`。
 
@@ -26,7 +26,7 @@
 
 代码示例、注释、公式内容和外部文件链接不应误判为本篇引文。Rich Table 的 title、footer、列名和单元格另作本篇链接检查；v3 包括非活动工作表。工作表内的发现含工作表序号及可用的 name/id，行号指向该工作表的源码起始处；单行 JSON 不虚构单元格行号。解析器只覆盖脚本明确实现的语法；没有报错仅表示这些源码规则没有发现问题。
 
-仓库回归执行 `template/` 中四份完整 Templater 程序：普通 Markdown 表格生成 v2，已有 v3 经模板导入并逐工作表规范化，再把实际输出送入校验器。覆盖 `---` 包裹、v2/v3 无包裹变体、每张工作表的锁定与主题，以及第二工作表四类可见字段中的断链。测试使用内存中的应用与 HTTP 替身，PyYAML 适配 YAML 接口；验收对象为实际生成的 Markdown 数据。
+仓库回归执行 `template/` 中四份完整 Templater 程序：普通 Markdown 表格生成 v2，已有 v3 经模板导入并逐工作表规范化，再把实际输出送入校验器。覆盖 `---` 包裹、v2/v3 无包裹变体、每张工作表的锁定与主题，以及第二工作表四类可见字段中的断链。测试使用内存中的应用与 HTTP 替身，YAML 解析器 适配 YAML 接口；验收对象为实际生成的 Markdown 数据。
 
 以下检查仍由对应技能执行，必须分别保存证据：
 
@@ -38,11 +38,11 @@
 
 ## 来源交付索引
 
-完整 PDF 生成另按[来源交付索引](delivery-checks.md)准备逐页来源材料，运行 `validate_delivery.py`。它检查实际文件、哈希和已盘点单元的交付关系；它不把“有映射”当作“翻译正确”，也不把执行者自填的通过状态当作独立来源核验。
+完整 PDF 生成另按[来源交付索引](delivery-checks.md)准备逐页来源材料，运行 `validate_delivery.validate_delivery`。它检查实际文件、哈希和已盘点单元的交付关系；它不把“有映射”当作“翻译正确”，也不把执行者自填的通过状态当作独立来源核验。
 
 ## 可见排版提示
 
-使用 [lint_presentation.py](../scripts/lint_presentation.py) 的 `lint_file(Path(...))` 或 `lint_presentation(text)`。在编辑器中运行时修改顶部 `NOTE_PATH`，无需命令行参数。
+使用 `lint_presentation.lint_file` 的 `lint_file(Path(...))` 或 `lint_presentation(text)`。在编辑器中运行时修改顶部 `NOTE_PATH`，无需命令行参数。
 
 返回每条提示的 `rule_id`、`line`、`code`、`excerpt`、`message`。检查范围包括裸邮箱、裸 DOI、裸网址、可见连接线、常见带单位量、百分数和中外文间距；Rich Table 的所有工作表可见字段都参与扫描。Rich Table 提示行号指向所在数据块，不虚构单元格源码行号。
 

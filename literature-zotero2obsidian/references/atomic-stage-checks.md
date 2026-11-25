@@ -1,13 +1,13 @@
 # 原子文件检查与确定性阶段辅助（增量）
 
-本页补充已有的 [确定性组装入口](deterministic-pipeline.md)、[源码检查](automated-validation.md) 和 [来源交付索引](delivery-checks.md)，不替代它们。统一使用 [deterministic_stage_checks.py](../scripts/deterministic_stage_checks.py)。函数接受实际文件与已确认的字段；不要求模型再次拼接确定性格式或凭语法通过自行填写验收结论。
+本页补充已有的 [Rust 组装入口](rust-entrypoints.md)、[源码检查](automated-validation.md) 和 [来源交付索引](delivery-checks.md)，不替代它们。统一使用 `deterministic_stage_checks.*` 操作。函数接受实际文件与已确认的字段；不要求模型再次拼接确定性格式或凭语法通过自行填写验收结论。
 
 ## 确定性辅助
 
-| 阶段 | Python 入口 | 证据边界 |
+| 阶段 | Rust 入口 | 证据边界 |
 |---|---|---|
 | 读取条目 | collection_ancestry、snapshot | 原始 API 集合父链、成环/缺项/未完分页及实际文件字节；附件角色、语言、版本、文件格式有效性仍需独立证据 |
-| 全文抽取 | 既有 prepare_source_inventory、docx_source_inventory、validate_delivery；snapshot | 逐页/原生对象覆盖与真实字节绑定，不替代页图和提取内容核对 |
+| 全文抽取 | 既有 prepare_source_inventory、docx_source_inventory、validate_delivery；snapshot | 逐页/结构对象覆盖与真实字节绑定，不替代页图和提取内容核对 |
 | 翻译 | audit_translation_binding | TRN-A17/A25 独立目标路径和哈希核验；不评价译文 |
 | 规划及写入 | audit_write_readback、inspect_relative_files | WRITE-A04/A05 与明确列出的本地文件实际可读性、哈希、根边界；不自动覆盖、移动或写入实际库 |
 | 文件名 | author_token、既有 build_naming_plan/validate_naming_plan | 已核实作者标记数量决定连接词，不猜姓或角色 |
@@ -21,17 +21,14 @@
 
 在编辑器内编写任务脚本、导入模块，路径由实际运行记录提供。新建属性的 confirmed 值须从已核定的当前来源和模板取得，作者标记须为已经核实的有序列表。示例：
 
-    from deterministic_stage_checks import build_properties, repair_properties
-    from deterministic_stage_checks import audit_properties, record_file_checks
-
-    output_bytes = build_properties(
-        content_input.read_bytes(), item_type=confirmed_item_type,
-        confirmed=confirmed_template_fields,
-    )
-    with properties_draft.open("xb") as stream:
-        stream.write(output_bytes)
-    report = audit_properties(content_input, properties_draft,
-                              mode="new", item_type=confirmed_item_type)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
+```
     record_file_checks(checks_path, work_root.joinpath("properties-file-checks.json"),
                        stage="properties", before=content_input, after=properties_draft,
                        mode="new", item_type=confirmed_item_type)
@@ -40,7 +37,7 @@
 
 ## 全部规则的覆盖盘点
 
-在实际技能根调用 coverage_catalog(skills_root)，使用已有 check_records 的声明解析器枚举全部 C/A ID（包括引用页）；结果逐条列出真实规则位置、原目标及本模块显式映射。输出可用 json.dumps 保存至独立工作目录。未映射项标为 not_classified_by_this_module，不把它们误记为“必须模型判断”或“已经 Python 化”。已有各检查器仍要逐规则核对其实现和证据范围。本增量没有用关键词自动分派验收或把未适用等同于通过。
+在实际技能根调用 coverage_catalog(skills_root)，使用已有 check_records 的声明解析器枚举全部 C/A ID（包括引用页）；结果逐条列出真实规则位置、原目标及本模块显式映射。输出可用 json.dumps 保存至独立工作目录。未映射项标为 not_classified_by_this_module，不把它们误记为“必须模型判断”或“已经程序化”。已有各检查器仍要逐规则核对其实现和证据范围。本增量没有用关键词自动分派验收或把未适用等同于通过。
 
 ## Rich Table 独立验收
 

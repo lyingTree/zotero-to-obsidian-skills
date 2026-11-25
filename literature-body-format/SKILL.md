@@ -1,11 +1,12 @@
 ---
 name: literature-body-format
+version: v2.0.2
 description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段落、图表公式及参考文献编号。保留内容语义和既有锚点，不承担翻译或引用目标匹配。
 ---
 
 # 规范全文排版
 
-本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 
 ## 必要输入
 
@@ -16,7 +17,7 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 
 机械排版继续使用既有 normalize_note、lint_presentation、validate_note 与 accept_note；[原子文件检查](../literature-zotero2obsidian/references/atomic-stage-checks.md) 区分直接计算与仍需来源语义复核的记录，禁止零提示即全篇通过。
 
-优先按 [原生组装、规范化与验收](../literature-zotero2obsidian/references/native-entrypoints.md#正文组装与机械验收)执行：结构化内容由 `render_note()` 序列化，既有候选由 `normalize_note()` 规范化，再由 `accept_note()` 读取实际文件。统一调用 `process_content()` / `process_markdown()` 可同时取得新候选、可重放变换、来源映射和逐环节报告。模型处理译义与异常判断，不手拼已由程序管理的空行、量值包装和对象块。
+优先按 [Rust 组装、规范化与验收](../literature-zotero2obsidian/references/rust-entrypoints.md#正文组装与机械验收)执行：结构化内容由 `render_note()` 序列化，既有候选由 `normalize_note()` 规范化，再由 `accept_note()` 读取实际文件。统一调用 `process_content()` / `process_markdown()` 可同时取得新候选、可重放变换、来源映射和逐环节报告。模型处理译义与异常判断，不手拼已由程序管理的空行、量值包装和对象块。
 
 1. 依原文章序整理候选结构。
 2. 按图清单逐幅放置原图。
@@ -28,7 +29,7 @@ description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段
 
 书目 ID 的兼容性按第 9 步的语法规则静态核对，保留对应 warning；不以插件运行作为验收条件。
 
-Rich Table 使用 原生 `format_helpers.build_rich_table_block`（`args` 为含实际 table_data 的单元素数组，`kwargs.anchor` 为实际表锚） 生成完整数据块。`table_data` 来自已逐格核对的源表；显式提供 v2/v3、每张表的 `locked: true`、`theme: "grid"`、完整 `columns` 与 `rows`。函数保留单元格、公式字符串、合并关系和锚 ID，生成块状 YAML 后读回比较；不要自行输出 flow 数组替代原生生成的块状 YAML。表题中的“表N”保留纯文本，正文调用再链接到该表锚。
+Rich Table 使用 Rust  `format_helpers.build_rich_table_block`（`args` 为含实际 table_data 的单元素数组，`kwargs.anchor` 为实际表锚） 生成完整数据块。`table_data` 来自已逐格核对的源表；显式提供 v2/v3、每张表的 `locked: true`、`theme: "grid"`、完整 `columns` 与 `rows`。函数保留单元格、公式字符串、合并关系和锚 ID，生成块状 YAML 后读回比较；不要自行输出 flow 数组替代Rust 生成的块状 YAML。表题中的“表N”保留纯文本，正文调用再链接到该表锚。
 
 每幅逻辑图使用[图块组装入口](references/figure-blocks.md)生成图片、图下题注和图锚，包含无编号图及图形摘要。源图只有类别标签时，题注保留该标签，不编造图号或说明。图上方的标题不能替代图下题注；没有正文调用也不省略图锚。
 

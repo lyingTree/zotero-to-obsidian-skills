@@ -1,11 +1,12 @@
 ---
 name: literature-supplement-materials
+version: v2.0.2
 description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、表、视频），合并为正文后的补充材料章节；在第 8 步排版与第 9 步链接之前执行。
 ---
 
 # 处理补充材料
 
-本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 
 ## 必要输入
 
@@ -17,14 +18,14 @@ description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、�
 对明确列出的本地资源运行 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 inspect_relative_files，实际读取文件并检查根边界及哈希；仍须按来源库存核对完整性、实际视频容器、编解码和首帧。
 
 1. 复用第 1 步清单核对每份 SI 附件的身份。
-2. 查看每份 SI 自己的题头；PDF 使用题头页图，DOCX 使用原生段落并按实际版面需要渲染。
+2. 查看每份 SI 自己的题头；PDF 使用题头页图，DOCX 使用结构段落并按实际版面需要渲染。
 3. 按[来源命名空间](../literature-zotero2obsidian/references/pipeline-contract.md#补充材料与书目命名空间)建立该份 SI 的来源记录。
 4. 按[题头规则](../literature-header-format/SKILL.md)构建该份 SI 的题头。
 5. 提取该份 SI 的完整内容。
 6. 对照清单检查该份 SI 的遗漏对象。
 7. 将核对后的 SI 内容并入候选一次。
 
-DOCX 补充材料直接进入[原生 DOCX 证据入口](../literature-zotero2obsidian/references/delivery-checks.md#原生-docx-证据)。先核对每个 `media_call` 的关系目标和前后原文，再建立图号与题注对应。一个题注前有两个媒体调用时，先核对是否为同一图的两个面板；不要据此补造第二个图号。最终检查会提示未映射的实际媒体调用，目录中存在图片不能替代笔记中的正确嵌入。
+DOCX 补充材料直接进入[DOCX 结构证据入口](../literature-zotero2obsidian/references/delivery-checks.md#docx-结构证据)。先核对每个 `media_call` 的关系目标和前后原文，再建立图号与题注对应。一个题注前有两个媒体调用时，先核对是否为同一图的两个面板；不要据此补造第二个图号。最终检查会提示未映射的实际媒体调用，目录中存在图片不能替代笔记中的正确嵌入。
 
 ## 约束
 
@@ -114,7 +115,7 @@ DOCX 补充材料直接进入[原生 DOCX 证据入口](../literature-zotero2obs
 - [SI-C80] 补充表锚后有内容时留一空行。
 - [SI-C81] 补充视频就近排列题注。
 - [SI-C82] 补充视频嵌入独占一行。
-- [SI-C83] 补充视频使用 Obsidian 原生嵌入 `![[从库根起算的视频完整路径]]`。
+- [SI-C83] 补充视频使用 Obsidian 内置嵌入 `![[从库根起算的视频完整路径]]`。
 - [SI-C84] 单份 SI 视频锚写在嵌入行尾。
 - [SI-C97] 单份 SI 视频锚使用 `^mov-sN` 格式。
 - [SI-C85] 多份 SI 视频锚按来源 token 消歧。
@@ -222,7 +223,7 @@ DOCX 补充材料直接进入[原生 DOCX 证据入口](../literature-zotero2obs
 - [ ] [SI-A09] 每项本地资源的哈希已核对。 <!-- check-type: offline_outcome -->
 - [ ] [SI-A10] SI 资源引用能从候选资源根解析到可读文件。 <!-- check-type: offline_outcome -->
 - [ ] [SI-A11] 每幅补充图已通过[裁剪视觉验收](../literature-fulltext-extract/references/figure-crop.md)。 <!-- check-type: offline_outcome -->
-- [ ] [SI-A12] 每个视频使用原生嵌入。 <!-- check-type: offline_outcome -->
+- [ ] [SI-A12] 每个视频使用内置嵌入。 <!-- check-type: offline_outcome -->
 - [ ] [SI-A13] 每个视频的实际容器已核对。 <!-- check-type: offline_outcome -->
 - [ ] [SI-A14] 每个视频的编解码器已核对。 <!-- check-type: offline_outcome -->
 - [ ] [SI-A15] 每个视频的首帧解码已核对。 <!-- check-type: offline_outcome -->

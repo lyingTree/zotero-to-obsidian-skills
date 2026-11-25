@@ -8,35 +8,13 @@
 
 将下面内容保存为自己的工作脚本，并让 `pdf_image_objects.py` 所在的 `scripts` 目录可导入。页码和候选框从本次源页或实际对象索引读取；这里不预填任何论文坐标。
 
-```python
-import json
-from pathlib import Path
-
-from pdf_image_objects import PDF_BBOX_COORDINATES, inspect_crop_boundaries
-
-WORK = Path("work")
-SOURCE_ID = "main"
-PAGE_NUMBER: int | None = None
-CANDIDATE_BBOX: list[float] | None = None
-
-if PAGE_NUMBER is None or CANDIDATE_BBOX is None:
-    raise ValueError("从本次来源填写页码与未旋转 PDF 点坐标的候选框")
-
-inventory = json.loads(WORK.joinpath("source-inventory.json").read_text(encoding="utf-8"))
-source = next(row for row in inventory["sources"] if row["id"] == SOURCE_ID)
-check = inspect_crop_boundaries(
-    Path(source["path"]),
-    page_number=PAGE_NUMBER,
-    bbox=CANDIDATE_BBOX,
-    coordinate_system=PDF_BBOX_COORDINATES,
-    context_destination=WORK.joinpath("candidate-context.png"),
-    expected_source_sha256=source["sha256"],
-)
-with WORK.joinpath("candidate-boundaries.json").open("x", encoding="utf-8") as stream:
-    json.dump(check, stream, ensure_ascii=False, indent=2)
-
-print(json.dumps({"edges": check["edges"], "suggested_bbox": check["suggested_bbox"],
-                  "context": check["context"]}, ensure_ascii=False, indent=2))
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 先看返回记录中的 `edges`，再打开 `context.asset.path` 和 `context.annotated_asset.path`：前者保留原样源页像素，后者用**红框表示当前裁框、绿框表示尚未采用的建议框**。上下文默认向外扩 36 pt；检测到较长的跨界文字时，还会扩到能显示该文字的范围，受源页边界限制。`context.page_to_pixel_transform` 明确记录未旋转 PDF 坐标到该上下文图像素的变换，旋转页面也适用。框已覆盖整页时，`outside_crop_pt` 为零，表示源页之外没有可提供的内容。
@@ -152,39 +130,19 @@ print(json.dumps({"edges": check["edges"], "suggested_bbox": check["suggested_bb
 
 ## 原图对象索引与导出
 
-先运行 [prepare_source_inventory.py](../../literature-zotero2obsidian/scripts/prepare_source_inventory.py) 的 `prepare_sources(...)`。每页的 `image_index.occurrences` 给出实际 PDF 内容流中调用的 `image_xref`、资源名、调用位置、完整对象 `bbox` 及六项 `transform`。嵌套 Form 的调用链单独保存。对象身份来自实际 `Do` 调用；相同解码像素不会被当作相同 xref，资源表中的未使用图片也不会被列为实际出现。
+先运行 [prepare_source_inventory.prepare_sources](../../literature-zotero2obsidian/scripts/prepare_source_inventory.prepare_sources) 的 `prepare_sources(...)`。每页的 `image_index.occurrences` 给出实际 PDF 内容流中调用的 `image_xref`、资源名、调用位置、完整对象 `bbox` 及六项 `transform`。嵌套 Form 的调用链单独保存。对象身份来自实际 `Do` 调用；相同解码像素不会被当作相同 xref，资源表中的未使用图片也不会被列为实际出现。
 
 每份来源的 `image_objects` 按 xref 去重。每个对象登记 `original_encoded_extension`、`extracted_extension`、原始提取文件 `raw_asset` 的路径与 SHA-256，以及 SMask 的 xref、编码、文件哈希和透明度范围。复用同一 xref 的页面共用一个提取文件。JPEG 等独立编码保留原编码；PDF 的 Flate 等采样流本来没有独立图片扩展名，此时 `original_encoded_extension` 为 `null`，`extracted_extension` 说明无损封装后的实际格式。`raw_asset` 是原对象的诊断文件，带蒙版时直接复制它会丢失独立蒙版。
 
 查看源页后，在自己的工作脚本中设置已选中的页码和 xref，再调用 [pdf_image_objects.py](../../literature-zotero2obsidian/scripts/pdf_image_objects.py)。下面的常量需要填写本次来源中的真实值；目标路径不写扩展名时，由实际输出编码决定扩展名。
 
-```python
-import json
-from pathlib import Path
-
-from pdf_image_objects import export_image_object
-
-INVENTORY_PATH = Path("work/source-inventory.json")
-SOURCE_ID = "main"
-PAGE_NUMBER: int | None = None
-IMAGE_XREF: int | None = None
-FINAL_ASSET_STEM = Path("output/assets/selected-figure")
-EXPORT_RECORD_PATH = Path("work/selected-image-export.json")
-
-if PAGE_NUMBER is None or IMAGE_XREF is None:
-    raise ValueError("先根据实际源页和 image_index 填写页码及 image_xref")
-
-inventory = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
-source = next(row for row in inventory["sources"] if row["id"] == SOURCE_ID)
-record = export_image_object(
-    Path(source["path"]),
-    page_number=PAGE_NUMBER,
-    image_xref=IMAGE_XREF,
-    destination=FINAL_ASSET_STEM,
-    expected_source_sha256=source["sha256"],
-)
-with EXPORT_RECORD_PATH.open("x", encoding="utf-8") as stream:
-    json.dump(record, stream, ensure_ascii=False, indent=2)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 函数重新核对 xref 的真实图像类型及其在所选页的实际调用。常规 DeviceRGB/DeviceGray 原图无显示冲突时，按原提取字节导出；非不透明 SMask 合成为具有正确 alpha 的无损 PNG。完全不透明的 SMask 不要求改变原图编码。SMask 的 `Decode` 由 PDF 解码器实际应用，导出记录保留该定义。目标扩展名错误、来源哈希变化、非图像 xref、越界页码或目标已有不同内容都会报错。
@@ -203,23 +161,13 @@ PDF 中存在旋转、镜像、斜切或非等比显示时，独立原编码图�
 
 当图由多个对象组成，或独立导出不能保留 PDF 的显示效果时，先按本文开头运行边界取证，并在完整源页上确定全部图件内容。以完整对象 bbox 为起点；对象外仍有属于图件的标注时，扩展到这些标注的实际边界。然后使用 `render_page_region(...)` 渲染已经确认的页面范围。函数要求明确的未旋转 PDF 点坐标，默认向四周各加 6 pt 安全边距，实际边距受页面边界限制并逐边登记。这个默认值只是起点，不能代替目视核对；返回的 `boundary_check` 会对实际输出范围继续做来源检查。
 
-```python
-from pdf_image_objects import PDF_BBOX_COORDINATES, render_page_region
-
-VERIFIED_BBOX: list[float] | None = None
-if VERIFIED_BBOX is None:
-    raise ValueError("先在完整源页确定包含所有图件要素的 PDF 点坐标范围")
-
-record = render_page_region(
-    Path(source["path"]),
-    page_number=PAGE_NUMBER,
-    bbox=VERIFIED_BBOX,
-    coordinate_system=PDF_BBOX_COORDINATES,
-    destination=Path("output/assets/selected-figure.png"),
-    margin_pt=6,
-    dpi=300,
-    expected_source_sha256=source["sha256"],
-)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 保留完整源页文件，并打开最终输出的图片文件。先完整比较图件，再放大到图内小字和端点可辨认的尺度，逐边核对：
@@ -260,19 +208,13 @@ record = render_page_region(
 
 下面仅为虚构单元的调用结构；观察字典必须由实际比较填写，不提供默认通过值：
 
-```python
-from pathlib import Path
-from prepare_source_inventory import record_figure_edges
-
-EDGE_OBSERVATIONS: dict[str, dict[str, str]] | None = None
-if EDGE_OBSERVATIONS is None:
-    raise ValueError("实际查看四边后，逐边填写 status 与具体 observation")
-
-record_figure_edges(
-    Path("work/figure-reviews.json"), "synthetic-figure", 0,
-    source_location_indices=[0],
-    observations=EDGE_OBSERVATIONS,
-)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 `observations` 的键为 `left`、`right`、`top`、`bottom`；每个值恰含显式 `status` 与该边实际比较的 `observation`。例如观察应指明该边的轴标题、刻度、面板号或线条终点如何与完整源页对应。一次只记录部分边也可以，未提供的边保持原状。函数把所选来源 PDF、完整页图、页码和图框或 xref，以及该最终图片的实际路径和哈希写入对应边；调用方无需再次抄写文件绑定。

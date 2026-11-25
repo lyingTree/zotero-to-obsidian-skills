@@ -1,0 +1,217 @@
+name: Rust CI and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUST_TOOLCHAIN: '1.95.0'
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  resolve-lock:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Verify repository version alignment and script-free layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n install.sh
+          if git grep -i -n "python" >/dev/null 2>&1; then
+            echo "Repository must not contain Python references:" >&2
+            git grep -i -n "python" >&2
+            exit 1
+          fi
+          if git grep -n "原生" >/dev/null 2>&1; then
+            echo "Repository must not contain 原生 references:" >&2
+            git grep -n "原生" >&2
+            exit 1
+          fi
+          repo_ver="$(tr -d '[:space:]' < VERSION)"
+          cargo_ver="$(awk -F'"' '/^version = / {print $2; exit}' rust/Cargo.toml)"
+          if [[ "$repo_ver" != "v${cargo_ver}" ]]; then
+            echo "VERSION ($repo_ver) must equal v${cargo_ver}" >&2
+            exit 1
+          fi
+          for skill_md in literature-*/SKILL.md; do
+            if ! grep -q "^version: ${repo_ver}$" "$skill_md"; then
+              echo "$skill_md is missing version: ${repo_ver}" >&2
+              exit 1
+            fi
+          done
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Verify the committed dependency graph
+        shell: bash
+        run: |
+          cargo +"$RUST_TOOLCHAIN" metadata --locked --format-version 1 --manifest-path rust/Cargo.toml > /dev/null
+          git diff --exit-code HEAD -- rust/Cargo.lock
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (Node 24)
+        with:
+          name: resolved-rust-cargo-lock
+          path: rust/Cargo.lock
+          if-no-files-found: error
+
+  rust:
+    needs: resolve-lock
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Check PowerShell installer syntax on Windows
+        if: runner.os == 'Windows'
+        working-directory: .
+        shell: powershell
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PWD 'install.ps1'), [ref]$tokens, [ref]$parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (Node 24)
+        with:
+          name: resolved-rust-cargo-lock
+          path: rust
+      - name: Install Rust development toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --target ${{ matrix.target }}
+      - name: Check the actual runner target
+        run: rustc +1.95.0 -vV
+      - name: Run Rust target tests
+        run: cargo +1.95.0 test --locked --target ${{ matrix.target }}
+      - name: Build release executable for the exact target
+        run: cargo +1.95.0 build --locked --release --target ${{ matrix.target }}
+      - name: Package skill bundle, verify installation, and stage release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix=""
+          if [[ "$RUNNER_OS" == "Windows" ]]; then suffix=".exe"; fi
+          exe="$(pwd)/target/${{ matrix.target }}/release/z2o${suffix}"
+          bundle="$RUNNER_TEMP/z2o-rust-bundle-${{ matrix.target }}"
+          installed="$RUNNER_TEMP/z2o rust installed 中文"
+          dist="$RUNNER_TEMP/release-dist-${{ matrix.target }}"
+          rm -rf "$bundle" "$installed" "$dist"
+          mkdir -p "$dist"
+
+          "$exe" describe > "$RUNNER_TEMP/z2o-describe.json"
+          "$exe" package .. "$bundle"
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest="$(sha256sum < "$bundle/package.json" | awk '{print $1}' | tr -d '\r')"
+          else
+            digest="$(shasum -a 256 < "$bundle/package.json" | awk '{print $1}' | tr -d '\r')"
+          fi
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          PATH="" "$exe" install "$bundle/package.json" "$digest" "$installed" > "$RUNNER_TEMP/z2o-install-receipt.json"
+          export Z2O_INSTALLED_SKILLS="$installed"
+          export Z2O_INSTALL_MANIFEST="$bundle/package.json"
+          export Z2O_INSTALL_RECEIPT="$RUNNER_TEMP/z2o-install-receipt.json"
+          export Z2O_WORKFLOW_RECEIPT="$RUNNER_TEMP/z2o-installed-workflow-receipt.json"
+          cargo +"$RUST_TOOLCHAIN" test --locked --target ${{ matrix.target }} \
+            --test installed_workflow installed_mixed_source_workflow_without_path -- --ignored --exact
+
+          cp "$exe" "$dist/z2o-${{ matrix.target }}${suffix}"
+          (
+            cd "$bundle"
+            tar -czf "../z2o-skills-${{ matrix.target }}.tar.gz" package.json skills
+          )
+          mv "$RUNNER_TEMP/z2o-skills-${{ matrix.target }}.tar.gz" "$dist/z2o-skills-${{ matrix.target }}.tar.gz"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            powershell.exe -NoProfile -Command "Compress-Archive -Path '$bundle/package.json', '$bundle/skills' -DestinationPath '$dist/z2o-skills-${{ matrix.target }}.zip' -Force"
+          else
+            (cd "$bundle" && zip -qr "$dist/z2o-skills-${{ matrix.target }}.zip" package.json skills)
+          fi
+      - name: Upload platform release distribution artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (Node 24)
+        with:
+          name: release-dist-${{ matrix.target }}
+          path: ${{ runner.temp }}/release-dist-${{ matrix.target }}/*
+          if-no-files-found: error
+      - name: Retain installation and workflow receipts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (Node 24)
+        with:
+          name: rust-install-receipt-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/z2o-install-receipt.json
+            ${{ runner.temp }}/z2o-installed-workflow-receipt.json
+          if-no-files-found: error
+
+  release:
+    needs: [rust]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Download all 5 platform release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (Node 24)
+        with:
+          pattern: release-dist-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify all 5 platform bundles and generate SHA256SUMS.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          for target in \
+            x86_64-pc-windows-msvc \
+            aarch64-pc-windows-msvc \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu \
+            aarch64-apple-darwin; do
+            [[ -f "z2o-skills-${target}.zip" ]]
+            [[ -f "z2o-skills-${target}.tar.gz" ]]
+          done
+          chmod +x z2o-x86_64-unknown-linux-gnu z2o-aarch64-unknown-linux-gnu z2o-aarch64-apple-darwin
+          sha256sum z2o-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Publish multi-platform assets to GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "$tag" release-assets/* --clobber --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "$tag" release-assets/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "$tag" \
+              --generate-notes
+          fi

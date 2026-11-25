@@ -48,36 +48,15 @@
 
 准备函数不修改来源清单，不添加 inventory 指针，不覆盖旧复核记录。来源清单、术语表或候选改变后保留旧记录，新建修订文件；按变化重新核对受影响目标。仅更新哈希不能使旧结论继续有效。后续排版改动行号时，重新绑定实际最终 Markdown 中的对应片段。
 
-在工作目录的 Python 调用脚本中导入技能函数。`unit_ids` 由本次完整来源盘点确定，不按关键词自动选段。完整 PDF 流程从已有 `run.json` 读取实际路径：初始化通常把清单和术语记录放在 `work/evidence/`，候选位置由本次配置指定，不从固定文件名推断。下面的运行记录路径、来源块 ID 和候选片段须替换为本次实际值：
+在工作目录的 JSON 请求文件中导入技能函数。`unit_ids` 由本次完整来源盘点确定，不按关键词自动选段。完整 PDF 流程从已有 `run.json` 读取实际路径：初始化通常把清单和术语记录放在 `work/evidence/`，候选位置由本次配置指定，不从固定文件名推断。下面的运行记录路径、来源块 ID 和候选片段须替换为本次实际值：
 
-```python
-from pathlib import Path
-import json
-import sys
-
-run_path = Path("本次已有 run.json 的实际路径")
-run = json.loads(run_path.read_text(encoding="utf-8"))
-config, records = run["config"], run["records"]
-work = Path(config["work_root"])
-inventory_path = Path(records["source_inventory"])
-candidate_path = Path(config["candidate_path"])
-review_path = Path(records["translation_review"])
-glossary_path = Path(config["glossary_path"]) if config.get("glossary_path") else None
-terminology_path = Path(records["terminology"]) if records.get("terminology") else None
-scripts = Path(config["skills_root"]).joinpath("literature-translate-zh", "scripts")
-sys.path.insert(0, str(scripts))
-from prepare_translation_review import prepare_translation_review, new_term_candidate
-
-review_path = prepare_translation_review(
-    inventory_path,
-    candidate_path,
-    review_path,
-    unit_ids=["source-a-paragraph-k"],
-    glossary_path=glossary_path,
-    candidate_locations={
-        "source-a-paragraph-k": [{"quote": "本次译稿中可唯一定位的完整原样片段"}]
-    },
-)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 在上述流程中，最终术语采用记录保存到 `terminology_path`，再用它的实际文件引用填写 `terminology_record`。若运行记录尚未登记所需术语记录，先按实际任务补齐计划和 inventory 指针，再固定清单生成复核骨架；不在另一目录另建同名文件代替。
@@ -117,16 +96,15 @@ review_path = prepare_translation_review(
 
 准备清单后先用 `translation_review_tasks.py` 查看实际待办。它按“范围 → 当前单元 → 全局记录”的顺序读取现有台账，当前单元未就绪时不会跳到后面的单元。它只显示已有目标，不判断语义，不填写状态，也不按对象类型自动排除内容。
 
-在本次 Python 调用脚本里使用：
+在本次 JSON 请求文件里使用：
 
-```python
-import json
-from translation_review_writer import ReviewWriter
-from translation_review_tasks import next_review_task, require_unit_records
-
-writer = ReviewWriter(actual_prepared_review_path)
-task = next_review_task(writer)
-print(json.dumps(task, ensure_ascii=False, indent=2))
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 | `stage` | 当前目标 |
@@ -144,12 +122,13 @@ print(json.dumps(task, ensure_ascii=False, indent=2))
 
 按下一节短入口完成本段后，再执行：
 
-```python
-if task["stage"] == "unit":
-    # 先按实际候选位置绑定本单元，再填写其每项目标。
-    require_unit_records(writer, task["unit_id"])
-    writer.save_draft(actual_new_checkpoint_path)
-    print(json.dumps(next_review_task(writer), ensure_ascii=False, indent=2))
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 若本段仍有缺项，`IncompleteUnitRecordsError.result` 保存该段的完整实际诊断；继续处理本段。`unit_record_report(writer, unit_id)` 可只读检查任一已选单元。没有做完时也可以保存新草稿，但保存草稿不表示本段就绪。下一次用 `ReviewWriter.from_draft(actual_checkpoint_path)` 恢复原输入仍有效的决定，再查看待办。
@@ -168,30 +147,13 @@ if task["stage"] == "unit":
 
 下面只是接口形状；变量须来自本段真实阅读与选择，不是可直接套用的结论。可运行的全虚构单段闭环见 [compact_review_example.py](compact_review_example.py)。它从实际准备函数开始，保存与恢复短决定，再调用原样的最终校验器。
 
-```python
-from translation_review_writer import ReviewWriter
-
-writer = ReviewWriter(review_path)
-unit = writer.unit(unit_id, candidate_locations=actual_complete_candidate_locations)
-source = unit.source(exact_source_excerpt)
-candidate = unit.candidate(exact_candidate_excerpt)
-
-unit.occurrence("claims", claim_id, source, candidate, claim_status, claim_reason)
-unit.check("completeness", completeness_status, completeness_reason)
-# claims 的两侧文字直接取明确选中的片段，无需再重复 source_claim/candidate_claim。
-# 方向、否定范围、条件、语气强度、公式结构等仍传入各自必要的独立字段。
-
-term = unit.term(term_id, original_term, primary_category, source, aliases=actual_aliases)
-hits = term.search("full_phrase", actual_query, query_interpretation)
-term.search("family", family_query, family_interpretation)
-# 确有别名时执行 aliases 查询；实际没有别名时才明确填写：
-term.search_status("aliases", "not_applicable", actual_no_alias_reason)
-term.decide(term_decision, chosen_translation, contextual_reason,
-            matches=explicitly_chosen_hit_ids, resolution_basis=unlisted_basis_if_needed)
-unit.scan(primary_category, category_status, [term_id], category_reason)
-
-# 每段保存到一个新的草稿文件；它不冒充完成台账。
-writer.save_draft(work.joinpath("translation-decisions-paragraph-01.json"))
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 `source` 应覆盖待比较的实际术语上下文；`original_term` 必须出现在所选片段里。同一个已注册候选可以被多个类别明确引用，不必为每一类复制候选；其主类别也必须实际包含该候选。`search()` 执行真实 `GlossaryIndex` 查询，保存原样行号、词条 ID、命中原文和调用方的解释；它记录 `searched`，不决定同义或采用。`decide()` 的 `matches` 只接受本候选真实查询返回的 ID，保存时会重跑查询核对。完整短语和词族不能用未查询的“不适用”代替。未收录术语的 `unlisted` 决定另外要求明确 `resolution_basis`；`not_a_term`、未决与不采用理由同样由复核者填写。
@@ -204,14 +166,18 @@ writer.save_draft(work.joinpath("translation-decisions-paragraph-01.json"))
 4. 所有实际应译单元完成后，明确填写 `writer.source_issues_review(status, reason)`；范围和排除条件已经在逐段判断前完成。发现源文疑点时，用 `unit.issue(issue_id, source, description, candidate_readings, disposition, status, reason)` 保留各个读法与处理，不用总括结论代替疑点记录。
 5. 明确调用 `writer.terminology_review("reviewed", covered_units=actual_reviewed_unit_ids, no_unlisted_reason=actual_empty_set_reason_if_applicable)` 和 `writer.review("reviewed")`，再保存新的正式台账与术语文件：
 
-```python
-report = writer.save(final_review_path, terminology_path=final_terminology_path)
-print(report.to_dict())
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 `save()` 返回原有 `validate_translation_review()` 的报告，不返回文件路径，也不替任何目标填写通过。已存在的输出文件会被拒绝，原准备台账不会被改写。完整流程中，先在实际 `run`／inventory 计划里登记本次新的复核与术语路径，再固定清单和准备骨架；不要用覆盖初始化台账的方式绕过保护。生成的术语总表沿用交付检查器的契约，采用项的 `glossary_locator` 是实际词表绝对路径加 `#L行号`，逐候选的查询与命中仍保存结构化定位。
 
-**候选后续有改动时保留旧版本。** 可把已经完成的本段短调用保存在自己的 Python 复核脚本里，边译边记录；每次需要绑定结果时针对实际候选版本准备新台账。最终版本稳定后，在新台账里重新选择实际片段、核对受改动影响的判断，再执行已明确核对的短调用。`from_draft()` 只恢复原绑定仍有效的草稿；它不换哈希、不跨版本迁移旧结论。旧候选追加了一段、行号变化、来源清单或词表变化，都会要求重新准备并明确处理，不能靠重新保存旧对象获得新版本结论。这样既可以从第一段开始实际复核，也不会把早期草稿的通过状态自动带到最终稿。
+**候选后续有改动时保留旧版本。** 可把已经完成的本段短调用保存在自己的 JSON 请求文件里，边译边记录；每次需要绑定结果时针对实际候选版本准备新台账。最终版本稳定后，在新台账里重新选择实际片段、核对受改动影响的判断，再执行已明确核对的短调用。`from_draft()` 只恢复原绑定仍有效的草稿；它不换哈希、不跨版本迁移旧结论。旧候选追加了一段、行号变化、来源清单或词表变化，都会要求重新准备并明确处理，不能靠重新保存旧对象获得新版本结论。这样既可以从第一段开始实际复核，也不会把早期草稿的通过状态自动带到最终稿。
 
 ### 位置、重复片段与可见转录
 
@@ -219,22 +185,26 @@ print(report.to_dict())
 
 图内文字、表格或损坏文字层可使用本单元内的实际源页与边界框，不要求 PDF 文字层命中：
 
-```python
-source = unit.source(visible_transcription, page=actual_page, bbox=actual_box,
-                     observation_basis=actual_observation_basis)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 这会分别记录可见转录及调用方提供的观察依据，并检查真实页号、边界框和所属单元。它不会自动声明已经查看页图。若清单只有无边界框的片段、无法核定该图内位置属于本单元，先补足真实来源位置并重新准备，不能随意指向同页其他区域。
 
 Rich Table 的译文可能位于 YAML 转义字符串中。选择实际源码片段，再明确给出用于比较的解释文字及依据；不要把解码后的文字当成原文件子串：
 
-```python
-candidate = unit.candidate(actual_yaml_source_fragment, lines=actual_source_lines,
-                           comparison_text=explicit_decoded_cell_text,
-                           interpretation_basis=actual_decoding_or_rendering_basis)
-unit.occurrence("table_cells", cell_id, source, candidate, cell_status, cell_reason,
-                source_cell={"table_id": source_table_id, "row": source_row, "column": source_column},
-                candidate_cell={"table_id": candidate_table_id, "row": candidate_row, "column": candidate_column})
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 单元格文本从明确选择的比较文字填入，表身份、行列和判断仍单独提供。记录同时保留 `raw_text`、`comparison_text`、解释依据与原文件定位，是否解码正确仍需实际核对。
@@ -256,16 +226,13 @@ unit.occurrence("table_cells", cell_id, source, candidate, cell_status, cell_rea
 
 需要查看展开结果时，可在同一个调用脚本中使用：
 
-```python
-import json
-from prepare_translation_review import expand_source_locations
-
-inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
-units = {row["id"]: row for row in inventory["units"]}
-sources = {row["id"]: row for row in inventory["sources"]}
-unit = units["本次实际来源块ID"]
-locations = expand_source_locations(unit, sources[unit["source"]])
-# 查看 locations，再由人确认这些实际 block 是否覆盖了完整应译段。
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 ## 逐段操作顺序
@@ -348,15 +315,15 @@ locations = expand_source_locations(unit, sources[unit["source"]])
 
 完整短语匹配采用英文词边界。`shared_token_family` 只表示核心词相同，例如来源的 `radial spacing` 可能检索出术语表中的 `radial velocity`；这条线索有助于核对方向，但不能把整个“径向速度”直接替换到间距语境。程序没有判断同义关系、专业类别或译义，也不宣布已经穷举术语。
 
-独立翻译任务可在自己的 Python 脚本中使用同一索引：
+独立翻译任务可在自己的 JSON 请求文件中使用同一索引：
 
-```python
-from glossary_candidates import GlossaryIndex
-
-index = GlossaryIndex(glossary_path)
-leads = index.suggest(original_paragraph)
-full_phrase_hits = index.search(actual_source_term)
-family_hits = {query: index.search(query) for query in verified_family_queries}
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 保存实际查询与命中行，包括零命中。索引返回的每条命中含真实行号和文件哈希，可供后续证据绑定复用；仍须自行填写取舍理由。自动线索的频率阈值只用于减少常见词的检索噪声，不改变任何术语扫描目标。
@@ -452,23 +419,13 @@ family_hits = {query: index.search(query) for query in verified_family_queries}
 
 在同一工作脚本中读取实际文件，不通过命令行拼接记录：
 
-```python
-import json
-from collections import Counter
-from validate_translation_review import validate_translation_review
-
-report = validate_translation_review(
-    review_path,
-    inventory_path=inventory_path,
-    candidate_path=candidate_path,
-)
-work.joinpath("translation-record-validation.json").write_text(
-    json.dumps(report.to_dict(), ensure_ascii=False, indent=2) + "\n",
-    encoding="utf-8",
-)
-print(Counter(finding.code for finding in report.findings))
-for finding in report.findings[:20]:
-    print(finding.level, finding.code, finding.object_id, finding.message)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 `findings` 每项都有 `code`、`object_id`、`message`、`level`。找出它指向的单元或字段，回到实际来源和候选处理；不把诊断批量改成通过。文件缺失、JSON 无法解析、重复 JSON 键、嵌套类型错误也会返回诊断。
@@ -492,7 +449,7 @@ for finding in report.findings[:20]:
 
 ## 完整单段示例
 
-先阅读[完整可运行示例](complete_review_example.py)，了解一块记录如何从待核到完成。在自己的 Python 脚本中导入它的 `demonstrate()`，传入一个尚不存在的工作目录。示例只生成自带的四句虚构材料，不接收本次论文或译稿。
+先阅读[Rust 运行入口](../../literature-zotero2obsidian/references/rust-entrypoints.md)，了解一块记录如何从待核到完成。在自己的 JSON 请求文件中导入它的 `demonstrate()`，传入一个尚不存在的工作目录。示例只生成自带的四句虚构材料，不接收本次论文或译稿。
 
 示例分别给出 17 个检查目标的判断。每个不适用项都有对应的具体条件。10 个术语类别分别保存扫描结果。实际出现的命题、方向、否定、条件、指代、修饰、强度、数值和单位分别定位。三个术语候选保留真实查询，包括零命中、缩写命中和仅相关词族命中的区别。
 

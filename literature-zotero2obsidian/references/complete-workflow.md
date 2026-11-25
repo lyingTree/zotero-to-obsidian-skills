@@ -1,6 +1,6 @@
 # 完整候选的开始与收尾
 
-本文保留 `complete_pdf_candidate_v1` 旧版工作目录的恢复协议。新建任务优先使用 [Python 组装、规范化与验收](deterministic-pipeline.md)，不再要求模型重填程序可完成的机械检查。局部修复仍使用对应子技能。恢复本旧版协议时，单独的 `validate_note` 或 `validate_delivery` 没有检查整套既有工作记录是否齐全，不能替代这里的收尾检查。
+本文保留 `complete_pdf_candidate_v1` 旧版工作目录的恢复协议。新建任务优先使用 [Rust 组装、规范化与验收](rust-entrypoints.md)，不再要求模型重填程序可完成的机械检查。局部修复仍使用对应子技能。恢复本旧版协议时，单独的 `validate_note` 或 `validate_delivery` 没有检查整套既有工作记录是否齐全，不能替代这里的收尾检查。
 
 执行顺序是：实际来源材料 → 来源块与阅读顺序 → 完整内容片段 → 候选组装 → 对源核对与记录 → 最终交付。初始化及每次恢复都使用 `resume_workflow(run_path)`。尚有内容未写时，它先返回[逐块产出队列](draft-queue.md)的当前动作；`next_review_task()` 是已有译文的复核入口。
 
@@ -17,47 +17,22 @@
 
 ## 开始：先生成清单
 
-在本次工作目录保存 Python 调用脚本，先填写实际路径。以下文件名是示例，不表示实际来源已经读取。
+在本次工作目录保存 JSON 请求文件，先填写实际路径。以下文件名是示例，不表示实际来源已经读取。
 
-```python
-from pathlib import Path
-import json
-import sys
-
-TASK_ROOT = Path("/本次任务的绝对路径")
-SKILLS_ROOT = Path("/实际技能根目录")
-WORK_ROOT = TASK_ROOT.joinpath("work")
-OUTPUT_ROOT = TASK_ROOT.joinpath("output")
-SCRIPTS = SKILLS_ROOT.joinpath("literature-zotero2obsidian", "scripts")
-sys.path.insert(0, str(SCRIPTS))
-
-from complete_workflow import initialize_workflow, resume_workflow
-from prepare_source_inventory import progress_bar
-
-RUN_PATH = initialize_workflow(
-    skills_root=SKILLS_ROOT,
-    work_root=WORK_ROOT,
-    sources={
-        "main": TASK_ROOT.joinpath("input", "article.pdf"),
-        "supplement": TASK_ROOT.joinpath("input", "supplement.docx"),
-    },
-    source_roles={"main": "main", "supplement": "supplement"},
-    candidate_path=OUTPUT_ROOT.joinpath("candidate.md"),
-    resource_root=OUTPUT_ROOT,
-    glossary_path=SKILLS_ROOT.joinpath("template", "术语表.md"),
-    translation_required=True,
-    progress=progress_bar,
-)
-
-# 下一项是真实来源任务；先完成它，再回到同一恢复入口。
-print(json.dumps(resume_workflow(RUN_PATH), ensure_ascii=False, indent=2))
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 没有 SI 时从两个映射中同时去掉对应来源。中文原文确实无需翻译时，将 `translation_required` 设为 `False`，并在语言分流记录中保存依据。初始化会保存来源材料、来源哈希、全量验收骨架、产出队列及 `run.json`；`run.records.draft_queue` 指向该实际队列。它不会把任何内容判断填成通过。恢复任务时将已有 `run.json` 传给 `resume_workflow()`，不要重新初始化或覆盖旧记录。
 
 PDF 来源含实际页图和文字块；DOCX 来源含 `native_blocks`、`media_calls`、`native_media` 与 `native_issues`。DOCX 没有固定页码，不向 PDF 解析器传入 DOCX，也不填写虚构的 `page` 或 `bbox`。段落和表格按 XML 顺序定位，媒体按实际 relationship 绑定。一个逻辑图可以对应多次媒体调用；媒体文件名、relationship 编号和图号不是同一概念。
 
-先读取每件媒体调用的所属块及前后文字，再据来源题注登记图号。保留原生图像字节，逐幅查看内容。发现 `native_issues` 时处理该具体对象；不要把未支持对象静默排除，也不要让一件未决对象阻止其他可完成段落。原生来源映射见[交接约定](pipeline-contract.md)。
+先读取每件媒体调用的所属块及前后文字，再据来源题注登记图号。保留原始图像字节，逐幅查看内容。发现 `native_issues` 时处理该具体对象；不要把未支持对象静默排除，也不要让一件未决对象阻止其他可完成段落。结构来源映射见[交接约定](pipeline-contract.md)。
 
 提供术语表时，初始化另存 `run.json.records.glossary_candidates` 指向的逐块检索线索。翻译每块前读取它的完整短语命中和核心词线索。词族行只提供原术语表的解释，不代表整个命中短语就是本次概念；按[术语检索步骤](../../literature-translate-zh/references/translation-review.md#自动取得检索线索)决定是否采用。原术语表保持不变。
 
@@ -119,13 +94,13 @@ PDF 来源含实际页图和文字块；DOCX 来源含 `native_blocks`、`media_
 
 三份映射稳定后，用相同 inventory、候选和 `deliveries` 实际再生成一次，保留原映射。以下入口把第二次生成写到新目录，并比较来源单元目标、锚和逐次链接的身份字段：
 
-```python
-from mapping_rerun import record_mapping_rerun
-
-RERUN_REPORT = record_mapping_rerun(
-    RUN_PATH, deliveries, WORK_ROOT.joinpath("mapping-rerun-01"),
-    progress=progress_bar,
-)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 查看报告的 `mapping_equal` 和每个 `differences` 位置，再为 `AC-A75` 写实际结果。报告绑定前后映射和本次输入，复跑前后的原候选与源文件必须相同。它只比较稳定映射字段，不复制原映射里的人工核对结果，也不替执行者填写验收状态。修订候选后产生的新映射不是同输入复跑。
@@ -136,39 +111,17 @@ RERUN_REPORT = record_mapping_rerun(
 
 ### 图件输出的调用顺序
 
-此段调用适用于 PDF。DOCX 的原生媒体直接使用来源清单中 `native_media[].file` 指向的原始文件；按 `media_calls` 对照所属段落和题注，使用对应 `native_locator` 登记来源。不要为它们构造 PDF 页码、xref 或裁框。
+此段调用适用于 PDF。DOCX 的内嵌媒体直接使用来源清单中 `native_media[].file` 指向的原始文件；按 `media_calls` 对照所属段落和题注，使用对应 `native_locator` 登记来源。不要为它们构造 PDF 页码、xref 或裁框。
 
 先从完整源页核定图件范围。只有已确定整幅图就是该原始图片对象时，才走直接导出分支。复合图直接使用页面范围渲染。以下变量均取实际图件清单，不从示例猜页码或对象号。
 
-```python
-from pdf_image_objects import (
-    PDF_BBOX_COORDINATES, PageRenderRequired,
-    export_image_object, render_page_region,
-)
-
-if IS_ONE_COMPLETE_IMAGE_OBJECT:
-    try:
-        figure_record = export_image_object(
-            SOURCE_PDF, page_number=PAGE_NUMBER, image_xref=IMAGE_XREF,
-            destination=DESTINATION_WITHOUT_SUFFIX,
-            expected_source_sha256=SOURCE_SHA256,
-        )
-    except PageRenderRequired as error:
-        render_reason = str(error)
-        figure_record = render_page_region(
-            SOURCE_PDF, page_number=PAGE_NUMBER, bbox=VERIFIED_FIGURE_BBOX,
-            coordinate_system=PDF_BBOX_COORDINATES,
-            destination=DESTINATION_WITHOUT_SUFFIX,
-            margin_pt=6.0, expected_source_sha256=SOURCE_SHA256,
-        )
-        figure_record["render_reason"] = render_reason
-else:
-    figure_record = render_page_region(
-        SOURCE_PDF, page_number=PAGE_NUMBER, bbox=VERIFIED_FIGURE_BBOX,
-        coordinate_system=PDF_BBOX_COORDINATES,
-        destination=DESTINATION_WITHOUT_SUFFIX,
-        margin_pt=6.0, expected_source_sha256=SOURCE_SHA256,
-    )
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 将返回记录保存到工作目录。渲染记录包含每边实际安全边距；页边限制导致的边距不足可从记录定位。随后按[图件规则](../../literature-fulltext-extract/references/figure-crop.md)分别核对四边。`pending` 记录不会自动转为通过。直接调用 `get_pixmap(clip=bbox)` 只保留原框，不会自动加入安全边距。
@@ -187,21 +140,13 @@ else:
 
 日常填写可用同一模块的两个短入口：
 
-```python
-from complete_workflow import pending_check_rows, record_decision_rows
-
-# 输出只有 ID 和该 ID 的原规则文字；完整位置仍保留在 checks.json。
-print(pending_check_rows(CHECKS_PATH, prefix="HDR"))
-
-contexts = {
-    "titles": {"scope": ACTUAL_TITLE_OBJECTS, "evidence": TITLE_EVIDENCE_IDS},
-    "authors": {"scope": ACTUAL_AUTHOR_OBJECTS, "evidence": AUTHOR_EVIDENCE_IDS},
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
 }
-decisions = [
-    ("HDR-A01", TITLE_STATUS, "titles", TITLE_COMPARISON_REASON),
-    ("HDR-A04", AUTHOR_STATUS, "authors", AUTHOR_COMPARISON_REASON),
-]
-record_decision_rows(CHECKS_PATH, decisions, contexts=contexts, evidence=EVIDENCE)
 ```
 
 每行四列依次为 ID、状态、上下文名、该项目标的实际比较理由。`not_applicable` 行加第五列，单独写实际适用条件。示例变量须来自本次实际核对；不能把规则原句改成“已通过”作为比较理由。
@@ -216,31 +161,29 @@ record_decision_rows(CHECKS_PATH, decisions, contexts=contexts, evidence=EVIDENC
 
 把以下代码放入本次调用脚本。报告写在工作目录，不写入文献正文。
 
-```python
-import json
-from complete_workflow import inspect_workflow, pending_check_batch
-
-report = inspect_workflow(RUN_PATH, progress=progress_bar)
-WORK_ROOT.joinpath("completion-report.json").write_text(
-    json.dumps(report.as_dict(), ensure_ascii=False, indent=2) + "\n",
-    encoding="utf-8",
-)
-print(json.dumps(report.summary(examples_per_code=2), ensure_ascii=False, indent=2))
-print(json.dumps(pending_check_batch(WORK_ROOT.joinpath("checks.json")),
-                 ensure_ascii=False, indent=2))
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 写最终完成报告的脚本先调用下面这一行。若本地记录尚未完成，函数抛出 `IncompleteRecordsError`，并附 `report` 与有限长度的缺项摘要；回到这些实际目标继续工作，不吞掉异常后填写完成结论。
 
-```python
-from complete_workflow import require_completed_records
-
-completed_records = require_completed_records(RUN_PATH, progress=progress_bar)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 这一入口使用与 `inspect_workflow()` 相同的验收范围。它不会补写任何状态，也不替代实际对源比较。
 
-`resume_workflow()` 提供下一项行动，`require_completed_records()` 拒绝给未齐全的记录返回就绪结果；两者都不能拦截助手的聊天最终答复。若宿主要强制续跑，必须另行实现任务派发和终止控制，不能把这里的 Python 异常称为宿主硬门。
+`resume_workflow()` 提供下一项行动，`require_completed_records()` 拒绝给未齐全的记录返回就绪结果；两者都不能拦截助手的聊天最终答复。若宿主要强制续跑，必须另行实现任务派发和终止控制，不能把这里的 程序异常称为宿主硬门。
 
 `WORKFLOW_RECORD_MISSING` 表示需要补对应记录。`WORKFLOW_CHECK_PENDING` 表示需要完成该单项目标。`WORKFLOW_MANIFEST_BINDING` 表示报告引用了另一份文件或旧版本。翻译记录中的 `TRN_PENDING`、`TRN_UNRESOLVED` 等逐项提示同样保留其具体目标位置，可据此回到对应段落或术语记录。先处理实际缺项，再运行收尾检查。
 

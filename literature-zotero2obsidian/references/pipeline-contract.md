@@ -19,7 +19,7 @@ JSON 交接文件用序列化器生成并立即回读；LaTeX 反斜杠不得手
 | source.raw.jsonl | 格式解析/OCR 的原始输出及页、段或元素位置，不做通顺化覆盖 | 2 |
 | source.md | 原语言、连续段落、保留逻辑结构的完整内容；稳定块标识 | 2 |
 | source-map.json | 块、来源、图表公式、引文和参考文献之间的映射 | 2；后续只追加核验与对齐信息 |
-| source-inventory.json | PDF 逐页材料或 DOCX 原生块与媒体关系，以及已核实来源单元；字段见[来源交付索引](delivery-checks.md) | 2、11；后续增量补齐来源单元 |
+| source-inventory.json | PDF 逐页材料或 DOCX 结构块与媒体关系，以及已核实来源单元；字段见[来源交付索引](delivery-checks.md) | 2、11；后续增量补齐来源单元 |
 | delivery-manifest.json | 来源单元与当前最终候选的对应关系；含实际文件哈希 | 总入口 |
 | assets/ | 原图裁剪或提取结果、必要表格结构及核对材料 | 2 |
 | translated.md | 逐块对应的中文全文；中文文献跳过时不生成重复文件 | 3 |
@@ -74,7 +74,7 @@ JSON 交接文件用序列化器生成并立即回读；LaTeX 反斜杠不得手
 
 - 每个内容块有稳定 `block_id`、kind、source_attachment、source_locator、顺序、原文哈希、保留/排除决定及理由。定位可为 PDF 页/框、DOCX 段落、EPUB spine/元素或其他格式的可重现位置。
 
-DOCX 原生清单的 `format` 为 `docx`，`pages` 为空且 `page_count` 为 `null`。`native_blocks` 按正文 XML 顺序保留段落与表格，`locator` 使用 `part` 和零起始 `element_path`。单元 evidence 使用 `basis: native`、`native_locator` 和一个实际块 ID；跨块单元使用多条 evidence。图件另以 `media_call` 绑定同一来源内的实际图片关系调用，源媒体文件引用位于 `native_media[].file`。`write_handoff_maps()` 保留这些原生定位，不转写成虚构页码或裁框。详细字段与待核对象的处理见[原生 DOCX 证据](delivery-checks.md#原生-docx-证据)。
+DOCX 结构清单的 `format` 为 `docx`，`pages` 为空且 `page_count` 为 `null`。`native_blocks` 按正文 XML 顺序保留段落与表格，`locator` 使用 `part` 和零起始 `element_path`。单元 evidence 使用 `basis: native`、`native_locator` 和一个实际块 ID；跨块单元使用多条 evidence。图件另以 `media_call` 绑定同一来源内的实际图片关系调用，源媒体文件引用位于 `native_media[].file`。`write_handoff_maps()` 保留这些结构定位，不转写成虚构页码或裁框。详细字段与待核对象的处理见[DOCX 结构证据](delivery-checks.md#docx-结构证据)。
 - source.md 用 `<!-- lit:block b000001 -->` 标识块；译稿及候选沿用 ID，拆并段记录一对多映射。总入口生成 final.md 时仅移除这些已登记的工作标记，保留可导航锚点和其他原有注释。
 - objects 记录 figure/table/equation 的 source_id、原编号、子图、题注、资源及定位；references 记录 bibliography_id、原编号/标签、列表序号、原书目全文、稳定 ID，并另记插件解析出的命名空间、数字后缀及兼容状态；citations 记录出现位置、来源与书目作用域、原显示文字及目标候选。来源/书目身份不能由插件前缀或当前列表位置替代；相同数字在不同来源或书目中不是同一对象。
 - 链接记录保存 origin_block、原显示文字、target_id/path、证据与状态。图表原号、导航序号、书目身份分开，不依赖“当前第几段”推断目标。引文显示按第9步规范，章节链接记录新旧目标。图表及公式保留原编号整串（含子图字母与面板），中文标签按第3、8步规范。跨图号范围不整体链接。
@@ -89,19 +89,13 @@ DOCX 原生清单的 `format` 为 `docx`，`pages` 为空且 `page_count` 为 `n
 
 下面是虚构实验室名称的结构示例，变量须来自本次实际文件；不能把示例读法当成本次观察：
 
-```python
-from handoff_maps import record_text_visual_conflict
-
-record_text_visual_conflict(
-    inventory_path, "synthetic-affiliation", conflict_id="lab-name-reading",
-    page_number=actual_page_number,
-    text_locator={"kind": "characters", "unit": "unicode_code_points",
-                  "start": original_start, "end": original_end, "end_exclusive": True},
-    text_layer_text="Reed Laboratory", visible_text="Reid Laboratory",
-    bbox=observed_pdf_bbox,
-    decision={"status": "resolved", "selected_text": "Reid Laboratory",
-              "reason": actual_observation_reason, "observed": True, "reviewer": actual_reviewer},
-)
+```json
+{
+  "schema_version": 1,
+  "operation": "note_pipeline.process_content",
+  "args": [],
+  "kwargs": {}
+}
 ```
 
 字符区间以原始 UTF-8 页文本解码后的 Unicode 码点为单位，零起始、右端不含；也可提供 `{"kind": "lines", "start": 9, "end": 9}`，行号从 1 开始、两端都包含，原读法必须实际出现在所定位行中。`bbox` 使用未旋转 PDF 页面点坐标，函数登记完整坐标系，并检查边界位于实际源页内。每条记录保留 `text_layer.file/locator/text`、`visible_page.file/page/bbox/coordinate_system/text`、`decision.status/selected_text/reason` 及来源 PDF 绑定。
@@ -145,7 +139,7 @@ record_text_visual_conflict(
 
 ## 状态、重跑与保护
 
-完整流程先用 `prepare_source_inventory.py` 保存 PDF 逐页材料或 DOCX 原生来源证据，再依[来源交付索引](delivery-checks.md)增量登记对象。提取脚本不自动认定可见内容已经核验。旧 source-map、si-map、link-map 继续保存各自详细证据；delivery-manifest 只建立最终交付索引，不代替这些记录。候选变化后重新生成索引中的哈希，重新检查受影响目标。
+完整流程先用 `prepare_source_inventory.prepare_sources` 保存 PDF 逐页材料或 DOCX 结构来源证据，再依[来源交付索引](delivery-checks.md)增量登记对象。提取脚本不自动认定可见内容已经核验。旧 source-map、si-map、link-map 继续保存各自详细证据；delivery-manifest 只建立最终交付索引，不代替这些记录。候选变化后重新生成索引中的哈希，重新检查受影响目标。
 
 - 阶段状态：pending、running、passed、blocked、failed、skipped。skipped 必须有适用性理由，如中文无需全文翻译；不等于完成未做的核验。
 - passed 要有相应检查证据，不能仅凭输出文件存在。某些非必需信息不可用时记录缺项，完成范围按 coverage 陈述。

@@ -1,8 +1,8 @@
 #Requires -Version 5.1
 <#
-  Install the 12 native literature-* skills (with precompiled runtime/z2o.exe)
+  Install the 12 literature-* skills (with precompiled Rust runtime/z2o.exe)
   from GitHub Releases, plus optional external dependency skills (obsidian-cli, zotero-skills).
-  No Python or local Rust compilation required.
+  No local compilation required.
 
   Usage:
     ./install.ps1 [-SkillsRoot <dir>] [-Version <tag>] [-Repo <owner/repo>] [-SkipExternalDependencies]
@@ -100,7 +100,7 @@ try {
   }
   $resolvedSkillsRoot = (Resolve-Path $SkillsRoot).Path
 
-  Write-Host "==> Installing 12 native literature-* skills into $resolvedSkillsRoot ..."
+  Write-Host "==> Installing 12 literature-* skills into $resolvedSkillsRoot ..."
   $installOutput = & $z2oExe install $manifestPath $manifestSha $resolvedSkillsRoot
   if ($LASTEXITCODE -ne 0) {
     throw "z2o install failed with exit code $LASTEXITCODE"
@@ -148,14 +148,13 @@ try {
       if (Test-Path $dstZot) { Remove-Item $dstZot -Recurse -Force }
       Copy-Item (Join-Path $zotTmp "skills\zotero-skills") $dstZot -Recurse -Force
       Copy-Item (Join-Path $zotTmp "scripts") (Join-Path $dstZot "scripts") -Recurse -Force
-      Copy-Item (Join-Path $zotTmp "requirements.txt") (Join-Path $dstZot "requirements.txt") -Force
       Copy-Item (Join-Path $zotTmp "LICENSE") (Join-Path $dstZot "LICENSE") -Force
     } else {
       Write-Warning "git not found on PATH; skipped external skills (obsidian-cli, zotero-skills)."
     }
   }
 
-  Write-Host "==> Native installation complete ($Version, $target)."
+  Write-Host "==> Rust skill installation complete ($Version, $target)."
 }
 finally {
   Remove-Item $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -1,11 +1,12 @@
 ---
 name: literature-note-properties
+version: v2.0.2
 description: 按文献类型及既有模板构建或修复 Obsidian 文献 YAML 属性，保留人工自定义字段。只处理属性，不重写题头、正文或参考文献。
 ---
 
 # 构建笔记属性
 
-本分支机械操作统一通过 [Rust 原生入口](../literature-zotero2obsidian/references/native-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。旧参考文档中的脚本调用仅用于理解历史数据结构；禁止直接执行旧 Python、安装解释器或在原生操作缺失时回退。未通过实际验收的能力保持阻断或待核。
+机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 
 每条规则的 ID 用于定位对应证据。
 
@@ -16,7 +17,7 @@ description: 按文献类型及既有模板构建或修复 Obsidian 文献 YAML 
 
 ## 执行步骤
 
-新建属性直接调用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 build_properties；既有稿删除废弃顶层键使用 repair_properties，无法安全隔离时阻断。另存阶段稿后使用 audit_properties，实际文件的 PROP-A01/A02/A04/A05/A06/A08 由 Rust 原生操作分别判定；来源及其他未覆盖项仍单独核验。
+新建属性直接调用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md) 的 build_properties；既有稿删除废弃顶层键使用 repair_properties，无法安全隔离时阻断。另存阶段稿后使用 audit_properties，实际文件的 PROP-A01/A02/A04/A05/A06/A08 由 Rust 操作分别判定；来源及其他未覆盖项仍单独核验。
 
 1. 读取实际 itemType 对应模板。
 2. 仅编辑起始 YAML 属性区。
