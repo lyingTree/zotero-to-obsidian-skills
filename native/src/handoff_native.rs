@@ -136,11 +136,15 @@ impl Ctx{
                     loc["blocks"].as_array().unwrap().clone()
                 }else{
                     let page=loc["page"].as_u64().filter(|n|pages[sid].contains(n)).context("MAP_UNIT_PAGE")?;
-                    ensure!(bbox(&loc["bbox"])||nonempty(&loc["quote"]),"MAP_UNIT_LOCATOR");
+                    let native=s["inventory_backend"]==crate::pdf_inventory::BACKEND;
+                    let image=loc.get("image_xref").filter(|v|!v.is_null());
+                    ensure!(bbox(&loc["bbox"])||nonempty(&loc["quote"])||native&&kind=="figure"&&image.is_some(),"MAP_UNIT_LOCATOR");
                     if let Some(b)=loc.get("bbox").filter(|v|!v.is_null()){ensure!(pdfs[sid].contains_bbox(page,b)?,"MAP_UNIT_LOCATOR: outside page");}
-                    if let Some(x)=loc.get("image_xref").filter(|v|!v.is_null()){
+                    if let Some(x)=image{
+                        ensure!(!native||kind=="figure","MAP_UNIT_XREF: native image locator requires a figure");
                         let x=u32::try_from(x.as_u64().context("MAP_UNIT_XREF")?)?;
-                        ensure!(pdfs[sid].resource_image_xrefs(page)?.contains(&x),"MAP_UNIT_XREF: not a page image resource");
+                        ensure!(pdfs[sid].matches_image_locator(page,x,native)?,"MAP_UNIT_XREF: {}",
+                            if native{"not actually invoked on the page"}else{"not a page image resource"});
                     }
                     loc.get("blocks").map(|v|v.as_array().context("MAP_BLOCK_REFERENCE").cloned()).transpose()?.unwrap_or_default()
                 };

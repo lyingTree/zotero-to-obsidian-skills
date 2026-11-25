@@ -83,7 +83,9 @@ fn evidence(a:&mut Audit,source:&Value,sid:&str,loc:&Value,visual:bool,kind:&str
     if let Some(x)=loc.get("image_xref").filter(|v|!v.is_null()){
         ensure!(kind=="figure","Image XRef locator requires a figure unit");
         let x=u32::try_from(x.as_u64().context("Actual XRef required")?)?;
-        ensure!(pdf.resource_image_xrefs(n)?.contains(&x),"Image XRef does not belong to this page");
+        let native=source["inventory_backend"]==crate::pdf_inventory::BACKEND;
+        ensure!(pdf.matches_image_locator(n,x,native)?,"Image XRef is not {} on this page",
+            if native{"actually invoked"}else{"a registered resource"});
         has_locator=true;
     }
     ensure!(has_locator,"Explicit source quote, bbox or image XRef required");

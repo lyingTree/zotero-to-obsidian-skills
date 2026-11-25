@@ -265,3 +265,7 @@ The file stays inside the manifest resource root and the rasterizer has no image
 Native image export composes an actually invoked base image with its indirect, one-bit explicit `/Mask` image when their resolutions match and no interpolation or competing soft mask is present. It applies both PDF stencil `Decode` polarities, ignores row padding, retains straight colors, and writes binary alpha to a PNG. The receipt records the mask object/generation, exact encoded mask and decoded alpha hashes, and polarity. The existing inventory binds and replays the raw mask stream independently; historical mask cases that recorded page rendering as required remain pending rather than silently gaining an extraction.
 
 Color-key arrays, placement-dependent stencil images, resampling, compound masks, external streams and unsupported filters remain explicit page-render/review cases. Independent PyMuPDF comparison on the development fixtures does not certify an arbitrary paper’s figure or change source-fidelity or release gates.
+
+### 原生 PDF 图件来源定位
+
+原生 PDF 交付校验和映射生成会从绑定的原文件扫描页面内容操作及调用链，核对图件的 `image_xref` 确实在该页被调用。仅出现在资源字典里的未调用对象不再通过；已调用的图件可单独用 XRef 定位，不必为了通过映射而添加虚构的坐标框。旧清单维持原资源查询语义。这只验证结构上的调用，不能证明可见性、完整图件边界或像素保真，完整 PDF 与交付验收仍保留阻断。

@@ -263,3 +263,46 @@ fn malformed_predictor_layouts_and_rows_do_not_replace_existing_output() {
         assert_eq!(fs::read(&out).unwrap(), b"pre-existing output");
     }
 }
+
+#[test]
+fn pdf_figure_locators_validate_actual_calls_in_the_native_cli(){
+    use std::process::Command;
+    use z2o_native::delivery_prepare;
+    let temp=tempfile::tempdir().unwrap();
+    let root=temp.path();
+    let pdf=root.join("原图.pdf");
+    let mut doc=Document::with_version("1.5");
+    let rgb=Object::Name(b"DeviceRGB".to_vec());
+    let invoked=stream(&mut doc,image(1,1,8,rgb.clone()),vec![0,88,199]);
+    let uninvoked=stream(&mut doc,image(1,1,8,rgb),vec![199,0,88]);
+    write_pdf(doc,&pdf,&[("Painted",invoked),("Unused",uninvoked)],"q 30 0 0 20 10 10 cm /Painted Do Q");
+    let inventory=source_prepare::prepare_sources(&json!({"main":pdf}),&root.join("evidence"),
+        &json!({"main":"main"}),None,72,None,|_,_,_|{}).unwrap();
+    let mut inv=pipeline::read_json(&inventory).unwrap();
+    let candidate=root.join("candidate.md");fs::write(&candidate,"Figure 1 ^fig1\n").unwrap();
+    let save=|path:&Path,v:&Value|fs::write(path,serde_json::to_vec(v).unwrap()).unwrap();
+    let exe=std::env::var_os("Z2O_FIGURE_TEST_CLI").unwrap_or_else(||env!("CARGO_BIN_EXE_z2o").into());
+    for (i,(xref,kind,accepted)) in [(invoked.0,"figure",true),(uninvoked.0,"figure",false),
+        (invoked.0,"paragraph",false)].into_iter().enumerate(){
+        let mut location=json!({"basis":"visual","page":1,"image_xref":xref});
+        if kind!="figure"{location["quote"]=json!("Figure 1");}
+        inv["units"]=json!([{"id":"image-unit","source":"main","kind":kind,"original_number":"1",
+            "contains_table":false,"evidence":[location]}]);
+        save(&inventory,&inv);
+        let manifest=root.join(format!("manifest-{i}.json"));
+        let request=root.join(format!("request-{i}.json"));
+        delivery_prepare::manifest(&inventory,&candidate,&json!([{"unit":"image-unit","target":{"anchor":"fig1"}}]),
+            &manifest,Some(root),None,false).unwrap();
+        save(&request,&json!({"schema_version":1,"operation":"validate_delivery.validate_delivery","args":[manifest]}));
+        let before=fs::read(&inventory).unwrap();
+        let out=Command::new(&exe).arg("invoke").arg(request).env("PATH","").env_remove("PYTHONPATH").output().unwrap();
+        assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+        assert_eq!(fs::read(&inventory).unwrap(),before);
+        let r=serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone();
+        let findings=r["findings"].as_array().unwrap();
+        assert_eq!(findings.iter().any(|f|f["code"]=="SOURCE_UNIT"&&f["object_id"]=="image-unit"),!accepted,"{r}");
+        assert_eq!(findings.iter().any(|f|f["code"]=="DELIVERY_HANDOFF"&&f["message"].as_str().unwrap().contains("MAP_UNIT_XREF")),!accepted,"{r}");
+        assert!(findings.iter().any(|f|f["code"]=="PDF_FULL_PROVENANCE_UNMIGRATED"));
+        assert!(findings.iter().any(|f|f["code"]=="NATIVE_DELIVERY_PARITY_PENDING"));
+    }
+}

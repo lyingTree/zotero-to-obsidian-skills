@@ -5,7 +5,7 @@ use crate::{files,path_text,check_ledger,pipeline};
 use anyhow::{anyhow,ensure,Context,Result};
 use lopdf::{Document,Object,ObjectId,Dictionary,content::Content};
 use serde_json::{json,Value};
-use std::{collections::{BTreeMap,HashSet},fs,path::{Path,PathBuf}};
+use std::{collections::{BTreeMap,HashSet},fs,path::{Path,PathBuf},sync::Mutex};
 
 const MAX_PDF:u64=512*1024*1024;
 const MAX_OPS:usize=1_000_000;
@@ -62,9 +62,13 @@ fn bbox(m:Matrix)->Result<[f64;4]>{
     ensure!(b.iter().all(|v|v.is_finite())&&b[0]<b[2]&&b[1]<b[3],"Degenerate image transformation");Ok(b)
 }
 fn inside(outer:[f64;4],inner:[f64;4])->bool{outer[0]<=inner[0]&&outer[1]<=inner[1]&&inner[2]<=outer[2]&&inner[3]<=outer[3]}
-pub struct Pdf{doc:Document,pages:BTreeMap<u32,ObjectId>}
+pub struct Pdf{
+    doc:Document,
+    pages:BTreeMap<u32,ObjectId>,
+    invoked_xrefs:Mutex<BTreeMap<u64,HashSet<u32>>>,
+}
 impl Pdf{
-    pub fn open(p:&Path)->Result<Self>{let doc=load(p)?;let pages=doc.get_pages();Ok(Self{doc,pages})}
+    pub fn open(p:&Path)->Result<Self>{let doc=load(p)?;let pages=doc.get_pages();Ok(Self{doc,pages,invoked_xrefs:Mutex::default()})}
     /// Use the very same immutable byte snapshot as the raster/text backend.
     pub(crate) fn from_bytes(bytes:&[u8])->Result<Self>{
         ensure!(bytes.len() as u64<=MAX_PDF,"PDF exceeds structural evidence read budget");
@@ -72,7 +76,7 @@ impl Pdf{
         ensure!(!doc.is_encrypted(),"An accessible unencrypted PDF is required");
         let pages=doc.get_pages();
         ensure!(!pages.is_empty(),"PDF page tree is empty");
-        Ok(Self{doc,pages})
+        Ok(Self{doc,pages,invoked_xrefs:Mutex::default()})
     }
     pub(crate) fn geometry_record(&self,n:u64)->Result<Value>{Ok(self.geometry(n)?.value())}
     pub fn len(&self)->usize{self.pages.len()}
@@ -123,6 +127,25 @@ impl Pdf{
             visit(&self.doc,resources.as_dict()?,&mut seen,&mut images,0,&mut budget)?;
         }
         Ok(images)
+    }
+    /// Native evidence requires an actual image paint call, not a resource
+    /// dictionary entry. Keep the legacy resource-only lookup separate.
+    /// An occurrence still does not prove visibility, clipping or fidelity.
+    pub(crate) fn matches_image_locator(&self,n:u64,xref:u32,native:bool)->Result<bool>{
+        if !native{return Ok(self.resource_image_xrefs(n)?.contains(&xref));}
+        let mut cache=self.invoked_xrefs.lock().map_err(|_|anyhow!("PDF image locator cache unavailable"))?;
+        if let Some(found)=cache.get(&n){return Ok(found.contains(&xref));}
+        let index=self.index(n)?;
+        let rows=index["occurrences"].as_array().context("Missing PDF image occurrence index")?;
+        let mut found=HashSet::new();
+        for row in rows{found.insert(u32::try_from(row["image_xref"].as_u64().context("Actual image XRef")?)?);}
+        let matches=found.contains(&xref);
+        // Bound the cache independently of the number of pages and sources.
+        const MAX_CACHED_XREFS:usize=16_384;
+        if cache.values().map(HashSet::len).sum::<usize>()+found.len()<=MAX_CACHED_XREFS && cache.len()<256{
+            cache.insert(n,found);
+        }
+        Ok(matches)
     }
     pub fn contains_bbox(&self,n:u64,bbox:&Value)->Result<bool>{
         Ok(valid_pdf_bbox(bbox,&json!(self.bounds(n)?)))
