@@ -145,12 +145,28 @@ impl Package{
 fn request(addr:SocketAddr,token:&str,route:&str,body:Option<&Value>,timeout:Duration)->Result<Value>{
     ensure!(addr.ip().is_loopback()&&matches!(route,"/health"|"/v1/models"|"/v1/chat/completions"|"/v1/systemone"),"Only local native model endpoints");
     let mut stream=TcpStream::connect_timeout(&addr,Duration::from_secs(2))?;
-    stream.set_read_timeout(Some(timeout))?;stream.set_write_timeout(Some(timeout.min(Duration::from_secs(30))))?;
+    // macOS SO_RCVTIMEO can return EAGAIN (os error 35) or EINVAL on large
+    // timeouts; bound per-read timeout to 120s and retry EAGAIN/WouldBlock
+    // until the caller's overall deadline expires.
+    let step=timeout.min(Duration::from_secs(120));
+    stream.set_read_timeout(Some(step))?;stream.set_write_timeout(Some(timeout.min(Duration::from_secs(30))))?;
     let data=if let Some(b)=body{serde_json::to_vec(b)?}else{vec![]};
     ensure!(data.len()<=100*1024*1024,"Inference request exceeds budget");
     write!(stream,"{} {route} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",if body.is_some(){"POST"}else{"GET"},addr.port(),data.len())?;
     stream.write_all(&data)?;
-    let r=crate::zotero_local::decode_http(BufReader::new(stream))?;
+    struct DeadlineReader{inner:TcpStream,started:Instant,deadline:Duration}
+    impl Read for DeadlineReader{
+        fn read(&mut self,buf:&mut [u8])->std::io::Result<usize>{
+            loop{
+                match self.inner.read(buf){
+                    Err(e) if matches!(e.kind(),std::io::ErrorKind::WouldBlock|std::io::ErrorKind::TimedOut|std::io::ErrorKind::Interrupted)
+                        && self.started.elapsed()<self.deadline => continue,
+                    other => return other,
+                }
+            }
+        }
+    }
+    let r=crate::zotero_local::decode_http(BufReader::new(DeadlineReader{inner:stream,started:Instant::now(),deadline:timeout}))?;
     parse_json(std::str::from_utf8(&r.body)?)
 }
 struct Server{child:Child,temp:tempfile::TempDir,addr:SocketAddr,token:String,offload:Option<(u64,u64)>}
@@ -415,7 +431,7 @@ pub fn recognize(png:&Path,sha:&str,manifest:&Path,msha:&str,category:&str,accel
     let p=Package::load(manifest,msha,"minicpm-ocr")?;
     let (img,url)=image(png,sha)?;
     let body=json!({"model":"z2o-minicpm","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":url}},{"type":"text","text":prompt(category)?}]}],
-        "temperature":0,"max_tokens":4096,"stream":false});
+        "temperature":0,"max_tokens":512,"stream":false});
     let mut r=attempts(&p,acceleration,Duration::from_secs(timeout),"/v1/chat/completions",&body,recognition)?;
     verify(&img)?;
     r["schema_version"]=json!(1);r["source_image"]=img;r["category"]=json!(category);

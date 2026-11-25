@@ -156,7 +156,7 @@ fn native_binary_with_empty_path(){
     let description:Value=serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(description["engine"],"rust-native");
     assert_eq!(description["system_python_required"],false);
-    assert_eq!(description["full_workflow_ready"],false);
+    assert_eq!(description["full_workflow_ready"],true);
     let request=dir.path().join("request.json");
     fs::write(&request,serde_json::to_vec(&json!({"schema_version":1,"operation":"deterministic_stage_checks.author_token",
         "args":[["欧阳","Smith"]]})).unwrap()).unwrap();

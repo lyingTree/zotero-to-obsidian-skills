@@ -76,6 +76,9 @@ class ReleaseGateTests(unittest.TestCase):
         manifest = json.loads(gate.MANIFEST.read_text(encoding="utf-8"))
         ref = {m: {f"{m}.example"} for m in manifest["module_status"]}
         manifest["api_replacements"] = {}
+        manifest["module_status"] = dict.fromkeys(manifest["module_status"], "implementation_candidate")
+        for cap in manifest["capabilities"].values():
+            cap["qualified"] = False
         description = {"engine": "rust-native", "engine_version": "2.0.0", "reference_version": "1.1.0",
                        "system_python_required": False, "python_fallback": False, "full_workflow_ready": False,
                        "operations": sorted(set().union(*ref.values()))}

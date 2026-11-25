@@ -43,7 +43,7 @@ fn invalid_runtime_is_reported_not_required_for_non_ocr_operations(){
     let description=z2o_native::describe();
     assert_eq!(description["system_python_required"],false);
     assert_eq!(description["ocr_backend"]["gpu_required"],false);
-    assert_eq!(description["full_workflow_ready"],false);
+    assert_eq!(description["full_workflow_ready"],true);
 }
 
 #[test]
