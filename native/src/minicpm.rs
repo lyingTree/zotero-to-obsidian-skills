@@ -245,9 +245,9 @@ fn startup_signatures(log:&str)->Vec<&'static str>{
         .chain(patterns.iter().filter(|(_,markers)|markers.iter().any(|marker|log.contains(marker))).map(|(code,_)|*code))
         .collect()
 }
-// Keep the same conservative reservation. Report only byte counts when the
-// host cannot satisfy it; a startup log does not exist in that case.
-const MODEL_MEMORY_RESERVE:u64=2*GIB;
+// Single-region OCR/Jev runs with --parallel 1 and --ctx-size 4096, keeping
+// KV cache + compute buffer overhead well below 1 GiB beyond the model weights.
+const MODEL_MEMORY_RESERVE:u64=GIB;
 #[derive(Debug)]
 struct MemoryBudgetError{available_bytes:u64,required_bytes:u64,host_weight_bytes:u64}
 impl MemoryBudgetError{
@@ -310,7 +310,7 @@ impl Server{
         let mut cmd=command(e);
         cmd.arg("--model").arg(path(&p.model["path"])?).arg("--mmproj").arg(path(&p.projector["path"])?)
             .args(["--host","127.0.0.1","--port",&addr.port().to_string(),"--parallel","1","--no-webui","--api-key-file"]).arg(&auth)
-            .args(["--alias",if p.kind=="jev"{"z2o-jev"}else{"z2o-minicpm"},"--ctx-size",if p.kind=="jev"{"16384"}else{"8192"}])
+            .args(["--alias",if p.kind=="jev"{"z2o-jev"}else{"z2o-minicpm"},"--ctx-size","4096"])
             .args(["--threads",&std::thread::available_parallelism().map(|n|n.get().min(8)).unwrap_or(1).to_string()]);
         if p.kind=="minicpm-ocr"{cmd.args(["--jinja","--reasoning","off"]);}
         if gpu{cmd.args(["--n-gpu-layers","99"]);}
@@ -464,7 +464,7 @@ mod tests{
     #[test]
     fn model_memory_diagnostics_preserve_cpu_and_gpu_reservation(){
         let weights=1_430_124_352;
-        let required=3_577_608_000;
+        let required=weights+MODEL_MEMORY_RESERVE;
         assert!(require_model_memory(required,weights,false).is_ok());
         let err=require_model_memory(required-1,weights,false).unwrap_err();
         let detail=err.downcast_ref::<MemoryBudgetError>().unwrap();
