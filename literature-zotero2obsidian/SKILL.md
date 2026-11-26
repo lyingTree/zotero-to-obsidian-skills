@@ -6,26 +6,25 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 # Zotero → Obsidian 文献流程
 
-机械操作统一通过 [Rust 运行入口](references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
+机械操作统一通过 [Rust 运行入口](references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行；写作规格与速查先读 [写作速查表](references/writing-cheatsheet.md)（<=4 KB），无需预读全部 11 个子 skill、原始 Templater 脚本或全量术语表。未通过实际验收的能力保持阻断或待核。
 
 每条规则的 ID 用于定位对应证据。
 
-验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，以 Rust 回写与 SHA-256 回读为准；不审查应用界面，不要求在写入后调用 `obsidian` CLI 检查阅读视图、反向链接或客户端缓存。
+验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，以 Rust 回写与 SHA-256/`WRITE-A04`/`WRITE-A05` 回读为准；**写入返回 `verified_file_write` 即终态**，禁止调用 `obsidian` CLI 检查阅读视图、反向链接或客户端缓存。
 
-新建全文任务先读 [Rust 组装、规范化与验收](references/rust-entrypoints.md)。调用 `prepare_source_inventory.prepare_sources` 提取 PDF / DOCX 结构，建立经来源核对的单元计划，再由 `prepare_content_job()` 固定计划、合同与译文模板。模型按单元 ID 填译文，`process_content()` 负责格式组装、规范化、机械验收和版本保存。已有 Markdown 使用 `process_markdown()`。程序已执行的检查直接采用程序证据，不让模型重复手拼格式或自填机械通过结论。具体内容规则仍以对应子技能为准。
+新建全文任务先单次调用 `user_profile.preflight`（`create_work_dirs: true`）取得目录与命名/模板骨架，再调用 `prepare_source_inventory.prepare_paper`（自动完成 TeX 探测、选择性 PDF 版面聚类、`figure_candidates` 提取与 `matched-glossary.md` 过滤），经 `pdf_image_objects.render_page_regions_batch` 批量裁图看拼图后撰写候选稿；随后调用 `note_pipeline.process_markdown`（开 `write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）或 `process_content`，最终由 `vault_publish.publish_standalone`（或 `plan_standalone` + `commit_markdown`）完成写库并直接汇报。
 
 只有恢复既有 `complete_pdf_candidate_v1` 工作目录时才沿用[完整候选的开始与收尾](references/complete-workflow.md)和 `resume_workflow()`。保留该旧入口的实际清单、队列和回执，不把新程序的机械状态套用到旧记录。
 
 ## 完整任务的完成入口
 
-1. 提取实际来源并确认 PDF 阅读顺序，将同一语义段归入一个单元。
-2. 在来源计划中固定对象类型、顺序、范围和需要保留的源数据。
-3. 运行 `prepare_content_job()`，冻结来源合同；不从候选反推预期对象。
-4. 按译文模板逐单元填完整中文内容和有必要的译注。
-5. 运行 `process_content()`；程序自动发现缺项、组装格式、规范化及验收。
-6. 按 `report.md` 与 `phases.json` 的位置处理具体失败，再运行新版本；不反复手填全量机械清单。
-7. 对程序未判断的译义、图像裁剪内容和引文身份做来源核对；可使用[逐段复核入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)。
-8. 单独报告机械结果与来源语义结果。未完成内容不因格式通过而写成全文完成。
+1. 单次调用 `user_profile.preflight`（`query`/`item_key` + `create_work_dirs: true`）获取档案、Zotero 条目、`naming_plan`、`suggested_asset_bucket_relative` 与 `template_skeleton`。
+2. 读取[写作速查表](references/writing-cheatsheet.md)；仅在遇到特例时按需打开对应子 skill，禁止通读全部 11 个子 skill、41 KB+ 模板 JS 脚本或 328 KB 全量术语表。
+3. 调用 `prepare_source_inventory.prepare_paper` 准备源码（自动优先获取 arXiv TeX + 选择性 PDF 聚类 + 提取 `figure_candidates` + 输出本篇 `matched-glossary.md`）。
+4. 对照 `figure_candidates` 调用 `pdf_image_objects.render_page_regions_batch` 批量裁剪与导出拼图（默认 `transparent: true`、`auto_trim`），仅看拼图微调异常裁框；DOCX 调用 `prepare_sources`。
+5. 撰写完整中文候选稿（普通表可写 GFM 表格），运行 `note_pipeline.process_markdown`（开启 `force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`），只核对返回的 `summary` 与未决位置；若需出链校验则使用 `vault_library.index`（`use_cache: true`）与 `vault_library.match_references_batch`。
+6. 对程序未判断的译义、图像裁剪内容和引文身份做来源核对；可使用[逐段复核入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)。
+7. 获用户授权后调用 `vault_publish.publish_standalone`（传 `authorized: true`、`asset_source_dir`、`report_output`）一次完成预检、冲突消歧、备份、写库与 SHA-256 回读，随即基于真实回执报告结束对话，不再轮询客户端或重跑验收。
 
 测试时按 PDF / DOCX 提取、标题、作者单位、翻译、段落拼接、引文身份、链接组装、图表公式、空行格式等环节持续报告具体问题。未观察到的起因保持未知；只有输出缺失不能直接归因到 PDF 提取。
 
@@ -113,12 +112,19 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 ## 执行步骤
 
-1. 先确认任务范围、读写授权和项目配置，单次调用 `user_profile.preflight` 完成[运行预检](references/project-profile.md#运行预检)（核对档案路径、Zotero API 探测、模板列表、条目搜索及库外工作目录）；大结果统一使用 `z2o invoke ... --output <file>` 落盘。
-2. 预印本或带 arXiv 标识的条目优先调用 `prepare_source_inventory.fetch_arxiv_tex`；常规 PDF 调用 `prepare_source_inventory.prepare_pdf_layout`（默认 `render_pages: "selective"`），DOCX 调用 `prepare_sources`，仅按视觉核对需要渲染页图/裁图，并按[透明图规则](../literature-fulltext-extract/SKILL.md#透明背景图)保留原图透明通道。
-3. 撰写规范全文候选稿（或按 `plan` 填 `content`），调用 `note_pipeline.process_markdown`（配合 `write_normalized_to` 与按需 `strip_display_trailing_punctuation`）或 `process_content`，先核对返回中的 `summary` 与未决位置。
-4. 按本次范围完成[静态校验](references/automated-validation.md)与原文对照核验；需要写库时调用 `vault_publish.plan_standalone` 规划目标、自动复用同哈希资源并对冲突文件名按哈希后缀消歧。
-5. 获用户明确写库授权后，执行 `vault_publish.commit_markdown`（`authorized: true`），依赖其内置原笔记备份、原子替换与 SHA-256 / `WRITE-A04` / `WRITE-A05` 回读；写库完成后直接基于真实回执报告，不再调用 `obsidian` CLI 轮询界面或缓存。
-6. 若仅恢复旧版 `complete_pdf_candidate_v1` 工作目录，则按该目录已有台账继续步骤（第 1–11 步子 skill、逐段 `run.json` 与 `complete_workflow` 入口）。
+1. **单次启动预检**：确认任务范围与配置，调用 `user_profile.preflight`（传 `query` / `item_key` + `create_work_dirs: true`）一次取得路径、Zotero 元数据、`naming_plan`、`suggested_asset_bucket_relative`、`template_skeleton` 与库外工作目录；仅在未初始化或字段失效时 `user_profile.patch`。先读[写作速查表](references/writing-cheatsheet.md)。
+2. **源码准备与术语匹配**：PDF / arXiv 条目优先调用 `prepare_source_inventory.prepare_paper`（传 `work_dir`、`pdf_path`、`tex_target`、`glossary_path`），一次性完成 TeX 源码获取、选择性 PDF 聚类、`figure_candidates` 提取与本篇 `matched-glossary.md` 生成；DOCX 调用 `prepare_sources`。
+3. **批量裁图与视觉拼图**：将 `figure_candidates` 传给 `pdf_image_objects.render_page_regions_batch`（默认 `transparent: true`、`auto_trim`，配 `contact_sheet_destination`），集中审阅拼图并仅按需微调个别裁框。
+4. **候选撰写与流水线验收**：按 `template_skeleton` 与 `matched-glossary.md` 撰写候选稿（普通表格可写 GFM 语法），调用 `note_pipeline.process_markdown`（开 `write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）或 `process_content`，仅核对返回的 `summary` 与未决位置；若需出链则用 `vault_library.index`（`use_cache: true`）+ `vault_library.match_references_batch`。
+5. **授权一步写库与收尾**：获用户明确授权后调用 `vault_publish.publish_standalone`（传 `authorized: true`、`asset_source_dir`、`report_output`），或 `plan_standalone` + `commit_markdown`。**写库返回 `verified_file_write` 后即进入终态，立即汇报实测路径与哈希收工。**
+6. **旧工作目录兼容**：仅当恢复既有 `complete_pdf_candidate_v1` 工作目录时，按该目录已有台账继续步骤（第 1–11 步子 skill、逐段 `run.json` 与 `complete_workflow` 入口）。
+
+## 禁止事项（效率与收尾铁律）
+
+- **禁止递归扫描代码库**：禁止遍历整个 `z2o` 源码、`target/` 或 `runtime/`，禁止预读全部 11 个子 skill（先读[写作速查表](references/writing-cheatsheet.md)，仅按需查具体规则）。
+- **禁止全量倾倒大文件**：禁止整份读取 328 KB 全量术语表与 41 KB+ Templater 脚本；大 JSON 输出统一 `--output <file>`，不直接打印 `normalization.json` / `acceptance.json` 原文。
+- **禁止退化渲染参数**：TeX 已成功时禁止设 `render_pages: "all"`；PDF 切图除像素诊断外禁止设 `transparent: false`。
+- **写库完成即终态**：`vault_publish.publish_standalone` / `commit_markdown` 返回 `verified_file_write` 且完成 SHA-256 / `WRITE-A04` / `WRITE-A05` 回读后，禁止调用 `obsidian` CLI、`Start-Sleep`、刷新客户端缓存或重复重跑检查，直接总结真实结果结束本轮任务。
 
 ## 验收标准
 

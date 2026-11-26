@@ -12,7 +12,7 @@ use std::{
     path::Path,
     sync::OnceLock,
 };
-use crate::{check_ledger,check_write,files,ocr_pdf,pdf_inventory,pdfcraft_backend::Backend};
+use crate::{check_ledger,check_write,files,glossary,ocr_pdf,path_text,pdf_inventory,pdfcraft_backend::Backend,pipeline,tex_source};
 
 const BOUNDARY:&str="Heuristic pure-Rust layout clustering from native PDF glyph geometry. Verify complex tables, multi-line equations, garbled math glyphs, and figure boundaries against rendered PDF images.";
 type Box4=[f64;4];
@@ -283,10 +283,34 @@ pub(crate) fn analyze_page(source_id:&str,page:u64,bounds:Box4,native:&Value,str
         }
     }
 
+fn extract_fig_id(caption:&str)->Option<String>{
+    let cap=rx!(r"(?i)^(?:Figure|Fig\.?|图)\s*(S?\d+(?:[.-]\d+)?[a-zA-Z]?)").captures(caption.trim())?;
+    let raw=cap.get(1)?.as_str().replace('.',"-");
+    if raw.is_empty(){return None;}
+    let mut out=String::from("fig");
+    if raw.starts_with('s')||raw.starts_with('S'){
+        out.push('S');
+        out.push_str(&raw[1..].to_ascii_lowercase());
+    }else{
+        out.push_str(&raw.to_ascii_lowercase());
+    }
+    Some(out)
+}
+
     let mut blocks=Vec::with_capacity(drafts.len());
+    let mut figure_candidates=Vec::new();
     let mut has_figure_caption=false;
     let mut has_table_caption=false;
-    for (i,d) in drafts.into_iter().enumerate(){
+    let mut prose_lines_set=BTreeSet::<u64>::new();
+    for d in &drafts{
+        if d.kind!="caption" && (d.text.len()>=45 || d.line_indices.len()>=2 || d.kind=="heading"){
+            prose_lines_set.extend(d.line_indices.iter().copied());
+        }
+    }
+    let page_w=(max_x-min_x).max(1.0);
+    let mid_x=min_x+0.5*page_w;
+
+    for (i,d) in drafts.iter().enumerate(){
         let id=format!("{source_id}-p{page}-b{}",i+1);
         if d.kind=="caption"{
             if rx!(r"^(?:Table|Tbl\.|表)").is_match(d.text.trim()){
@@ -297,6 +321,76 @@ pub(crate) fn analyze_page(source_id:&str,page:u64,bounds:Box4,native:&Value,str
                 has_figure_caption=true;
                 let region=[bounds[0],(d.bbox[1]-220.0).max(bounds[1]),bounds[2],(d.bbox[3]+20.0).min(bounds[3])];
                 visual_regions.push(json!({"page":page,"block_id":id,"kind":"figure_region","bbox":region,"reason":"figure caption detected"}));
+
+                let (col_x0,col_x1)=if two_column&&d.col==-1{
+                    (bounds[0],(mid_x+0.04*page_w).min(bounds[2]))
+                }else if two_column&&d.col==1{
+                    ((mid_x-0.04*page_w).max(bounds[0]),bounds[2])
+                }else{(bounds[0],bounds[2])};
+
+                let prev_bottom=drafts[..i].iter()
+                    .filter(|p|p.bbox[3]<=d.bbox[1]+2.0
+                        &&(p.col==d.col||p.col==0||d.col==0)
+                        &&(p.kind=="heading"||p.kind=="caption"||p.text.len()>=45||p.line_indices.len()>=2))
+                    .map(|p|p.bbox[3])
+                    .reduce(f64::max);
+                let search_top=prev_bottom.unwrap_or_else(||bounds[1]+0.04*(bounds[3]-bounds[1])).min(d.bbox[1]-8.0).max(bounds[1]);
+
+                let mut matched_xrefs=Vec::new();
+                let mut img_union:Option<Box4>=None;
+                let mut clean_effects=true;
+                for occ in structure["occurrences"].as_array().into_iter().flatten(){
+                    let Some(ob)=box4(&occ["bbox"]).and_then(|r|intersect(bounds,r)) else{continue;};
+                    let cx=0.5*(ob[0]+ob[2]);
+                    let cy=0.5*(ob[1]+ob[3]);
+                    if cx>=col_x0-15.0&&cx<=col_x1+15.0&&cy>=search_top-8.0&&cy<=d.bbox[1]+8.0{
+                        if let Some(xr)=occ["image_xref"].as_u64(){matched_xrefs.push(xr);}
+                        img_union=Some(img_union.map_or(ob,|u|union(u,ob)));
+                        if occ["context_effects"].as_array().is_some_and(|a|!a.is_empty()){
+                            clean_effects=false;
+                        }
+                    }
+                }
+
+                let mut fig_union=img_union;
+                let mut has_surrounding_labels=false;
+                for l in &body{
+                    if d.line_indices.contains(&l.line_index)||prose_lines_set.contains(&l.line_index){continue;}
+                    if l.text.len()>55{continue;}
+                    let cx=0.5*(l.bbox[0]+l.bbox[2]);
+                    if cx<col_x0-10.0||cx>col_x1+10.0{continue;}
+                    if l.bbox[1]<search_top-2.0||l.bbox[3]>d.bbox[1]-1.0{continue;}
+                    if let Some(iu)=img_union{
+                        let near_x=l.bbox[2]>=iu[0]-52.0&&l.bbox[0]<=iu[2]+52.0;
+                        let near_y=l.bbox[3]>=iu[1]-36.0&&l.bbox[1]<=iu[3]+36.0;
+                        if !(near_x&&near_y){continue;}
+                        let inside_img=l.bbox[0]>=iu[0]-1.0&&l.bbox[1]>=iu[1]-1.0&&l.bbox[2]<=iu[2]+1.0&&l.bbox[3]<=iu[3]+1.0;
+                        if !inside_img{has_surrounding_labels=true;}
+                    }
+                    fig_union=Some(fig_union.map_or(l.bbox,|u|union(u,l.bbox)));
+                }
+
+                let cap_top=(d.bbox[1]-1.0).max(bounds[1]+8.0);
+                let suggested_bbox=if let Some(u)=fig_union{
+                    let top=(u[1]-8.0).max(bounds[1]).min(cap_top-4.0);
+                    let bottom=(u[3]+6.0).min(cap_top).max(top+4.0);
+                    [(u[0]-8.0).max(bounds[0]),top,(u[2]+8.0).min(bounds[2]).max((u[0]-8.0).max(bounds[0])+4.0),bottom]
+                }else{
+                    let top=(d.bbox[1]-220.0).max(search_top).min(cap_top-4.0);
+                    [col_x0,top,col_x1.max(col_x0+4.0),cap_top]
+                };
+                let single_object_reusable=matched_xrefs.len()==1&&!has_surrounding_labels&&clean_effects;
+                let confidence=if !matched_xrefs.is_empty(){"high"}else{"medium"};
+                figure_candidates.push(json!({
+                    "page":page,
+                    "block_id":id,
+                    "suggested_fig_id":extract_fig_id(&d.text),
+                    "caption_text":d.text,
+                    "suggested_bbox":suggested_bbox,
+                    "matched_image_xrefs":matched_xrefs,
+                    "single_object_reusable":single_object_reusable,
+                    "confidence":confidence,
+                }));
             }
         }else if d.garbled{
             visual_regions.push(json!({"page":page,"block_id":id,"kind":"garbled_glyphs","bbox":d.bbox,"reason":"replacement or private-use unicode glyph detected"}));
@@ -309,8 +403,8 @@ pub(crate) fn analyze_page(source_id:&str,page:u64,bounds:Box4,native:&Value,str
             "kind":d.kind,
             "column":d.col,
             "bbox":d.bbox,
-            "text":d.text,
-            "line_indices":d.line_indices,
+            "text":d.text.clone(),
+            "line_indices":d.line_indices.clone(),
             "garbled":d.garbled,
         }));
     }
@@ -324,6 +418,7 @@ pub(crate) fn analyze_page(source_id:&str,page:u64,bounds:Box4,native:&Value,str
         "margin_lines":margin_lines,
         "blocks":blocks,
         "visual_review_regions":visual_regions,
+        "figure_candidates":figure_candidates,
         "has_images":image_count>0,
         "has_figure_caption":has_figure_caption,
         "has_table_caption":has_table_caption,
@@ -398,6 +493,7 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
     let mut table_pages=Vec::new();
     let mut image_pages=Vec::new();
     let mut all_regions=Vec::new();
+    let mut all_figure_candidates=Vec::new();
     let mut exported_objects=Vec::new();
     let mut seen_objects=BTreeSet::<(u32,u16)>::new();
 
@@ -421,6 +517,9 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
         if has_tbl{table_pages.push(page);}
         for r in page_doc["visual_review_regions"].as_array().into_iter().flatten(){
             all_regions.push(r.clone());
+        }
+        for fc in page_doc["figure_candidates"].as_array().into_iter().flatten(){
+            all_figure_candidates.push(fc.clone());
         }
 
         for indexed in structure["objects"].as_array().into_iter().flatten(){
@@ -468,6 +567,7 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
 
     let regions_doc=json!({
         "schema_version":1,"source_file":source_binding,"regions":all_regions,
+        "figure_candidates":all_figure_candidates,
         "rendered_pages":rendered_pages,"figure_pages":figure_pages,"table_pages":table_pages
     });
     let mut region_bytes=serde_json::to_vec_pretty(&regions_doc)?;region_bytes.push(b'\n');
@@ -488,12 +588,177 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
         "table_pages":table_pages,
         "image_pages":image_pages,
         "rendered_pages":rendered_pages,
+        "figure_candidates":all_figure_candidates,
         "clean_markdown":clean_binding,
         "layout_blocks":layout_binding,
         "visual_review_regions":region_binding,
         "next_action":"Read clean-layout.md; inspect only rendered Page 1 and figure/table/visual_review_regions pages instead of prose pages.",
         "source_fidelity":"not_assessed",
         "boundary":BOUNDARY,
+    }))
+}
+
+pub struct PreparePaperOptions<'a>{
+    pub pdf_path:Option<&'a Path>,
+    pub tex_target:Option<&'a Value>,
+    pub work_dir:&'a Path,
+    pub glossary_path:Option<&'a Path>,
+    pub render_pages:&'a str,
+    pub dpi:u64,
+    pub expected_pdf_sha256:Option<&'a str>,
+    pub arxiv_timeout_seconds:u64,
+}
+
+fn load_cached_layout(layout_dir:&Path,pdf_path:&Path,expected_sha:Option<&str>)->Result<Option<Value>>{
+    let blocks_file=layout_dir.join("layout-blocks.json");
+    let regions_file=layout_dir.join("visual-review-regions.json");
+    let clean_file=layout_dir.join("clean-layout.md");
+    if !(blocks_file.is_file()&&regions_file.is_file()&&clean_file.is_file()){
+        return Ok(None);
+    }
+    let pdf_snap=files::snapshot(pdf_path)?;
+    let pdf_sha=pdf_snap["sha256"].as_str().context("pdf sha256")?;
+    if let Some(exp)=expected_sha{
+        ensure!(pdf_sha==exp,"Source PDF SHA-256 mismatch against expected_pdf_sha256");
+    }
+    let blocks:Value=crate::parse_json(&fs::read_to_string(&blocks_file)?)?;
+    if blocks["source_file"]["sha256"]!=pdf_sha{
+        return Ok(None);
+    }
+    let regions:Value=crate::parse_json(&fs::read_to_string(&regions_file)?)?;
+    Ok(Some(json!({
+        "schema_version":1,
+        "status":"cached",
+        "backend":"pdfcraft-layout-v1",
+        "source_file":blocks["source_file"],
+        "page_count":blocks["page_count"],
+        "render_mode":blocks["render_mode"],
+        "dpi":blocks["dpi"],
+        "counts":blocks["counts"],
+        "figure_pages":regions["figure_pages"],
+        "table_pages":regions["table_pages"],
+        "rendered_pages":regions["rendered_pages"],
+        "figure_candidates":regions["figure_candidates"],
+        "clean_markdown":check_ledger::bind_file(&clean_file)?,
+        "layout_blocks":check_ledger::bind_file(&blocks_file)?,
+        "visual_review_regions":check_ledger::bind_file(&regions_file)?,
+        "boundary":BOUNDARY,
+    })))
+}
+
+pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{
+    ensure!(opt.pdf_path.is_some()||opt.tex_target.is_some(),"Provide at least one of pdf_path or tex_target");
+    ensure!(matches!(opt.render_pages,"auto"|"selective"|"all"|"none"),"render_pages must be auto, selective, all or none");
+    ensure!((72..=600).contains(&opt.dpi),"dpi must be between 72 and 600");
+    ensure!(!opt.work_dir.is_symlink(),"Refusing a symlink work directory");
+    pipeline::ensure_outside_vault(&opt.work_dir.join("probe"))?;
+    fs::create_dir_all(opt.work_dir)?;
+    let work=files::canonical(opt.work_dir)?;
+    let evidence=work.join("evidence");
+    let tex_dir=evidence.join("tex");
+    let layout_dir=evidence.join("pdf-layout");
+    let matched_glossary_file=evidence.join("matched-glossary.md");
+    fs::create_dir_all(&evidence)?;
+
+    let mut tex_summary=Value::Null;
+    let mut tex_ok=false;
+    if let Some(target)=opt.tex_target{
+        let cached_tex_struct=tex_dir.join("tex-structure.json");
+        let cached_tex_clean=tex_dir.join("clean-source.md");
+        if cached_tex_struct.is_file()&&cached_tex_clean.is_file(){
+            tex_ok=true;
+            tex_summary=json!({
+                "status":"cached",
+                "tex_structure":check_ledger::bind_file(&cached_tex_struct)?,
+                "clean_markdown":check_ledger::bind_file(&cached_tex_clean)?,
+            });
+        }else if let Some(raw_path)=target.as_str().map(str::trim).filter(|s|Path::new(s).is_file()){
+            let r=tex_source::prepare(Path::new(raw_path),"main",&tex_dir,None)?;
+            tex_ok=true;
+            tex_summary=json!({
+                "status":"ok",
+                "source_type":"local_tex",
+                "tex_structure":r["structure_json"],
+                "clean_markdown":r["clean_markdown"],
+                "counts":{
+                    "blocks":r["blocks"].as_array().map_or(0,Vec::len),
+                    "equations":r["equations"].as_array().map_or(0,Vec::len),
+                    "tables":r["tables"].as_array().map_or(0,Vec::len),
+                    "figures":r["figures"].as_array().map_or(0,Vec::len),
+                    "references":r["references"].as_array().map_or(0,Vec::len),
+                },
+            });
+        }else{
+            let r=tex_source::fetch_and_prepare(target,&tex_dir,"main",opt.pdf_path,opt.arxiv_timeout_seconds,true)?;
+            tex_ok=matches!(r["status"].as_str(),Some("ok"|"downloaded"|"ready"|"prepared"|"cached"));
+            if r.get("clean_markdown").is_some_and(|v|v.is_object()){tex_ok=true;}
+            tex_summary=r;
+        }
+    }
+
+    let mut pdf_summary=Value::Null;
+    let mut figure_candidates=Value::Array(vec![]);
+    if let Some(pdf)=opt.pdf_path{
+        let eff_render=if opt.render_pages=="auto"{"selective"}else{opt.render_pages};
+        let r=if let Some(cached)=load_cached_layout(&layout_dir,pdf,opt.expected_pdf_sha256)?{
+            cached
+        }else{
+            prepare_pdf_layout(pdf,&layout_dir,"main",eff_render,opt.dpi,opt.expected_pdf_sha256)?
+        };
+        figure_candidates=r["figure_candidates"].clone();
+        pdf_summary=r;
+    }
+
+    let mut matched_glossary=Value::Null;
+    if let Some(gp)=opt.glossary_path{
+        if gp.is_file(){
+            let mut corpus=String::new();
+            let tex_clean=tex_dir.join("clean-source.md");
+            if tex_clean.is_file(){corpus.push_str(&fs::read_to_string(&tex_clean)?);corpus.push('\n');}
+            let pdf_clean=layout_dir.join("clean-layout.md");
+            if pdf_clean.is_file(){corpus.push_str(&fs::read_to_string(&pdf_clean)?);}
+            if !corpus.trim().is_empty(){
+                let gl=glossary::Glossary::new(gp)?;
+                let sug=gl.suggest(&corpus,6)?;
+                let mut rows=BTreeMap::<String,(String,String,String,String,u64)>::new();
+                for m in sug["matches"].as_array().into_iter().flatten(){
+                    let e=&m["entry"];
+                    let Some(id)=e["id"].as_str() else{continue;};
+                    let kinds:Vec<&str>=m["match_types"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                    let en=e["english"].as_str().unwrap_or("").replace('|',"\\|");
+                    let zh=e["translation"].as_str().unwrap_or("").replace('|',"\\|");
+                    let ctx=e["context"].as_str().unwrap_or("").replace('|',"\\|");
+                    let line=e["line"].as_u64().unwrap_or(0);
+                    rows.entry(id.to_owned()).or_insert((en,zh,ctx,kinds.join(", "),line));
+                }
+                let mut md=format!("# 本篇命中术语表（matched-glossary）\n\n来源术语表：`{}`（sha256: `{}`）\n命中词条数：{}\n\n| ID | 英文术语 | 译名 | 语境/备注 | 匹配方式 | 术语表行号 |\n|---|---|---|---|---|---|\n",
+                    gl.binding["path"].as_str().unwrap_or(""),
+                    gl.binding["sha256"].as_str().unwrap_or(""),
+                    rows.len());
+                for (id,(en,zh,ctx,kind,line)) in &rows{
+                    md.push_str(&format!("| {id} | {en} | {zh} | {ctx} | {kind} | {line} |\n"));
+                }
+                pipeline::publish_replace(&matched_glossary_file,md.as_bytes())?;
+                matched_glossary=json!({
+                    "file":check_ledger::bind_file(&matched_glossary_file)?,
+                    "matched_count":rows.len(),
+                    "glossary_source":gl.binding,
+                });
+            }
+        }
+    }
+
+    Ok(json!({
+        "schema_version":1,
+        "status":"ok",
+        "work_dir":path_text(&work)?,
+        "tex_succeeded":tex_ok,
+        "tex":tex_summary,
+        "pdf_layout":pdf_summary,
+        "figure_candidates":figure_candidates,
+        "matched_glossary":matched_glossary,
+        "source_fidelity":"not_assessed",
+        "next_action":"Read clean-source.md (if TeX succeeded) / clean-layout.md and matched-glossary.md; pass figure_candidates to pdf_image_objects.render_page_regions_batch for crop verification.",
     }))
 }
 
@@ -558,5 +823,30 @@ mod tests{
         assert!(!out.join("pages/page-0002.png").exists());
         assert!(out.join("pages/page-0003.png").is_file());
         assert!(Path::new(res["clean_markdown"]["path"].as_str().unwrap()).is_file());
+        let fc=res["figure_candidates"].as_array().unwrap();
+        assert_eq!(fc.len(),1,"{res}");
+        assert_eq!(fc[0]["page"],3);
+        assert_eq!(fc[0]["suggested_fig_id"],"fig1");
+        assert_eq!(fc[0]["single_object_reusable"],true);
+
+        let gl_path=tmp.path().join("glossary.md");
+        fs::write(&gl_path,"| ID | 英文术语 | 中文译名 | 备注 |\n| --- | --- | --- | --- |\n| T_HOM | homology | 同调 | 代数拓扑 |\n| T_MISSING | zeta function | ζ函数 | 未出现 |\n").unwrap();
+        let tex_path=tmp.path().join("paper.tex");
+        fs::write(&tex_path,"\\documentclass{article}\n\\title{Persistent Homology}\n\\begin{document}\nWe compute homology groups cleanly.\n\\end{document}\n").unwrap();
+        let paper_work=tmp.path().join("paper-work");
+        let tex_val=json!(tex_path.to_string_lossy().to_string());
+        let prep=prepare_paper(PreparePaperOptions{
+            pdf_path:Some(&pdf),tex_target:Some(&tex_val),work_dir:&paper_work,
+            glossary_path:Some(&gl_path),render_pages:"auto",dpi:72,expected_pdf_sha256:None,arxiv_timeout_seconds:5,
+        }).unwrap();
+        assert_eq!(prep["tex_succeeded"],true);
+        assert_eq!(prep["matched_glossary"]["matched_count"],1);
+        let mg=fs::read_to_string(prep["matched_glossary"]["file"]["path"].as_str().unwrap()).unwrap();
+        assert!(mg.contains("T_HOM")&&!mg.contains("T_MISSING"),"{mg}");
+        let prep_cached=prepare_paper(PreparePaperOptions{
+            pdf_path:Some(&pdf),tex_target:Some(&tex_val),work_dir:&paper_work,
+            glossary_path:Some(&gl_path),render_pages:"auto",dpi:72,expected_pdf_sha256:None,arxiv_timeout_seconds:5,
+        }).unwrap();
+        assert_eq!(prep_cached["pdf_layout"]["status"],"cached");
     }
 }

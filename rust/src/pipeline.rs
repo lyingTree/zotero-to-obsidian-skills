@@ -1,6 +1,6 @@
 //! Freeze source-derived contracts and verified sequential edits. These
 //! primitives do not assert that a source plan is exhaustive or semantic.
-use crate::{acceptance,files,normalize,parse_json,path,path_text,render,ENGINE_VERSION,REFERENCE_VERSION};
+use crate::{acceptance,files,normalize,parse_json,path,path_text,render,yaml_emit,ENGINE_VERSION,REFERENCE_VERSION};
 use anyhow::{anyhow,ensure,Context,Result};
 use serde_json::{json,Map,Value};
 use std::{collections::{BTreeSet,BTreeMap},fs,io::Write,path::Path};
@@ -256,32 +256,58 @@ fn report(result:&Value,norm:&Option<Value>,audit:&Option<Value>)->String{
     }
     s+="\n## 结果边界\n\n缺少来源合同或单元映射时，未核实范围明确保留。程序不修改源 PDF、DOCX、已有原稿或原资源，不写入 Zotero / Obsidian。\n";s
 }
-fn summary(norm:&Option<Value>,audit:&Option<Value>)->Value{
+fn trunc_str(s:&str,max_chars:usize)->String{
+    let mut it=s.char_indices();
+    if let Some((idx,_))=it.nth(max_chars){format!("{}...",&s[..idx])}else{s.to_owned()}
+}
+fn summary(norm:&Option<Value>,audit:&Option<Value>,tables_converted:usize)->Value{
     let norm_changes=norm.as_ref().and_then(|n|n["changes"].as_array()).map_or(0,Vec::len);
     let norm_unresolved=norm.as_ref().and_then(|n|n["unresolved"].as_array()).map_or(0,Vec::len);
+    let unresolved_items:Vec<Value>=norm.as_ref().and_then(|n|n["unresolved"].as_array()).into_iter().flatten().take(10).map(|row|{
+        let mut m=Map::new();
+        for k in ["code","line","start"]{if let Some(v)=row.get(k){m.insert(k.into(),v.clone());}}
+        if let Some(msg)=row.get("message").and_then(Value::as_str){m.insert("message".into(),json!(trunc_str(msg,160)));}
+        Value::Object(m)
+    }).collect();
     let mut failed_checks=Vec::new();
     let mut prompt_total=0usize;
     let mut prompt_counts:BTreeMap<String,usize>=BTreeMap::new();
+    let mut review_prompts_sample=Vec::new();
     if let Some(a)=audit{
         for row in a["checks"].as_array().into_iter().flatten().filter(|r|r["status"]=="fail"){
-            failed_checks.push(json!({"stage":row["stage"],"code":row["code"],"location":row["location"]}));
+            let mut item=json!({"stage":row["stage"],"code":row["code"],"location":row["location"]});
+            if let Some(exp)=row.get("expected").filter(|v|!v.is_null()){
+                item["expected"]=match exp.as_str(){Some(s)=>json!(trunc_str(s,160)),None=>json!(trunc_str(&exp.to_string(),160))};
+            }
+            if let Some(act)=row.get("actual").filter(|v|!v.is_null()){
+                item["actual"]=match act.as_str(){Some(s)=>json!(trunc_str(s,160)),None=>json!(trunc_str(&act.to_string(),160))};
+            }
+            failed_checks.push(item);
         }
         if let Some(prompts)=a["review_prompts"].as_array(){
             prompt_total=prompts.len();
             for row in prompts{
                 let code=row["code"].as_str().unwrap_or("UNKNOWN").to_owned();
                 *prompt_counts.entry(code).or_insert(0)+=1;
+                if review_prompts_sample.len()<10{
+                    let mut p=json!({"code":row["code"],"location":row["location"]});
+                    if let Some(msg)=row.get("message").and_then(Value::as_str){p["message"]=json!(trunc_str(msg,160));}
+                    review_prompts_sample.push(p);
+                }
             }
         }
     }
     json!({
         "normalization_changes":norm_changes,
         "normalization_unresolved":norm_unresolved,
+        "unresolved_items":unresolved_items,
+        "tables_converted":tables_converted,
         "mechanical_status":audit.as_ref().and_then(|a|a["mechanical_status"].as_str()),
         "source_coverage":audit.as_ref().and_then(|a|a["source_coverage"].as_str()),
         "failed_checks":failed_checks,
         "review_prompts_total":prompt_total,
         "review_prompts_by_code":prompt_counts,
+        "review_prompts_sample":review_prompts_sample,
     })
 }
 pub(crate) fn ensure_outside_vault(dest:&Path)->Result<()>{
@@ -313,6 +339,8 @@ pub(crate) fn ensure_outside_vault(dest:&Path)->Result<()>{
 pub struct ProcessOptions<'a>{
     pub write_normalized_to:Option<&'a Path>,
     pub strip_display_trailing_punctuation:bool,
+    pub force_lf:bool,
+    pub convert_markdown_tables:bool,
 }
 pub fn process(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,contract:&Value,
                resource_root:Option<&Path>,progress:impl FnMut(usize,usize,&str))->Result<Value>{
@@ -331,6 +359,8 @@ pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,outp
     let mut request=json!({"schema_version":1,"mode":if source.is_some(){"markdown"}else{"structured"},"input":input,
         "plan":plan,"content":content,"contract":contract,"resource_root":path_text(&resource_root)?,"engine":eng});
     if options.strip_display_trailing_punctuation{request["strip_display_trailing_punctuation"]=json!(true);}
+    if options.force_lf{request["force_lf"]=json!(true);}
+    if options.convert_markdown_tables{request["convert_markdown_tables"]=json!(true);}
     let request_bytes=pretty(&request)?;let id=files::digest(&request_bytes);
     fs::create_dir_all(output)?;let root=files::canonical(output)?;let directory=root.join(&id);
     match fs::create_dir(&directory){Ok(())=>{},Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{},Err(e)=>return Err(e.into())}
@@ -357,14 +387,20 @@ pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,outp
         }
         rendering=Some(r);text
     };
-    let norm_opts=normalize::Options{strip_display_trailing_punctuation:options.strip_display_trailing_punctuation};
-    let normalized=if let Some(s)=&raw{
+    let norm_opts=normalize::Options{strip_display_trailing_punctuation:options.strip_display_trailing_punctuation,normalize_line_endings:options.force_lf};
+    let (raw_for_norm,tables_converted)=match (&raw,options.convert_markdown_tables){
+        (Some(s),true)=>{let (converted,count)=yaml_emit::convert_markdown_tables(s)?;(Some(converted),count)},
+        _=> (raw.clone(),0),
+    };
+    let normalized=if let Some(s)=&raw_for_norm{
         let n=normalize::normalize_with_options(s,norm_opts)?;
         let t=n["text"].as_str().context("normalized text")?;
         let second=normalize::normalize_with_options(t,norm_opts)?;
         ensure!(replay(s,&n["changes"])?==t&&second["text"]==t&&second["changes"].as_array().is_some_and(Vec::is_empty),
             "Normalization failed replay or idempotence verification");
-        publish_record(&directory,&mut receipts,"normalization.json",&pretty(&n)?)?;
+        let mut slim_n=n.clone();
+        if let Some(obj)=slim_n.as_object_mut(){obj.remove("text");}
+        publish_record(&directory,&mut receipts,"normalization.json",&pretty(&slim_n)?)?;
         publish_record(&directory,&mut receipts,"normalized.md",t.as_bytes())?;
         stage(&mut events,2,"verified",&mut progress);Some(n)
     }else{stage(&mut events,2,"blocked",&mut progress);None};
@@ -401,7 +437,7 @@ pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,outp
     publish_record(&directory,&mut receipts,"phases.json",&pretty(&phases(&normalized,&audit,&events))?)?;
     let outputs=receipts.iter().map(|(k,v)|Ok((k.clone(),json!({"path":path_text(&directory.join(k))?,"sha256":v})))).collect::<Result<Map<String,Value>>>()?;
     let mut result=json!({"schema_version":1,"run_id":id,"directory":path_text(&directory)?,"status":status,
-        "source_fidelity":"not_assessed","summary":summary(&normalized,&audit),"stages":events,"issues":issues,"outputs":outputs});
+        "source_fidelity":"not_assessed","summary":summary(&normalized,&audit,tables_converted),"stages":events,"issues":issues,"outputs":outputs});
     let markdown=report(&result,&normalized,&audit);
     publish_record(&directory,&mut receipts,"report.md",markdown.as_bytes())?;
     result["outputs"]["report.md"]=json!({"path":path_text(&directory.join("report.md"))?,"sha256":files::digest(markdown.as_bytes())});

@@ -23,7 +23,7 @@
 
 首次运行按下列顺序执行，之后不再重复搜索：
 
-1. 日常任务优先单次调用 `user_profile.preflight`（可同时传入 `query` / `item_key`）：一次返回档案校验、Zotero API 探测、模板列表、条目/PDF 定位及 `work_dir`；仅在 `status: "uninitialized"` 或用户要求变更配置时重新发现并 `user_profile.save` / `user_profile.patch`。
+1. 日常任务优先单次调用 `user_profile.preflight`（可同时传入 `query` / `item_key` 及 `create_work_dirs: true`）：`locate` 会在传入仓库/skills 根目录时自动向下钻取 `literature-zotero2obsidian/`；一次返回档案校验、Zotero API 探测、模板列表与 `template_skeleton`、`naming_plan`（含 `suggested_asset_bucket_relative` 与 `suggested_note_relative`）、条目/PDF 定位及 `work_dirs`。仅在 `status: "uninitialized"` 或用户要求变更配置时重新发现并 `user_profile.save` / `user_profile.patch`。
 2. 每个记录路径先核对实际存在性、类型与包含关系。`paths.work_root` 必须指向总工作根目录（如 `<parent>/literature-pipeline-work/<vault>`），禁止将单篇条目工作子目录写入 `work_root`；`paths.obsidian_cli` 填实际可执行命令名或路径（如 `"obsidian"`），不带说明括号。
 3. 记录值与本次命令行/用户输入冲突时，以本次明确输入为准并更新记录，同时保留变更说明。
 4. 不以“上次运行成功”代替本次路径可读性核对，也不因记录存在而跳过写前边界检查。
@@ -120,7 +120,7 @@
 ## 工具与边界
 
 - Zotero 操作使用同级 [zotero-skills](../../zotero-skills/SKILL.md)，先探测再调用，不假定 MCP 工具已安装，不打印凭据。
-- Obsidian 笔记与附件写入统一使用 `vault_publish.plan_standalone` + `vault_publish.commit_markdown`，提交回读与 SHA-256 校验已由 Rust 事务完成；写入后不要轮询启动 Obsidian 客户端、搜索索引或反向链接缓存，仅在用户明确要求查库内出链/触发客户端命令时再按需调用同级 [obsidian-cli](../../obsidian-cli/SKILL.md)（先读 help、明确 vault 与相对 path、检查实际输出）。
+- Obsidian 笔记与附件写入统一使用 `vault_publish.publish_standalone`（一步完成预检、冲突消歧、事务备份、写入、SHA-256/`WRITE-A04`/`WRITE-A05` 回读并生成 `report.md`）或 `vault_publish.plan_standalone` + `vault_publish.commit_markdown`。提交回读由 Rust 事务保证，返回 `verified_file_write` 即进入终态：禁止轮询启动 Obsidian 客户端、休眠等待或检查反向链接缓存；仅在用户明确要求查库内出链/触发客户端命令时再按需调用同级 [obsidian-cli](../../obsidian-cli/SKILL.md)（先读 help、明确 vault 与相对 path、检查实际输出）。
 - 含 LaTeX 反斜杠或长全文时，以文件方式保存正文再回读实际文件。移动或重命名时核对可枚举的入链；使用 CLI 时读取其实际返回文件内容。CLI 不可用时可使用文件接口，无法核实的入链范围单独保留待核记录。
 - 模板作为结构与格式参考。先检查模板实际行为，不盲跑其正则清理、改名或交互脚本。
 - 未覆盖的文献类型保留实际类型，采用不虚构字段的通用结构，不套成期刊论文。

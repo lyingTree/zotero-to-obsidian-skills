@@ -148,9 +148,242 @@ pub fn render_page_region(source:&Path,opt:RegionOptions<'_>)->Result<Value>{
         "visual_review":{"status":"pending","figure_completeness":"not_assessed"},"source_fidelity":"not_assessed","backend_render":render,
         "evidence_boundary":"Actual crop, not evidence that nothing is missing. Review all four edges independently."}))
 }
+pub struct BatchRegionOptions<'a>{
+    pub expected:Option<&'a str>,
+    pub overwrite:bool,
+    pub contact_sheet_destination:Option<&'a Path>,
+    pub contact_sheet_columns:Option<usize>,
+}
+
+fn trim_rgba_margins(img:&image::RgbaImage,padding_px:u32)->image::RgbaImage{
+    let (w,h)=img.dimensions();
+    if w==0||h==0{return img.clone();}
+    let (mut min_x,mut min_y,mut max_x,mut max_y)=(w,h,0u32,0u32);
+    let mut found=false;
+    for (x,y,p) in img.enumerate_pixels(){
+        let fg=p[3]>8&&!(p[0]>=246&&p[1]>=246&&p[2]>=246);
+        if fg{
+            found=true;
+            min_x=min_x.min(x);min_y=min_y.min(y);
+            max_x=max_x.max(x);max_y=max_y.max(y);
+        }
+    }
+    if !found{return img.clone();}
+    let x0=min_x.saturating_sub(padding_px);
+    let y0=min_y.saturating_sub(padding_px);
+    let x1=(max_x+padding_px+1).min(w);
+    let y1=(max_y+padding_px+1).min(h);
+    image::imageops::crop_imm(img,x0,y0,(x1-x0).max(1),(y1-y0).max(1)).to_image()
+}
+
+fn glyph_5x7(ch:char)->[u8;7]{
+    match ch{
+        '#'=>[0b01010,0b11111,0b01010,0b01010,0b11111,0b01010,0b00000],
+        '0'=>[0b01110,0b10001,0b10011,0b10101,0b11001,0b10001,0b01110],
+        '1'=>[0b00100,0b01100,0b00100,0b00100,0b00100,0b00100,0b01110],
+        '2'=>[0b01110,0b10001,0b00001,0b00110,0b01000,0b10000,0b11111],
+        '3'=>[0b11110,0b00001,0b00001,0b01110,0b00001,0b00001,0b11110],
+        '4'=>[0b00010,0b00110,0b01010,0b10010,0b11111,0b00010,0b00010],
+        '5'=>[0b11111,0b10000,0b11110,0b00001,0b00001,0b10001,0b01110],
+        '6'=>[0b01110,0b10000,0b11110,0b10001,0b10001,0b10001,0b01110],
+        '7'=>[0b11111,0b00001,0b00010,0b00100,0b01000,0b01000,0b01000],
+        '8'=>[0b01110,0b10001,0b10001,0b01110,0b10001,0b10001,0b01110],
+        '9'=>[0b01110,0b10001,0b10001,0b01111,0b00001,0b00001,0b01110],
+        _ =>[0;7],
+    }
+}
+
+fn draw_badge(canvas:&mut image::RgbaImage,x0:u32,y0:u32,label:&str){
+    let scale=2u32;
+    let char_w=6u32*scale;
+    let bw=label.chars().count() as u32*char_w+8;
+    let bh=7*scale+8;
+    let (cw,ch)=canvas.dimensions();
+    for dy in 0..bh{
+        for dx in 0..bw{
+            let x=x0+dx;let y=y0+dy;
+            if x<cw&&y<ch{canvas.put_pixel(x,y,image::Rgba([205,36,44,255]));}
+        }
+    }
+    for (ci,c) in label.chars().enumerate(){
+        let rows=glyph_5x7(c);
+        for (ry,bits) in rows.iter().enumerate(){
+            for rx in 0..5u32{
+                if (bits>>(4-rx))&1==1{
+                    for sy in 0..scale{
+                        for sx in 0..scale{
+                            let px=x0+4+(ci as u32)*char_w+rx*scale+sx;
+                            let py=y0+4+(ry as u32)*scale+sy;
+                            if px<cw&&py<ch{canvas.put_pixel(px,py,image::Rgba([255,255,255,255]));}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn build_contact_sheet(tiles:&[(usize,image::RgbaImage)],columns_opt:Option<usize>,dest:&Path,overwrite:bool)->Result<Value>{
+    let dest=output(dest)?;
+    let n=tiles.len();
+    let cols=columns_opt.unwrap_or(if n<=1{1}else if n<=4{2}else{3}).clamp(1,4);
+    let rows=n.div_ceil(cols).max(1);
+    let (slot_w,slot_h,pad)=(560u32,420u32,16u32);
+    let total_w=pad+(slot_w+pad)*cols as u32;
+    let total_h=pad+(slot_h+pad)*rows as u32;
+    let mut canvas=image::RgbaImage::from_pixel(total_w,total_h,image::Rgba([248,248,250,255]));
+    for (slot_idx,(item_num,tile)) in tiles.iter().enumerate(){
+        let col=(slot_idx%cols) as u32;
+        let row=(slot_idx/cols) as u32;
+        let sx=pad+col*(slot_w+pad);
+        let sy=pad+row*(slot_h+pad);
+        for yy in 0..slot_h{
+            for xx in 0..slot_w{
+                let c=if ((xx/12)+(yy/12))%2==0{242u8}else{228u8};
+                canvas.put_pixel(sx+xx,sy+yy,image::Rgba([c,c,c,255]));
+            }
+        }
+        let (tw,th)=tile.dimensions();
+        if tw>0&&th>0{
+            let max_w=f64::from(slot_w-16);
+            let max_h=f64::from(slot_h-16);
+            let scale=(max_w/f64::from(tw)).min(max_h/f64::from(th)).min(2.0);
+            let nw=((f64::from(tw)*scale).round() as u32).max(1).min(slot_w-12);
+            let nh=((f64::from(th)*scale).round() as u32).max(1).min(slot_h-12);
+            let resized=image::imageops::resize(tile,nw,nh,image::imageops::FilterType::Triangle);
+            let ox=sx+(slot_w-nw)/2;
+            let oy=sy+(slot_h-nh)/2;
+            image::imageops::overlay(&mut canvas,&resized,i64::from(ox),i64::from(oy));
+        }
+        for t in 0..2u32{
+            for x in sx..sx+slot_w{
+                canvas.put_pixel(x,sy+t,image::Rgba([215,40,48,255]));
+                canvas.put_pixel(x,sy+slot_h-1-t,image::Rgba([215,40,48,255]));
+            }
+            for y in sy..sy+slot_h{
+                canvas.put_pixel(sx+t,y,image::Rgba([215,40,48,255]));
+                canvas.put_pixel(sx+slot_w-1-t,y,image::Rgba([215,40,48,255]));
+            }
+        }
+        draw_badge(&mut canvas,sx+4,sy+4,&format!("#{item_num}"));
+    }
+    let mut bytes=Vec::new();
+    PngEncoder::new(&mut bytes).write_image(canvas.as_raw(),total_w,total_h,ExtendedColorType::Rgba8)?;
+    if overwrite{pipeline::publish_replace(&dest,&bytes)?;}else{pipeline::publish(&dest,&bytes)?;}
+    Ok(json!({"asset":check_ledger::bind_file(&dest)?,"width":total_w,"height":total_h,"columns":cols,"tiles":n}))
+}
+
+pub fn render_page_regions_batch(source:&Path,regions:&Value,opt:BatchRegionOptions<'_>)->Result<Value>{
+    let rows=regions.as_array().filter(|a|!a.is_empty()).context("regions must be a nonempty array")?;
+    ensure!(rows.len()<=32,"Batch crop size exceeds 32 regions per call");
+    let mut pdf=Backend::open(source,opt.expected)?;
+    let original=path(&pdf.source_binding()["path"])?;
+    let mut geom_cache=BTreeMap::<u64,(Value,Rect)>::new();
+    let mut items=Vec::with_capacity(rows.len());
+    let mut tiles=Vec::with_capacity(rows.len());
+
+    for (idx,row) in rows.iter().enumerate(){
+        let page=row["page_number"].as_u64().context("region.page_number must be an integer")?;
+        if let Some(cs)=row.get("coordinate_system").filter(|v|!v.is_null()){
+            ensure!(*cs==coordinates(),"Invalid region.coordinate_system");
+        }
+        let (_,bounds)=if let Some(g)=geom_cache.get(&page){g.clone()}else{
+            let (_,geom,b,_)=pdf.geometry(page)?;
+            geom_cache.insert(page,(geom.clone(),b));
+            (geom,b)
+        };
+        let b=rect(&row["bbox"])?;
+        ensure!(inside(bounds,b),"region.bbox must be inside actual unrotated page");
+        let margin=row.get("margin_pt").and_then(Value::as_f64).unwrap_or(6.0);
+        ensure!(margin.is_finite()&&margin>=0.,"Invalid region.margin_pt");
+        let dpi=row.get("dpi").and_then(Value::as_u64).unwrap_or(300);
+        ensure!((72..=1200).contains(&dpi),"Invalid region.dpi");
+        let transparent=row.get("transparent").and_then(Value::as_bool).unwrap_or(true);
+        let auto_trim=row.get("auto_trim").and_then(Value::as_bool).unwrap_or(false);
+        let dest=output(&path(&row["destination"])?)?;
+        ensure!(dest!=original,"Crop destination cannot overwrite source PDF");
+
+        let actual=expand(b,margin,bounds);
+        let (mut bytes,mut meta)=pdf.raster(page,Some(actual),dpi,transparent)?;
+        let mut rgba=image::load_from_memory_with_format(&bytes,image::ImageFormat::Png)?.into_rgba8();
+        if auto_trim{
+            rgba=trim_rgba_margins(&rgba,6);
+            bytes.clear();
+            PngEncoder::new(&mut bytes).write_image(rgba.as_raw(),rgba.width(),rgba.height(),ExtendedColorType::Rgba8)?;
+            meta["trimmed_width"]=json!(rgba.width());
+            meta["trimmed_height"]=json!(rgba.height());
+        }
+        if opt.overwrite{pipeline::publish_replace(&dest,&bytes)?;}else{pipeline::publish(&dest,&bytes)?;}
+        let asset=check_ledger::bind_file(&dest)?;
+        items.push(json!({
+            "index":idx+1,
+            "label":row.get("label").cloned().unwrap_or(Value::Null),
+            "page":page,
+            "requested_bbox":b,
+            "rendered_bbox":actual,
+            "dpi":dpi,
+            "transparent_background":transparent,
+            "auto_trim":auto_trim,
+            "asset":asset,
+            "alpha_min":meta["alpha_min"],
+            "alpha_max":meta["alpha_max"],
+        }));
+        tiles.push((idx+1,rgba));
+    }
+    pdf.verify()?;
+
+    let contact_sheet=if let Some(cs_dest)=opt.contact_sheet_destination{
+        ensure!(path(&json!(cs_dest.to_string_lossy().as_ref()))?!=original,"Contact sheet cannot overwrite source PDF");
+        build_contact_sheet(&tiles,opt.contact_sheet_columns,cs_dest,opt.overwrite)?
+    }else{Value::Null};
+
+    Ok(json!({
+        "schema_version":1,
+        "status":"ok",
+        "source_file":pdf.source_binding(),
+        "count":items.len(),
+        "items":items,
+        "contact_sheet":contact_sheet,
+        "source_fidelity":"not_assessed",
+        "evidence_boundary":"Batch crops rendered with optional auto_trim and numbered contact_sheet for visual inspection.",
+    }))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
+    use lopdf::{Document,Object,Stream,dictionary};
+    #[test]
+    fn batch_render_trims_and_builds_contact_sheet(){
+        let tmp=tempfile::tempdir().unwrap();
+        let pdf=tmp.path().join("figs.pdf");
+        let mut doc=Document::with_version("1.5");
+        let pages=doc.new_object_id();
+        let img=doc.add_object(Stream::new(dictionary!{"Type"=>"XObject","Subtype"=>"Image","Width"=>2,"Height"=>2,"BitsPerComponent"=>8,"ColorSpace"=>"DeviceRGB"},vec![20,40,180,20,40,180,20,40,180,20,40,180]));
+        let res=dictionary!{"XObject"=>dictionary!{"Im"=>img}};
+        let c1=doc.add_object(Stream::new(dictionary!{},b"q 60 0 0 40 50 180 cm /Im Do Q".to_vec()));
+        let p1=doc.add_object(dictionary!{"Type"=>"Page","Parent"=>pages,"Contents"=>c1,"Resources"=>res});
+        doc.objects.insert(pages,Object::Dictionary(dictionary!{"Type"=>"Pages","Kids"=>vec![Object::Reference(p1)],"Count"=>1,"MediaBox"=>vec![0.into(),0.into(),300.into(),300.into()]}));
+        let catalog=doc.add_object(dictionary!{"Type"=>"Catalog","Pages"=>pages});
+        doc.trailer.set("Root",catalog);
+        doc.save(&pdf).unwrap();
+
+        let fig1=tmp.path().join("out/fig1.png");
+        let fig2=tmp.path().join("out/fig2.png");
+        let sheet=tmp.path().join("out/contact.png");
+        let regions=json!([
+            {"page_number":1,"bbox":[40.0,65.0,125.0,130.0],"destination":fig1,"dpi":150,"auto_trim":true,"transparent":true,"label":"fig1"},
+            {"page_number":1,"bbox":[40.0,65.0,125.0,130.0],"destination":fig2,"dpi":150,"auto_trim":false,"transparent":false,"label":"fig2"}
+        ]);
+        let r=render_page_regions_batch(&pdf,&regions,BatchRegionOptions{
+            expected:None,overwrite:true,contact_sheet_destination:Some(&sheet),contact_sheet_columns:Some(2),
+        }).unwrap();
+        assert_eq!(r["count"],2);
+        assert!(fig1.is_file()&&fig2.is_file()&&sheet.is_file());
+        assert_eq!(r["items"][0]["transparent_background"],true);
+        assert_eq!(r["items"][1]["transparent_background"],false);
+        assert_eq!(r["contact_sheet"]["columns"],2);
+    }
     #[test]
     fn external_text_does_not_expand_crop(){
         let g=|i:u64,l:u64,t:&str,b:Rect|json!({"glyph_index":i,"line_index":l,"text":t,"bbox":b});

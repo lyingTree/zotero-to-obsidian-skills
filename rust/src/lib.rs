@@ -261,10 +261,14 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_source_inventory.prepare_tex_source",
     "prepare_source_inventory.fetch_arxiv_tex",
     "prepare_source_inventory.prepare_pdf_layout",
+    "prepare_source_inventory.prepare_paper",
+    "pdf_image_objects.render_page_regions_batch",
     "vault_library.index",
     "vault_library.match_reference",
+    "vault_library.match_references_batch",
     "vault_publish.plan",
     "vault_publish.plan_standalone",
+    "vault_publish.publish_standalone",
     "vault_publish.commit_markdown",
     "vault_publish.rollback",
     "check_records.CheckFinding.to_dict",
@@ -675,9 +679,12 @@ pub fn invoke(request: Value) -> Result<Value> {
             let write_to=c.option("write_normalized_to",Value::Null);
             let write_to=if write_to.is_null(){None}else{Some(path(&write_to)?)};
             let strip_punct=c.option("strip_display_trailing_punctuation",json!(false)).as_bool().context("strip_display_trailing_punctuation must be boolean")?;
+            let force_lf=c.option("force_lf",json!(write_to.is_some())).as_bool().context("force_lf must be boolean")?;
+            let convert_tables=c.option("convert_markdown_tables",json!(false)).as_bool().context("convert_markdown_tables must be boolean")?;
             c.finish()?;
             pipeline::process_with_options(source.as_deref(),&plan,&content,&output,&contract,root.as_deref(),
-                pipeline::ProcessOptions{write_normalized_to:write_to.as_deref(),strip_display_trailing_punctuation:strip_punct},
+                pipeline::ProcessOptions{write_normalized_to:write_to.as_deref(),strip_display_trailing_punctuation:strip_punct,
+                    force_lf,convert_markdown_tables:convert_tables},
                 runtime_reports::throttled_progress)?
         }
         "lint_presentation.lint_presentation" => {
@@ -1275,6 +1282,21 @@ pub fn invoke(request: Value) -> Result<Value> {
                     margin,dpi,expected:e.as_deref(),context:context.as_deref(),context_margin,context_dpi,overwrite,transparent})?
             }
         }
+        "pdf_image_objects.render_page_regions_batch" => {
+            let source=path(&c.positional("source_pdf")?)?;
+            let regions=c.required("regions")?;
+            let expected=c.option("expected_source_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
+            let overwrite=c.option("overwrite",json!(true)).as_bool().context("overwrite must be boolean")?;
+            let cs=c.option("contact_sheet_destination",Value::Null);
+            let cs=if cs.is_null(){None}else{Some(path(&cs)?)};
+            let cols=c.option("contact_sheet_columns",Value::Null);
+            let cols=if cols.is_null(){None}else{Some(usize::try_from(cols.as_u64().context("contact_sheet_columns must be an integer")?)?)};
+            c.finish()?;
+            pdf_boundary::render_page_regions_batch(&source,&regions,pdf_boundary::BatchRegionOptions{
+                expected:expected.as_deref(),overwrite,contact_sheet_destination:cs.as_deref(),contact_sheet_columns:cols,
+            })?
+        }
         "prepare_source_inventory.pdf_page_rect" => {
             let p=path(&c.positional("source_pdf")?)?;let n=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
             c.finish()?;pdf_structure::pdf_page_rect(&p,n)?
@@ -1478,8 +1500,9 @@ pub fn invoke(request: Value) -> Result<Value> {
             let key=if key.is_null(){None}else{Some(string(&key,"item_key")?)};
             let storage=c.option("zotero_storage_dir",Value::Null);
             let storage=if storage.is_null(){None}else{Some(path(&storage)?)};
+            let create_work_dirs=c.option("create_work_dirs",json!(false)).as_bool().context("create_work_dirs must be boolean")?;
             c.finish()?;
-            user_profile::preflight(root.as_deref(),query.as_deref(),key.as_deref(),storage.as_deref())?
+            user_profile::preflight(root.as_deref(),query.as_deref(),key.as_deref(),storage.as_deref(),create_work_dirs)?
         }
         "prepare_source_inventory.inspect_tex_source" => {
             let source=path(&c.positional("source_path")?)?;
@@ -1523,6 +1546,27 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             pdf_layout::prepare_pdf_layout(&source,&destination,&id,&render,dpi,expected.as_deref())?
         }
+        "prepare_source_inventory.prepare_paper" => {
+            let work_dir=path(&c.positional("work_dir")?)?;
+            let pdf=c.option("pdf_path",Value::Null);
+            let pdf=if pdf.is_null(){None}else{Some(path(&pdf)?)};
+            let tex=c.option("tex_target",Value::Null);
+            let tex_opt=if tex.is_null(){None}else{Some(&tex)};
+            let glossary=c.option("glossary_path",Value::Null);
+            let glossary=if glossary.is_null(){None}else{Some(path(&glossary)?)};
+            let render=c.option("render_pages",json!("auto"));
+            let render=string(&render,"render_pages")?;
+            let dpi=c.option("dpi",json!(150)).as_u64().context("dpi must be a positive integer")?;
+            let expected=c.option("expected_pdf_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_pdf_sha256")?)};
+            let timeout=c.option("arxiv_timeout_seconds",json!(60)).as_u64().context("arxiv_timeout_seconds must be an integer")?;
+            c.finish()?;
+            pdf_layout::prepare_paper(pdf_layout::PreparePaperOptions{
+                pdf_path:pdf.as_deref(),tex_target:tex_opt,work_dir:&work_dir,
+                glossary_path:glossary.as_deref(),render_pages:&render,dpi,
+                expected_pdf_sha256:expected.as_deref(),arxiv_timeout_seconds:timeout,
+            })?
+        }
         "vault_library.index" => {
             let root=path(&c.positional("vault_root")?)?;
             let lit=string(&c.positional("literature_relative")?,"literature_relative")?;
@@ -1530,15 +1574,43 @@ pub fn invoke(request: Value) -> Result<Value> {
             let id=c.option("personal_library_id",Value::Null);
             let id=if id.is_null(){None}else{Some(id.as_u64().context("personal_library_id must be an actual integer ID")?)};
             let output=c.option("output_path",Value::Null);let output=if output.is_null(){None}else{Some(path(&output)?)};
-            c.finish()?;let mut r=vault_library::index(&root,&lit,&exclude,id,runtime_reports::progress_line)?;
-            if let Some(p)=output{let b=runtime_reports::save_new_report(&p,&r)?;r["saved_record"]=b;}
-            r
+            let use_cache=c.option("use_cache",json!(false)).as_bool().context("use_cache must be boolean")?;
+            c.finish()?;
+            if use_cache{
+                let out=output.as_ref().context("output_path required when use_cache=true")?;
+                let r=vault_library::index_cached(&root,&lit,&exclude,id,out,runtime_reports::progress_line)?;
+                if r["cache_hit"]==true{r}else{
+                    let mut saved=r;
+                    pipeline::ensure_outside_vault(out)?;
+                    if let Some(p)=out.parent().filter(|p|!p.as_os_str().is_empty()){std::fs::create_dir_all(p)?;}
+                    let mut bytes=serde_json::to_vec_pretty(&saved)?;
+                    bytes.push(b'\n');
+                    pipeline::publish_replace(out,&bytes)?;
+                    saved["saved_record"]=check_ledger::bind_file(out)?;
+                    saved
+                }
+            }else{
+                let mut r=vault_library::index(&root,&lit,&exclude,id,runtime_reports::progress_line)?;
+                if let Some(p)=output{let b=runtime_reports::save_new_report(&p,&r)?;r["saved_record"]=b;}
+                r
+            }
         }
         "vault_library.match_reference" => {
             let index=path(&c.positional("index_path")?)?;let ih=string(&c.required("expected_index_sha256")?,"expected_index_sha256")?;
             let catalog=path(&c.positional("catalog_path")?)?;let ch=string(&c.required("expected_catalog_sha256")?,"expected_catalog_sha256")?;
             let reference=c.positional("reference")?;c.finish()?;
             vault_library::match_reference(&index,&ih,&catalog,&ch,&reference)?
+        }
+        "vault_library.match_references_batch" => {
+            let index=path(&c.positional("index_path")?)?;
+            let catalog=path(&c.positional("catalog_path")?)?;
+            let references=c.positional("references")?;
+            let ih=c.option("expected_index_sha256",Value::Null);
+            let ih=if ih.is_null(){None}else{Some(string(&ih,"expected_index_sha256")?)};
+            let ch=c.option("expected_catalog_sha256",Value::Null);
+            let ch=if ch.is_null(){None}else{Some(string(&ch,"expected_catalog_sha256")?)};
+            c.finish()?;
+            vault_library::match_references_batch(&index,ih.as_deref(),&catalog,ch.as_deref(),&references)?
         }
         "vault_publish.commit_markdown" => {
             let vault=path(&c.positional("vault_root")?)?;
@@ -1588,6 +1660,8 @@ pub fn invoke(request: Value) -> Result<Value> {
             let note=string(&c.required("note_relative")?,"note_relative")?;
             let candidate=path(&c.required("candidate_path")?)?;
             let resource_root=path(&c.required("resource_root")?)?;
+            let asset_src=c.option("asset_source_dir",Value::Null);
+            let asset_src=if asset_src.is_null(){None}else{Some(path(&asset_src)?)};
             let backup=c.option("backup_root",Value::Null);
             let backup=if backup.is_null(){None}else{Some(path(&backup)?)};
             let expected=c.option("expected_existing_sha256",Value::Null);
@@ -1599,10 +1673,36 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             vault_publish::plan_standalone(vault_publish::StandalonePlanOptions{
                 vault:&vault,literature_relative:&literature,assets_relative:&assets,note_relative:&note,
-                candidate:&candidate,resource_root:&resource_root,backup_root:backup.as_deref(),
+                candidate:&candidate,resource_root:&resource_root,asset_source_dir:asset_src.as_deref(),
+                backup_root:backup.as_deref(),
                 expected_existing_sha:expected.as_deref(),reuse_identical_assets:reuse_identical,
                 disambiguate_conflicts:disambiguate,commit_request_output:req_out.as_deref(),
             },runtime_reports::throttled_progress)?
+        }
+        "vault_publish.publish_standalone" => {
+            let vault=path(&c.positional("vault_root")?)?;
+            let backup=path(&c.required("backup_root")?)?;
+            let literature=string(&c.required("literature_relative")?,"literature_relative")?;
+            let assets=string(&c.required("assets_relative")?,"assets_relative")?;
+            let note=string(&c.required("note_relative")?,"note_relative")?;
+            let candidate=path(&c.required("candidate_path")?)?;
+            let resource_root=path(&c.required("resource_root")?)?;
+            let asset_src=c.option("asset_source_dir",Value::Null);
+            let asset_src=if asset_src.is_null(){None}else{Some(path(&asset_src)?)};
+            let expected=c.option("expected_existing_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_existing_sha256")?)};
+            let reuse_identical=c.option("reuse_identical_assets",json!(true)).as_bool().context("reuse_identical_assets must be boolean")?;
+            let disambiguate=c.option("disambiguate_conflicts",json!(true)).as_bool().context("disambiguate_conflicts must be boolean")?;
+            let authorized=c.required("authorized")?.as_bool().context("authorized must be boolean")?;
+            let rep_out=c.option("report_output",Value::Null);
+            let rep_out=if rep_out.is_null(){None}else{Some(path(&rep_out)?)};
+            c.finish()?;
+            vault_publish::publish_standalone(vault_publish::PublishStandaloneOptions{
+                vault:&vault,backup_root:&backup,literature_relative:&literature,assets_relative:&assets,
+                note_relative:&note,candidate:&candidate,resource_root:&resource_root,asset_source_dir:asset_src.as_deref(),
+                expected_existing_sha:expected.as_deref(),reuse_identical_assets:reuse_identical,
+                disambiguate_conflicts:disambiguate,authorized,report_output:rep_out.as_deref(),
+            },runtime_reports::progress_line)?
         }
         "native_runtime.package" => {
             let source=path(&c.positional("source_root")?)?;let dest=path(&c.positional("destination")?)?;

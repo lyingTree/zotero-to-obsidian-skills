@@ -6,7 +6,7 @@
 
 先调用实际二进制查看支持的能力与精确参数：
 - `z2o describe`：检查 `engine=rust`、`version=v2.0.3` 与全部注册 `operations`。
-- `z2o describe <operation>`：查询单个操作的位置参数 `args`、关键字参数 `kwargs`、默认值与 `request_template`（也可用 `z2o describe --all` 或 `z2o --help`）。
+- `z2o describe <operation>`：查询单个操作的位置参数 `args`、关键字参数 `kwargs`、默认值、`request_template` 与核心复合接口的 `parameter_examples`（也可用 `z2o describe --all` 或 `z2o --help`）。
 - 只有 `describe` 中注册的操作才能调用。将 UTF-8 JSON 请求写到实际任务文件，或通过标准输入传给 `z2o invoke -`，例如：
 
 ```json
@@ -24,17 +24,19 @@
 
 | Rust operation | args（依序） | kwargs |
 |---|---|---|
-| `user_profile.preflight` | 无 | `skill_root`、`query`、`item_key`、`zotero_storage_dir`（单次完成档案校验+Zotero 探测+模板枚举+工作目录规划） |
+| `user_profile.preflight` | 无 | `skill_root`（支持仓库根目录自动钻取）、`query`、`item_key`、`zotero_storage_dir`、`create_work_dirs`（默认 `false`；单次返回档案+Zotero+模板骨架+`naming_plan`+工作目录） |
+| `prepare_source_inventory.prepare_paper` | `work_dir` | `pdf_path`、`tex_target`、`glossary_path`、`render_pages`（默认 `"auto"`）、`dpi`、`expected_pdf_sha256`、`arxiv_timeout_seconds`（一站式 TeX+PDF 版面+`figure_candidates`+`matched-glossary.md`） |
 | `prepare_source_inventory.fetch_arxiv_tex` | `target`（arXiv ID/URL/DOI/item JSON）、`destination` | `source_id`（默认 `"main"`）、`pdf_path`、`timeout_seconds`、`compact`（默认 `true`） |
-| `prepare_source_inventory.prepare_pdf_layout` | `source_path`、`destination` | `source_id`、`render_pages`（`selective`\|`all`\|`none`，默认 `selective`）、`dpi`、`expected_source_sha256` |
+| `prepare_source_inventory.prepare_pdf_layout` | `source_path`、`destination` | `source_id`、`render_pages`（`selective`\|`all`\|`none`，默认 `selective`）、`dpi`、`expected_source_sha256`（含 `figure_candidates`） |
 | `prepare_source_inventory.prepare_sources` | `source_pdfs` 映射对象（如 `{"main": "<文件路径>"}`）、`work_directory` | `source_roles`、`glossary_path`、`dpi`、`ocr`（按实际需要） |
-| `pdf_image_objects.render_page_region` / `inspect_crop_boundaries` | `source_pdf` | `page_number`、`bbox`、`coordinate_system`、`destination` / `context_destination`、可选 `overwrite`（二次微调裁剪时设为 `true`） |
+| `pdf_image_objects.render_page_regions_batch` | `source_pdf` | `regions`（数组，含 `page_number`/`bbox`/`destination`/`transparent`/`auto_trim`/`label`）、`overwrite`、`contact_sheet_destination`、`contact_sheet_columns`（单会话批量裁图并输出序号拼图） |
+| `pdf_image_objects.render_page_region` / `inspect_crop_boundaries` | `source_pdf` | `page_number`、`bbox`、`coordinate_system`、`destination` / `context_destination`、可选 `overwrite`、`transparent`（默认 `true`） |
 | `pdf_image_objects.render_pdfcraft_region` | `source_pdf` | `page_number`、`bbox`、`coordinate_system`、`destination`；`transparent` 默认 `true`，保留透明背景，不合成白底 |
 | `prepare_source_inventory.inspect_tex_source` | 实际 `.tex` / `.zip` / `.tar` / `.tar.gz` / `.gz` 路径 | `source_id`（必填）、`expected_source_sha256`（可选） |
 | `prepare_source_inventory.prepare_tex_source` | 实际源码路径、证据目录 | `source_id`（必填）、`expected_source_sha256`（可选） |
 | `note_pipeline.prepare_content_job` | 实际 plan、sources、output_root | 无 |
-| `note_pipeline.process_content` | plan、实际 content、output_root | `contract`、`resource_root`、`write_normalized_to`、`strip_display_trailing_punctuation`（可选） |
-| `note_pipeline.process_markdown` | 实际 source_path、output_root | `contract`、`resource_root`、`write_normalized_to`、`strip_display_trailing_punctuation`（可选；返回内置 `summary`） |
+| `note_pipeline.process_content` | plan、实际 content、output_root | `contract`、`resource_root`、`write_normalized_to`、`strip_display_trailing_punctuation`、`force_lf`、`convert_markdown_tables` |
+| `note_pipeline.process_markdown` | 实际 source_path、output_root | `contract`、`resource_root`、`write_normalized_to`、`strip_display_trailing_punctuation`、`force_lf`、`convert_markdown_tables`（精简 `normalization.json` 并将详细缺项摘要输出到 `summary`） |
 | `render_note.render_note` / `normalize_note.normalize_note` / `accept_note.accept_note` | 按当前实际接口与来源合同 | 不伪造来源 |
 | `validate_delivery.validate_delivery` | 实际 manifest_path | 无 |
 | `lint_presentation.lint_file` | 实际候选路径 | 无 |
@@ -65,7 +67,7 @@
 | 来源、草稿队列与图件 | `prepare_source_inventory.*`、`docx_source_inventory.*`、`pdf_image_objects.*`、`draft_queue.*` |
 | OCR、表格/公式识别与 MiniCPM/Jev | 见[OCR、表格/公式识别与 MiniCPM/Jev 指南](ocr-and-minicpm.md)（15 个 `prepare_source_inventory.*` 操作） |
 | 表格、图件与篇内锚 | `format_helpers.build_rich_table_block`、`format_helpers.new_figure_table_anchor`、`format_helpers.plan_supplement_figure_caption` |
-| 库内链接身份 | `vault_library.index`（建议传入 `output_path` 落盘）、`vault_library.match_reference` |
-| 写库与恢复 | `vault_publish.plan_standalone`（独立候选一次性预检+同图复用+冲突消歧+生成 `commit_request`）、`vault_publish.plan`（legacy）、`vault_publish.commit_markdown`、`vault_publish.rollback` |
+| 库内链接身份 | `vault_library.index`（支持 `use_cache: true` 目录指纹缓存与 `output_path`）、`vault_library.match_reference`、`vault_library.match_references_batch`（批量 O(N+M) 匹配） |
+| 写库与恢复 | `vault_publish.publish_standalone`（一步预检+`asset_source_dir` 扁平资产查找+冲突消歧+事务写入+生成 `report.md`）、`vault_publish.plan_standalone`、`vault_publish.plan`（legacy）、`vault_publish.commit_markdown`、`vault_publish.rollback` |
 
 表中的 `*` 仅表示命名空间，不可作为实际 operation。只调用 `describe` 中的精确名称。库内操作需明确本地库和真实文件，写入需明确授权、完整实际写前条件、备份及回读。不得用独立 Markdown 模式绕开完整文献门禁。

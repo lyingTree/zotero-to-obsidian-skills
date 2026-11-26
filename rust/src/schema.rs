@@ -404,6 +404,8 @@ const SCHEMAS: &[OpSchema] = &[
             opt_kw("resource_root", "path|null", "null"),
             opt_kw("write_normalized_to", "path|null", "null"),
             opt_kw("strip_display_trailing_punctuation", "boolean", "false"),
+            opt_kw("force_lf", "boolean", "write_normalized_to!=null"),
+            opt_kw("convert_markdown_tables", "boolean", "false"),
         ],
     },
     OpSchema {
@@ -415,6 +417,8 @@ const SCHEMAS: &[OpSchema] = &[
             opt_kw("resource_root", "path|null", "null"),
             opt_kw("write_normalized_to", "path|null", "null"),
             opt_kw("strip_display_trailing_punctuation", "boolean", "false"),
+            opt_kw("force_lf", "boolean", "write_normalized_to!=null"),
+            opt_kw("convert_markdown_tables", "boolean", "false"),
         ],
     },
     OpSchema {
@@ -590,6 +594,18 @@ const SCHEMAS: &[OpSchema] = &[
             opt_kw("expected_source_sha256", "string|null", "null"),
             opt_kw("overwrite", "boolean", "false"),
             opt_kw("transparent", "boolean", "true"),
+        ],
+    },
+    OpSchema {
+        op: "pdf_image_objects.render_page_regions_batch",
+        summary: "Render up to 32 PDF crop regions in one PdfCraft session with optional alpha preservation, auto-trim margins, and a numbered contact sheet.",
+        args: &[req_arg("source_pdf", "path")],
+        kwargs: &[
+            req_kw("regions", "array<object>"),
+            opt_kw("expected_source_sha256", "string|null", "null"),
+            opt_kw("overwrite", "boolean", "true"),
+            opt_kw("contact_sheet_destination", "path|null", "null"),
+            opt_kw("contact_sheet_columns", "integer|null", "null"),
         ],
     },
     OpSchema {
@@ -1497,13 +1513,14 @@ const SCHEMAS: &[OpSchema] = &[
     },
     OpSchema {
         op: "user_profile.preflight",
-        summary: "Load profile, probe Zotero API, list templates, locate attachments and compute working paths in one call.",
+        summary: "Load profile, probe Zotero API, list templates, locate attachments, compute naming/bucket plan and optionally create work directories in one call.",
         args: &[],
         kwargs: &[
             opt_kw("skill_root", "path|null", "null"),
             opt_kw("query", "string|null", "null"),
             opt_kw("item_key", "string|null", "null"),
             opt_kw("zotero_storage_dir", "path|null", "null"),
+            opt_kw("create_work_dirs", "boolean", "false"),
         ],
     },
     OpSchema {
@@ -1537,7 +1554,7 @@ const SCHEMAS: &[OpSchema] = &[
     },
     OpSchema {
         op: "prepare_source_inventory.prepare_pdf_layout",
-        summary: "Analyze PDF pages via pure-Rust column/paragraph/formula/caption clustering with selective page rendering.",
+        summary: "Analyze PDF pages via pure-Rust column/paragraph/formula/caption clustering, figure candidate extraction, and selective page rendering.",
         args: &[req_arg("source_path", "path"), req_arg("destination", "path")],
         kwargs: &[
             opt_kw("source_id", "string", "\"main\""),
@@ -1547,13 +1564,28 @@ const SCHEMAS: &[OpSchema] = &[
         ],
     },
     OpSchema {
+        op: "prepare_source_inventory.prepare_paper",
+        summary: "One-shot source prep: auto-fetch TeX (when tex_target given), run cached/selective PDF layout + figure_candidates, and generate compact matched-glossary.md.",
+        args: &[req_arg("work_dir", "path")],
+        kwargs: &[
+            opt_kw("pdf_path", "path|null", "null"),
+            opt_kw("tex_target", "string|object|null", "null"),
+            opt_kw("glossary_path", "path|null", "null"),
+            opt_kw("render_pages", "auto|selective|all|none", "\"auto\""),
+            opt_kw("dpi", "integer", "150"),
+            opt_kw("expected_pdf_sha256", "string|null", "null"),
+            opt_kw("arxiv_timeout_seconds", "integer", "60"),
+        ],
+    },
+    OpSchema {
         op: "vault_library.index",
-        summary: "Read-only index of existing Obsidian literature notes and terminal Zotero item footers.",
+        summary: "Read-only index of existing Obsidian literature notes and terminal Zotero item footers (supports directory fingerprint caching).",
         args: &[req_arg("vault_root", "path"), req_arg("literature_relative", "string")],
         kwargs: &[
             opt_kw("excluded_relative", "array<string>", "[]"),
             opt_kw("personal_library_id", "integer|null", "null"),
             opt_kw("output_path", "path|null", "null"),
+            opt_kw("use_cache", "boolean", "false"),
         ],
     },
     OpSchema {
@@ -1561,6 +1593,15 @@ const SCHEMAS: &[OpSchema] = &[
         summary: "Cross-check a cited reference against a bound vault index and bound Zotero catalog.",
         args: &[req_arg("index_path", "path"), req_arg("catalog_path", "path"), req_arg("reference", "object")],
         kwargs: &[req_kw("expected_index_sha256", "string"), req_kw("expected_catalog_sha256", "string")],
+    },
+    OpSchema {
+        op: "vault_library.match_references_batch",
+        summary: "Batch cross-check up to 500 cited references in one pass over bound vault index and catalog.",
+        args: &[req_arg("index_path", "path"), req_arg("catalog_path", "path"), req_arg("references", "array<object>")],
+        kwargs: &[
+            opt_kw("expected_index_sha256", "string|null", "null"),
+            opt_kw("expected_catalog_sha256", "string|null", "null"),
+        ],
     },
     OpSchema {
         op: "vault_publish.plan",
@@ -1586,11 +1627,31 @@ const SCHEMAS: &[OpSchema] = &[
             req_kw("note_relative", "string"),
             req_kw("candidate_path", "path"),
             req_kw("resource_root", "path"),
+            opt_kw("asset_source_dir", "path|null", "null"),
             opt_kw("backup_root", "path|null", "null"),
             opt_kw("expected_existing_sha256", "string|null", "null"),
             opt_kw("reuse_identical_assets", "boolean", "true"),
             opt_kw("disambiguate_conflicts", "boolean", "true"),
             opt_kw("commit_request_output", "path|null", "null"),
+        ],
+    },
+    OpSchema {
+        op: "vault_publish.publish_standalone",
+        summary: "One-shot standalone publish: preflight plan + conflict disambiguation + transactional commit + SHA-256 readback + optional report.md.",
+        args: &[req_arg("vault_root", "path")],
+        kwargs: &[
+            req_kw("backup_root", "path"),
+            req_kw("literature_relative", "string"),
+            req_kw("assets_relative", "string"),
+            req_kw("note_relative", "string"),
+            req_kw("candidate_path", "path"),
+            req_kw("resource_root", "path"),
+            opt_kw("asset_source_dir", "path|null", "null"),
+            opt_kw("expected_existing_sha256", "string|null", "null"),
+            opt_kw("reuse_identical_assets", "boolean", "true"),
+            opt_kw("disambiguate_conflicts", "boolean", "true"),
+            req_kw("authorized", "boolean"),
+            opt_kw("report_output", "path|null", "null"),
         ],
     },
     OpSchema {
@@ -1813,13 +1874,93 @@ fn param_json(p: &Param) -> Value {
     obj
 }
 
+fn parameter_examples(op: &str) -> Option<Value> {
+    match op {
+        "format_helpers.build_rich_table_block" => Some(json!({
+            "args": [
+                {
+                    "version": 2,
+                    "columns": [
+                        {"id": "c_000001", "name": "方法"},
+                        {"id": "c_000002", "name": "精度"}
+                    ],
+                    "rows": [
+                        {"id": "r_000001", "cells": {"c_000001": "Mayer$\\,\\Delta_k$", "c_000002": "$0.95$"}}
+                    ],
+                    "theme": "grid",
+                    "locked": true
+                }
+            ],
+            "kwargs": {"anchor": "tbl-1", "wrapped": true}
+        })),
+        "user_profile.preflight" => Some(json!({
+            "args": [],
+            "kwargs": {"query": "Persistent Mayer path homology", "create_work_dirs": true}
+        })),
+        "prepare_source_inventory.prepare_paper" => Some(json!({
+            "args": ["D:/work/item-dir"],
+            "kwargs": {
+                "pdf_path": "D:/Zotero/storage/ABCD1234/paper.pdf",
+                "tex_target": "2401.01234",
+                "glossary_path": "D:/Vault/文献/template/glossary.md",
+                "render_pages": "auto",
+                "dpi": 150
+            }
+        })),
+        "pdf_image_objects.render_page_regions_batch" => Some(json!({
+            "args": ["D:/work/paper.pdf"],
+            "kwargs": {
+                "regions": [
+                    {"page_number": 4, "bbox": [60.0, 95.0, 520.0, 340.0], "destination": "D:/work/output/assets/fig1.png", "transparent": true, "auto_trim": true, "label": "fig1"}
+                ],
+                "overwrite": true,
+                "contact_sheet_destination": "D:/work/evidence/crop-contact-sheet.png"
+            }
+        })),
+        "note_pipeline.process_markdown" => Some(json!({
+            "args": ["D:/work/work/candidate.md", "D:/work/work/pipeline-run"],
+            "kwargs": {
+                "resource_root": "D:/work/output/assets",
+                "write_normalized_to": "D:/work/work/normalized.md",
+                "strip_display_trailing_punctuation": true,
+                "force_lf": true,
+                "convert_markdown_tables": true
+            }
+        })),
+        "vault_library.match_references_batch" => Some(json!({
+            "args": [
+                "D:/work/evidence/vault-index.json",
+                "D:/work/evidence/zotero-catalog.json",
+                [{"title": "Path homology", "year": "2012", "item_type": "journalArticle", "authors": ["Alexander Grigor'yan"], "doi": "10.1000/x"}]
+            ],
+            "kwargs": {}
+        })),
+        "vault_publish.publish_standalone" => Some(json!({
+            "args": ["D:/Vault"],
+            "kwargs": {
+                "backup_root": "D:/work/work/backups",
+                "literature_relative": "文献",
+                "assets_relative": "文献/attachments",
+                "note_relative": "文献/拓扑/2024-Fan-Paper.md",
+                "candidate_path": "D:/work/work/normalized.md",
+                "resource_root": "D:/work/output/assets",
+                "asset_source_dir": "D:/work/output/assets",
+                "expected_existing_sha256": null,
+                "authorized": true,
+                "report_output": "D:/work/work/publish-report.md"
+            }
+        })),
+        _ => None,
+    }
+}
+
 fn schema_json(s: &OpSchema) -> Value {
     let args_template: Vec<Value> = s.args.iter().map(|a| json!(format!("<{}:{}>", a.name, a.ty))).collect();
     let mut kwargs_template = Map::new();
     for k in s.kwargs.iter().filter(|k| k.required) {
         kwargs_template.insert(k.name.into(), json!(format!("<{}:{}>", k.name, k.ty)));
     }
-    json!({
+    let mut obj = json!({
         "summary": s.summary,
         "args": s.args.iter().map(param_json).collect::<Vec<_>>(),
         "kwargs": s.kwargs.iter().map(param_json).collect::<Vec<_>>(),
@@ -1829,7 +1970,11 @@ fn schema_json(s: &OpSchema) -> Value {
             "args": args_template,
             "kwargs": kwargs_template,
         }
-    })
+    });
+    if let Some(ex) = parameter_examples(s.op) {
+        obj["parameter_examples"] = ex;
+    }
+    obj
 }
 
 pub fn describe_operation(op: &str) -> Result<Value> {

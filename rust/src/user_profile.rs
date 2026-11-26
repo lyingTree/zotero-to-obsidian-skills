@@ -231,9 +231,159 @@ fn validate_paths(profile:&Value)->Result<Value>{
     }
     Ok(json!({"valid":valid,"paths":rows}))
 }
+pub fn sha1_hex(data:&[u8])->String{
+    let mut msg=data.to_vec();
+    let bit_len=(data.len() as u64).wrapping_mul(8);
+    msg.push(0x80);
+    while msg.len()%64!=56{msg.push(0);}
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+    let mut h=[0x67452301u32,0xEFCDAB89,0x98BADCFE,0x10325476,0xC3D2E1F0];
+    for chunk in msg.chunks_exact(64){
+        let mut w=[0u32;80];
+        for i in 0..16{
+            w[i]=u32::from_be_bytes([chunk[i*4],chunk[i*4+1],chunk[i*4+2],chunk[i*4+3]]);
+        }
+        for i in 16..80{
+            w[i]=(w[i-3]^w[i-8]^w[i-14]^w[i-16]).rotate_left(1);
+        }
+        let [mut a,mut b,mut c,mut d,mut e]=h;
+        for (i,&wt) in w.iter().enumerate(){
+            let (f,k)=match i{
+                0..=19=>((b&c)|((!b)&d),0x5A827999u32),
+                20..=39=>(b^c^d,0x6ED9EBA1u32),
+                40..=59=>((b&c)|(b&d)|(c&d),0x8F1BBCDCu32),
+                _ =>(b^c^d,0xCA62C1D6u32),
+            };
+            let temp=a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(wt);
+            e=d;d=c;c=b.rotate_left(30);b=a;a=temp;
+        }
+        h[0]=h[0].wrapping_add(a);h[1]=h[1].wrapping_add(b);h[2]=h[2].wrapping_add(c);
+        h[3]=h[3].wrapping_add(d);h[4]=h[4].wrapping_add(e);
+    }
+    h.iter().map(|v|format!("{v:08x}")).collect()
+}
+pub(crate) fn title_bucket(title:&str)->String{
+    let normalized:String=title.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let digest=sha1_hex(normalized.as_bytes());
+    digest[..16].to_owned()
+}
+fn clean_component(s:&str)->String{
+    s.chars().map(|ch|if "<>:\"/\\|?*".contains(ch)||ch.is_control(){'_'}else{ch}).collect()
+}
+fn has_cjk(s:&str)->bool{
+    s.chars().any(|c|('\u{4E00}'..='\u{9FFF}').contains(&c)||('\u{3400}'..='\u{4DBF}').contains(&c))
+}
+fn extract_year(raw:&str)->Option<String>{
+    let b=raw.as_bytes();
+    for i in 0..b.len().saturating_sub(3){
+        let ok_prev=i==0||!b[i-1].is_ascii_digit();
+        let ok_next=i+4==b.len()||!b[i+4].is_ascii_digit();
+        if ok_prev&&ok_next&&b[i..i+4].iter().all(u8::is_ascii_digit){
+            let s=&raw[i..i+4];
+            if matches!(s.as_bytes()[0],b'1'|b'2'){return Some(s.to_owned());}
+        }
+    }
+    None
+}
+fn first_author_token(creators:&Value)->String{
+    let Some(list)=creators.as_array() else{return "未知作者".into();};
+    let chosen=list.iter().find(|c|c["creatorType"]=="author").or_else(||list.first());
+    let Some(c)=chosen else{return "未知作者".into();};
+    if let Some(name)=c["name"].as_str().map(str::trim).filter(|s|!s.is_empty()){
+        return name.to_owned();
+    }
+    let last=c["lastName"].as_str().map(str::trim).unwrap_or("");
+    let first=c["firstName"].as_str().map(str::trim).unwrap_or("");
+    if !last.is_empty(){
+        if has_cjk(last)&&!first.is_empty()&&has_cjk(first){
+            return format!("{last}{first}");
+        }
+        return last.to_owned();
+    }
+    if !first.is_empty(){return first.to_owned();}
+    "未知作者".into()
+}
+fn truncate_filename(prefix:&str,title:&str,suffix:&str,max_units:usize)->String{
+    let fixed_units=prefix.encode_utf16().count()+suffix.encode_utf16().count();
+    let budget=max_units.saturating_sub(fixed_units);
+    let mut consumed=0usize;
+    let mut cut=0usize;
+    for (idx,ch) in title.char_indices(){
+        let u=ch.len_utf16();
+        if consumed+u>budget{break;}
+        consumed+=u;
+        cut=idx+ch.len_utf8();
+    }
+    let trimmed=title[..cut].trim_end();
+    format!("{prefix}{trimmed}{suffix}")
+}
+fn relative_under_vault(vault_root:Option<&str>,target:Option<&str>,fallback:&str)->String{
+    let (Some(v),Some(t))=(vault_root,target) else{return fallback.into();};
+    let vp=files::canonical(Path::new(v)).unwrap_or_else(|_|PathBuf::from(v));
+    let tp=files::canonical(Path::new(t)).unwrap_or_else(|_|PathBuf::from(t));
+    if let Ok(rel)=tp.strip_prefix(&vp){
+        let parts:Vec<&str>=rel.components().filter_map(|c|match c{
+            std::path::Component::Normal(s)=>s.to_str(),
+            _=>None,
+        }).collect();
+        if !parts.is_empty(){return parts.join("/");}
+    }
+    fallback.into()
+}
+fn extract_template_skeleton(template_root:Option<&str>,template_name:Option<&str>)->Value{
+    let (Some(dir),Some(name))=(template_root,template_name) else{return Value::Null;};
+    let p=Path::new(dir).join(name);
+    if !p.is_file(){return Value::Null;}
+    let Ok(raw)=fs::read_to_string(&p) else{return Value::Null;};
+    let lines:Vec<&str>=raw.lines().collect();
+    let mut fm_keys=Vec::new();
+    let mut headings=Vec::new();
+    let mut markers=Vec::new();
+    let mut i=0usize;
+    let mut in_templater=false;
+    if lines.first().is_some_and(|l|l.trim()=="---"){
+        i=1;
+        while i<lines.len(){
+            let t=lines[i].trim();
+            if t=="---"{i+=1;break;}
+            if t.starts_with("<%*"){in_templater=true;}
+            if !in_templater&&!t.is_empty()&&!t.starts_with('#')&&!t.starts_with('-'){
+                if let Some((k,_))=t.split_once(':'){
+                    let k=k.trim();
+                    if !k.is_empty()&&!k.contains('<'){fm_keys.push(k.to_owned());}
+                }
+            }
+            if t.ends_with("%>"){in_templater=false;}
+            i+=1;
+        }
+    }
+    in_templater=false;
+    for l in &lines[i..]{
+        let t=l.trim();
+        if t.starts_with("<%*"){in_templater=true;}
+        if in_templater{
+            if t.ends_with("%>"){in_templater=false;}
+            continue;
+        }
+        if t.starts_with("## ")||t.starts_with("### "){
+            if headings.len()<24{headings.push(t.to_owned());}
+        }else if (t.starts_with("**")||t.starts_with('^'))&&markers.len()<16&&!t.contains("<%"){
+            markers.push(t.chars().take(60).collect::<String>());
+        }
+    }
+    json!({"template_file":name,"frontmatter_keys":fm_keys,"headings":headings,"format_cues":markers})
+}
 pub fn locate(skill_root:Option<&Path>)->Result<Value>{
     let root=match skill_root{
-        Some(p)=>files::canonical(p)?,
+        Some(p)=>{
+            let c=files::canonical(p)?;
+            let nested=c.join(SKILL);
+            if !c.join("SKILL.md").is_file()&&nested.join("SKILL.md").is_file(){
+                files::canonical(&nested)?
+            }else{
+                c
+            }
+        }
         None=>self::skill_root(None)?,
     };
     let p=root.join(RELATIVE);
@@ -340,7 +490,7 @@ fn list_templates(template_root:Option<&str>)->Vec<String>{
     out.sort();
     out
 }
-pub fn preflight(skill_root:Option<&Path>,query:Option<&str>,item_key:Option<&str>,storage_override:Option<&Path>)->Result<Value>{
+pub fn preflight(skill_root:Option<&Path>,query:Option<&str>,item_key:Option<&str>,storage_override:Option<&Path>,create_work_dirs:bool)->Result<Value>{
     let loaded=load(skill_root,true)?;
     let profile=&loaded["profile"];
     let api_url=profile["paths"]["zotero_local_api"].as_str().unwrap_or("http://127.0.0.1:23119/api");
@@ -353,6 +503,9 @@ pub fn preflight(skill_root:Option<&Path>,query:Option<&str>,item_key:Option<&st
     let storage_owned=profile["paths"]["zotero_storage_dir"].as_str().map(PathBuf::from);
     let storage=storage_override.or(storage_owned.as_deref()).filter(|p|p.is_dir());
     let work_root=profile["paths"]["work_root"].as_str();
+    let vault_root=profile["paths"]["obsidian_vault_root"].as_str();
+    let lit_rel=relative_under_vault(vault_root,profile["paths"]["literature_root"].as_str(),"文献");
+    let assets_rel=relative_under_vault(vault_root,profile["paths"]["assets_resource_dir"].as_str(),&format!("{lit_rel}/attachments"));
     let mut selected_key=item_key.map(|s|s.trim().to_owned()).filter(|s|!s.is_empty());
     let mut search_summary=Value::Null;
     if zotero_probe["reachable"]==true{
@@ -384,10 +537,62 @@ pub fn preflight(skill_root:Option<&Path>,query:Option<&str>,item_key:Option<&st
                         let suggested_dir=work_root.map(|wr|path_text(&Path::new(wr).join(slugify_item_dir(title,key))).unwrap_or_default());
                         let arxiv_id=crate::tex_source::detect_arxiv_id(&rep["raw"],None);
                         let matched_tpl=profile["templates"].as_object().and_then(|m|m.get(item_type).and_then(Value::as_str).map(str::to_owned));
+                        let year=data["date"].as_str().and_then(extract_year);
+                        let year_token=year.clone().unwrap_or_else(||"无年份".into());
+                        let first_author=first_author_token(&data["creators"]);
+                        let clean_author=clean_component(&first_author);
+                        let clean_title=clean_component(title.trim());
+                        let suggested_filename=if clean_title.is_empty(){None}else{
+                            Some(truncate_filename(&format!("{year_token}-{clean_author}-"),&clean_title,".md",250))
+                        };
+                        let bucket=if title.trim().is_empty(){None}else{Some(title_bucket(title))};
+                        let mut col_paths:Vec<String>=rep["collection_ancestry"]["collections"].as_array().into_iter().flatten().filter_map(|c|{
+                            if c["status"]!="traced"{return None;}
+                            let segs:Vec<String>=c["ancestry"].as_array().into_iter().flatten()
+                                .filter_map(|node|node["name"].as_str().map(|s|clean_component(s.trim())))
+                                .filter(|s|!s.is_empty()).collect();
+                            if segs.is_empty(){None}else{Some(segs.join("/"))}
+                        }).collect();
+                        col_paths.sort();
+                        let col_rel=if let Some(first)=col_paths.first(){
+                            format!("{lit_rel}/{first}")
+                        }else if rep["collection_ancestry"]["status"]=="complete"&&rep["collection_ancestry"]["collections"].as_array().is_some_and(Vec::is_empty){
+                            format!("{lit_rel}/未分类")
+                        }else{
+                            lit_rel.clone()
+                        };
+                        let suggested_note_relative=suggested_filename.as_ref().map(|f|format!("{col_rel}/{f}"));
+                        let suggested_asset_bucket_relative=bucket.as_ref().map(|b|format!("{assets_rel}/{year_token}/{clean_author}/{b}"));
+                        let tpl_skeleton=extract_template_skeleton(profile["paths"]["template_root"].as_str(),matched_tpl.as_deref());
                         let atts:Vec<Value>=rep["attachments"].as_array().into_iter().flatten().map(|a|json!({
                             "key":a["key"],"link_mode":a["link_mode"],"declared_mime":a["declared_mime"],
                             "filename":a["raw"]["data"]["filename"],"local":a["local"],
                         })).collect();
+                        let pdf_count=atts.iter().filter(|a|a["declared_mime"].as_str().is_some_and(|m|m.contains("pdf"))||a["filename"].as_str().is_some_and(|f|f.to_ascii_lowercase().ends_with(".pdf"))).count();
+                        let has_supplement=pdf_count>1||atts.iter().any(|a|a["filename"].as_str().is_some_and(|f|{
+                            let low=f.to_ascii_lowercase();
+                            low.contains("supp")||low.contains("appendix")||low.contains("-si")||low.contains("_si")
+                        }));
+                        let mut work_dirs=Value::Null;
+                        if create_work_dirs{
+                            if let Some(ref wd)=suggested_dir{
+                                let wp=Path::new(wd);
+                                if pipeline::ensure_outside_vault(&wp.join("probe")).is_ok(){
+                                    let input=wp.join("input");
+                                    let evidence=wp.join("evidence");
+                                    let out_assets=wp.join("output").join("assets");
+                                    let backups=wp.join("work").join("backups");
+                                    for d in [&input,&evidence,&out_assets,&backups]{let _=fs::create_dir_all(d);}
+                                    work_dirs=json!({
+                                        "root":wd,
+                                        "input":path_text(&input)?,
+                                        "evidence":path_text(&evidence)?,
+                                        "output_assets":path_text(&out_assets)?,
+                                        "backups":path_text(&backups)?,
+                                    });
+                                }
+                            }
+                        }
                         return Ok(json!({
                             "schema_version":1,"status":loaded["status"],"onboarding_pending":loaded["onboarding_pending"],
                             "profile_path":loaded["profile_path"],"profile":profile,"validation":loaded["validation"],
@@ -396,10 +601,19 @@ pub fn preflight(skill_root:Option<&Path>,query:Option<&str>,item_key:Option<&st
                                 "item_key":key,"itemType":item_type,"title":title,"date":data["date"],
                                 "DOI":data["DOI"],"url":data["url"],"declared_language":rep["declared_language"],
                                 "collection_ancestry":rep["collection_ancestry"],"arxiv_id":arxiv_id,
-                                "selected_template":matched_tpl,"attachments":atts,
+                                "selected_template":matched_tpl,"template_skeleton":tpl_skeleton,
+                                "attachments":atts,"has_supplement_attachments":has_supplement,
                                 "local_version_consistent":rep["local_version_consistent"],"raw":rep["raw"],
                             },
+                            "naming_plan":{
+                                "year":year,"year_token":year_token,"author_token":clean_author,"first_author":first_author,
+                                "filename":suggested_filename,"title_bucket":bucket,
+                                "literature_relative":lit_rel,"assets_relative":assets_rel,
+                                "collection_relative":col_rel,"suggested_note_relative":suggested_note_relative,
+                                "suggested_asset_bucket_relative":suggested_asset_bucket_relative,
+                            },
                             "suggested_item_work_dir":suggested_dir,
+                            "work_dirs":work_dirs,
                             "generic_user_directory_used":false,
                         }));
                     }
@@ -490,5 +704,20 @@ mod tests{
         let mut inside=p;
         inside["paths"]["work_root"]=json!(path_text(&vault.join("work")).unwrap());
         assert!(save(inside,Some(skill)).is_err());
+    }
+    #[test]
+    fn sha1_bucket_locate_parent_root_and_author_year_helpers(){
+        assert_eq!(sha1_hex(b"abc"),"a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(title_bucket("  Persistent Mayer path homology and Mayer path Laplacian\n"),"deebf3806b1cd4a8");
+        assert_eq!(extract_year("2024-03-15"),Some("2024".into()));
+        assert_eq!(first_author_token(&json!([{"creatorType":"author","firstName":"Hao","lastName":"Fan"}])),"Fan");
+        assert_eq!(first_author_token(&json!([{"creatorType":"author","firstName":"三","lastName":"张"}])),"张三");
+
+        let repo=tempfile::tempdir().unwrap();
+        let nested_skill=repo.path().join(SKILL);
+        fs::create_dir_all(&nested_skill).unwrap();
+        fs::write(nested_skill.join("SKILL.md"),"---\nname: literature-zotero2obsidian\nversion: v0\n---\n").unwrap();
+        let loc=locate(Some(repo.path())).unwrap();
+        assert_eq!(loc["skill_root"],path_text(&files::canonical(&nested_skill).unwrap()).unwrap());
     }
 }

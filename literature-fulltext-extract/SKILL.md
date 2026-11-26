@@ -19,9 +19,9 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 继续以现有逐页/结构清单与来源交付检查为机械证据；实际文件绑定使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md)。页图内容是否正确与源单元是否完整仍须核对。
 
 1. 核对每份附件的来源身份。
-2. 预印本优先调用 `prepare_source_inventory.fetch_arxiv_tex`；常规 PDF 优先调用 `prepare_source_inventory.prepare_pdf_layout`（默认 `render_pages: "selective"`），自动执行分栏排序、段落聚类、行末连字符愈合、生成 `clean-layout.md`，并仅为含图表、乱码或跨行公式的页面输出可读页图与 `visual-review-regions.json`。
+2. 优先调用复合入口 `prepare_source_inventory.prepare_paper`（传 `work_dir`、`pdf_path`、`tex_target`、`glossary_path`），一站完成 arXiv TeX 获取、选择性 PDF 版面聚类、行末连字符愈合、生成 `clean-layout.md`、`figure_candidates` 与本篇 `matched-glossary.md`（若独立运行 PDF 阶段可调用 `prepare_pdf_layout`，默认 `render_pages: "selective"`；TeX 已成功时严禁全量渲染 `render_pages: "all"`）。
 3. 先在 `source-map.json`（或 `layout-blocks.json` / `tex-structure.json`）登记原文章节及对象清单。
-4. 按原文阅读顺序逐块提取内容，仅针对 `visual_review_regions` 或模糊区域按需裁剪核对。
+4. 对照 `figure_candidates` 调用 `pdf_image_objects.render_page_regions_batch` 批量裁剪多个图件（支持 `auto_trim` 与 `contact_sheet_destination` 拼图）；仅在异常区域或边界有疑问时再单独调用 `render_page_region` / `inspect_crop_boundaries` 微调。
 5. 对照页图或 TeX 源码复核需要精确转录的字段与公式。
 6. 回查清单中尚无提取结果的对象。
 
@@ -41,7 +41,7 @@ TeX 用于核对乱码文字层难以辨认的公式、表格和书目；PDF 页
 
 ## 透明背景图
 
-遵循档案 `transparent_figure: preserve_original` 偏好：透明背景插图默认保留原图透明通道（alpha），禁止主动合成纯白底（`#FFFFFF`）。整幅图可定位为单个 PDF 图像对象时优先 `export_image_object`（直接保留原编码与 SMask alpha）。只能按页裁剪或存在矢量叠加层时调用 `render_pdfcraft_region` / `render_page_region`（`transparent` 默认 `true`）。若源图本身有实色白底则保持原样；仅在需要记录像素诊断对照时临时使用合成视图，不覆盖最终交付 PNG。记录 `transparent_background`、`alpha_min`、`alpha_max` 与最终文件哈希。
+遵循档案 `transparent_figure: preserve_original` 偏好：透明背景插图默认保留原图透明通道（alpha），禁止主动合成纯白底（`#FFFFFF`）。当 `figure_candidates[].single_object_reusable` 为 `true` 时可调用 `export_image_object`（直接保留原编码与 SMask alpha）；其余需按页裁剪或存在矢量文字/坐标轴叠加的图件调用 `pdf_image_objects.render_page_regions_batch` / `render_page_region` / `render_pdfcraft_region`（`transparent` 默认 `true`，不要设 `transparent: false`）。若源图本身有实色白底则保持原样；仅在需要记录像素诊断对照时临时使用合成视图，不覆盖最终交付 PNG。记录 `transparent_background`、`alpha_min`、`alpha_max` 与最终文件哈希。
 
 ## 约束
 

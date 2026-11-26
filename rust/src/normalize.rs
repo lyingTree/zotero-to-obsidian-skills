@@ -25,17 +25,29 @@ fn token()->&'static Fancy{fx!(concat!(
     r"(?i:(?<![\w.—-])[\w.—-]+\.(?:png|jpe?g|svg|gif|webp|pdf|md|csv|docx?|xlsx?|py|txt)\b)|",
     r"\^[\w-]+|(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]+"
 ))}
-fn prefix(s:&str)->bool{rx!(r"(?i)(?:第|图|表|公式|方程|章节|文献|Fig\.?|Figure|Table|Eq\.?)\s*$").is_match(s)}
-fn allowed(text:&str,offsets:&Offsets,a:usize,b:usize,n:&str,u:&str)->Result<bool>{
+fn prefix(s:&str)->bool{rx!(r"(?i)(?:第|图|表|公式|方程|章节|文献|引理|定理|命题|推论|定义|例|Fig\.?|Figure|Table|Eq\.?|Section|Lemma|Theorem)\s*$").is_match(s)}
+enum QuantityCheck{Convert,Skip,Ambiguous}
+fn classify_quantity(text:&str,offsets:&Offsets,a:usize,b:usize,n:&str,u:&str)->Result<QuantityCheck>{
     let before=&text[offsets.previous(a,36)..a];let after=&text[b..offsets.next(b,32)];
-    if prefix(before)||rx!(r"[0-9]\s*(?:[-−–—~～至到×±]|[eE][+-]?)\s*$").is_match(before)||
+    if u=="节"&&rx!(r"^(?:课|目|点|能|选|[、.．])").is_match(after){return Ok(QuantityCheck::Skip);}
+    if prefix(before)||(u=="年"&&after.starts_with('级')){return Ok(QuantityCheck::Skip);}
+    if u=="年"&&n.len()==4&&n.bytes().all(|b|b.is_ascii_digit())&&n.parse::<u32>().is_ok_and(|y|(1500..=2199).contains(&y)){
+        return Ok(QuantityCheck::Skip);
+    }
+    if rx!(r"(?i)(?:UTC\s*)$").is_match(before)||rx!(r"(?i)^\s*UTC\b").is_match(after)||rx!(r"[A-Za-z_]\s*=\s*$").is_match(before){
+        return Ok(QuantityCheck::Skip);
+    }
+    if rx!(r"[0-9]\s*(?:[-−–—~～至到×±]|[eE][+-]?)\s*$").is_match(before)||
         rx!(r"^(?:[/^²³·]|\s*[×±]|每|/)").is_match(after)||
         fx!(r"^[ \t]+(?:min|[kcm]?m|[kmg]?g|s|h|Hz|Pa)(?=[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻^/·\s.,，。；;]|$)").is_match(after)?||
-        before.trim_end().ends_with(['×','±','·','/'])||(u=="年"&&after.starts_with('级'))||
-        rx!(r"(?i)(?:UTC\s*|[0-9][,，]|[±×])$").is_match(before)||rx!(r"(?i)^\s*UTC\b").is_match(after){return Ok(false);}
-    if u=="节"&&rx!(r"^(?:课|目|点|能|选|[、.．])").is_match(after){return Ok(false);}
-    if u=="年"&&n.len()==4&&n.bytes().all(|b|b.is_ascii_digit())&&n.parse::<u32>().is_ok_and(|y|(1500..=2199).contains(&y)){return Ok(false);}
-    Ok(true)
+        before.trim_end().ends_with(['×','±','·','/'])||
+        rx!(r"[0-9][,，]$|[±×]$").is_match(before){
+        return Ok(QuantityCheck::Ambiguous);
+    }
+    Ok(QuantityCheck::Convert)
+}
+fn allowed(text:&str,offsets:&Offsets,a:usize,b:usize,n:&str,u:&str)->Result<bool>{
+    Ok(matches!(classify_quantity(text,offsets,a,b,n,u)?,QuantityCheck::Convert))
 }
 fn math(n:&str,u:&str)->String{
     if matches!(u,"%"|"％"){return format!("{}{n}\\%$",'$');}
@@ -104,14 +116,118 @@ fn visible_right_char(text:&str,spans:&[Span],links:&HashMap<usize,syntax::Link>
 }
 
 #[derive(Clone,Copy,Debug,Default)]
-pub struct Options{pub strip_display_trailing_punctuation:bool}
+pub struct Options{pub strip_display_trailing_punctuation:bool,pub normalize_line_endings:bool}
 #[derive(Clone,Debug)]
 struct Span{a:usize,b:usize,kind:&'static str}
 #[derive(Clone,Debug)]
 struct Edit{a:usize,b:usize,rule:&'static str,after:String}
-struct Pass<'a>{text:&'a str,rows:Vec<Line>,offsets:Offsets,options:Options,display_whole_rows:HashSet<usize>,display_end_rows:HashSet<usize>,spans:Vec<Span>,edits:Vec<Edit>,issues:Vec<Value>}
+struct Pass<'a>{text:&'a str,rows:Vec<Line>,offsets:Offsets,options:Options,display_whole_rows:HashSet<usize>,display_end_rows:HashSet<usize>,heading_renames:HashMap<String,String>,spans:Vec<Span>,edits:Vec<Edit>,issues:Vec<Value>}
 impl<'a> Pass<'a>{
-    fn new(text:&'a str,options:Options)->Self{Self{text,rows:syntax::lines(text),offsets:Offsets::new(text),options,display_whole_rows:HashSet::new(),display_end_rows:HashSet::new(),spans:vec![],edits:vec![],issues:vec![]}}
+    fn new(text:&'a str,options:Options)->Self{Self{text,rows:syntax::lines(text),offsets:Offsets::new(text),options,display_whole_rows:HashSet::new(),display_end_rows:HashSet::new(),heading_renames:HashMap::new(),spans:vec![],edits:vec![],issues:vec![]}}
+    fn clean_cjk_scalar(s:&str)->Result<Option<String>>{
+        let mut mask:Vec<(usize,usize)>=Vec::new();
+        let mut i=0usize;
+        while i<s.len(){
+            let rest=&s[i..];
+            if rest.starts_with('`'){
+                let width=rest.bytes().take_while(|c|*c==b'`').count();
+                let mut cur=i+width;
+                while let Some(pos)=s[cur..].find(&"`".repeat(width)){
+                    let cand=cur+pos;
+                    if s[cand..].bytes().take_while(|c|*c==b'`').count()==width{
+                        mask.push((i,cand+width));
+                        cur=cand+width;break;
+                    }
+                    cur=cand+1;
+                }
+                i=cur;continue;
+            }
+            if rest.starts_with('$')&&!rest.starts_with("$$")&&!syntax::escaped(s,i){
+                let mut cur=i+1;
+                while let Some(pos)=s[cur..].find('$'){
+                    let cand=cur+pos;
+                    if !syntax::escaped(s,cand){
+                        mask.push((i+1,cand));
+                        cur=cand+1;break;
+                    }
+                    cur=cand+1;
+                }
+                i=cur;continue;
+            }
+            i+=rest.chars().next().map_or(1,char::len_utf8);
+        }
+        let spaces=fx!(r"(?<=[\u{3400}-\u{9fff}]) +(?=[0-9A-Za-z$])|(?<=[0-9A-Za-z$]) +(?=[\u{3400}-\u{9fff}])");
+        let mut cuts=Vec::new();
+        let mut pos=0usize;
+        while let Some(m)=spaces.find_from_pos(s,pos)?{
+            let a=m.start();let b=m.end();pos=b;
+            if mask.iter().any(|&(ma,mb)|a>=ma&&b<=mb){continue;}
+            cuts.push((a,b));
+        }
+        if cuts.is_empty(){return Ok(None);}
+        let mut out=String::with_capacity(s.len());
+        let mut cur=0usize;
+        for (a,b) in cuts{out.push_str(&s[cur..a]);cur=b;}
+        out.push_str(&s[cur..]);
+        Ok(Some(out))
+    }
+    fn clean_rich_table_cjk_space(&mut self,a:usize,b:usize)->Result<()>{
+        let raw=&self.text[a..b];
+        let eol=if raw.contains("\r\n"){"\r\n"}else{"\n"};
+        let rows:Vec<&str>=raw.split('\n').map(|l|l.strip_suffix('\r').unwrap_or(l)).collect();
+        if rows.len()<3{return Ok(());}
+        let inner:Vec<String>=rows[1..rows.len()-1].iter().map(|s|(*s).to_owned()).collect();
+        let non_empty:Vec<&str>=inner.iter().map(|s|s.trim()).filter(|s|!s.is_empty()).collect();
+        let wrapped=non_empty.first().is_some_and(|s|*s=="---")&&non_empty.last().is_some_and(|s|matches!(*s,"---"|"..."));
+        let Ok(mut val)=crate::properties::parse_yaml(crate::validate::rich_payload(&inner).as_bytes()) else{return Ok(());};
+        if !val.is_object(){return Ok(());}
+        let mut changed=false;
+        fn walk_sheet(sheet:&mut Value,changed:&mut bool)->Result<()>{
+            for key in ["title","footer"]{
+                if let Some(s)=sheet.get(key).and_then(Value::as_str){
+                    if let Some(clean)=Pass::clean_cjk_scalar(s)?{sheet[key]=json!(clean);*changed=true;}
+                }
+            }
+            if let Some(cols)=sheet.get_mut("columns").and_then(Value::as_array_mut){
+                for col in cols{
+                    if let Some(s)=col.get("name").and_then(Value::as_str){
+                        if let Some(clean)=Pass::clean_cjk_scalar(s)?{col["name"]=json!(clean);*changed=true;}
+                    }
+                }
+            }
+            if let Some(rows)=sheet.get_mut("rows").and_then(Value::as_array_mut){
+                for row in rows{
+                    if let Some(cells)=row.get_mut("cells").and_then(Value::as_object_mut){
+                        for v in cells.values_mut(){
+                            if let Some(s)=v.as_str(){
+                                if let Some(clean)=Pass::clean_cjk_scalar(s)?{*v=json!(clean);*changed=true;}
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        if val["version"]==3{
+            for key in ["title","footer"]{
+                if let Some(s)=val.get(key).and_then(Value::as_str){
+                    if let Some(clean)=Self::clean_cjk_scalar(s)?{val[key]=json!(clean);changed=true;}
+                }
+            }
+            if let Some(sheets)=val.get_mut("sheets").and_then(Value::as_array_mut){
+                for sheet in sheets{if sheet.is_object(){walk_sheet(sheet,&mut changed)?;}}
+            }
+        }else{
+            walk_sheet(&mut val,&mut changed)?;
+        }
+        if !changed{return Ok(());}
+        let Ok(dumped)=crate::yaml_emit::dump(&val) else{return Ok(());};
+        let payload=if wrapped{format!("---\n{dumped}---\n")}else{dumped};
+        let rebuilt=format!("{}\n{}{}",rows[0],payload,rows[rows.len()-1]);
+        let rebuilt=if eol=="\n"{rebuilt}else{rebuilt.replace('\n',eol)};
+        if rebuilt!=raw{self.edit(a,b,"table_cjk_space",rebuilt);}
+        Ok(())
+    }
     fn heading_cjk_space(&mut self,a:usize,b:usize)->Result<()>{
         let line=&self.text[a..b];
         let body_start=if let Some(m)=rx!(r"^ {0,3}#{1,6} +(?:[0-9]+(?:\.[0-9]+)* +)?").find(line){
@@ -152,6 +268,7 @@ impl<'a> Pass<'a>{
             }
             i+=rest.chars().next().map_or(1,char::len_utf8);
         }
+        let mut local_edits:Vec<(usize,usize)>=Vec::new();
         let links=syntax::scan_links(sub);
         for l in links{
             if l.label_end+1<l.end{mask_ranges.push((body_start+l.label_end+1,body_start+l.end));}
@@ -164,7 +281,7 @@ impl<'a> Pass<'a>{
                     if space_a<la{
                         if let Some(lc)=self.text[body_start..space_a].chars().next_back(){
                             if (is_cjk(lc)&&is_latin_math(rc))||(is_latin_math(lc)&&is_cjk(rc)){
-                                self.edit(space_a,la,"cjk_space","");
+                                local_edits.push((space_a,la));
                             }
                         }
                     }
@@ -175,7 +292,7 @@ impl<'a> Pass<'a>{
                         let space_b=lb+after_spaces;
                         if let Some(rc)=self.text[space_b..b].chars().next(){
                             if (is_cjk(lc)&&is_latin_math(rc))||(is_latin_math(lc)&&is_cjk(rc)){
-                                self.edit(lb,space_b,"cjk_space","");
+                                local_edits.push((lb,space_b));
                             }
                         }
                     }
@@ -188,7 +305,26 @@ impl<'a> Pass<'a>{
         while let Some(m)=spaces.find_from_pos(&self.text[..b],pos)?{
             let s=m.start();let e=m.end();pos=e;
             if mask_ranges.iter().any(|&(ma,mb)|s>=ma&&e<=mb){continue;}
-            self.edit(s,e,"cjk_space","");
+            local_edits.push((s,e));
+        }
+        if !local_edits.is_empty(){
+            local_edits.sort_unstable();
+            local_edits.dedup();
+            let mut new_line=String::with_capacity(b-a);
+            let mut cur=a;
+            for &(ea,eb) in &local_edits{
+                if ea<cur{continue;}
+                self.edit(ea,eb,"cjk_space","");
+                new_line.push_str(&self.text[cur..ea]);
+                cur=eb;
+            }
+            new_line.push_str(&self.text[cur..b]);
+            let h_rx=rx!(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$");
+            if let (Some(co),Some(cn))=(h_rx.captures(line.trim_end_matches(['\r','\n'])),h_rx.captures(new_line.trim_end_matches(['\r','\n']))){
+                let old_t=co.get(2).unwrap().as_str();
+                let new_t=cn.get(2).unwrap().as_str();
+                if old_t!=new_t{self.heading_renames.insert(old_t.to_owned(),new_t.to_owned());}
+            }
         }
         Ok(())
     }
@@ -203,8 +339,11 @@ impl<'a> Pass<'a>{
         let text=self.text;let end=&text[..b];let mut pos=a;
         while let Some(c)=quantities().captures_from_pos(end,pos)?{
             let m=c.get(0).unwrap();let n=c.name("n").unwrap().as_str();let u=c.name("u").unwrap().as_str();
-            if allowed(text,&self.offsets,m.start(),m.end(),n,u)?{self.edit(m.start(),m.end(),"quantity",math(n,u));}
-            else{self.issue("AMBIGUOUS_QUANTITY",m.start(),"编号、日期、范围或复合单位需核对。","review");}
+            match classify_quantity(text,&self.offsets,m.start(),m.end(),n,u)?{
+                QuantityCheck::Convert=>self.edit(m.start(),m.end(),"quantity",math(n,u)),
+                QuantityCheck::Ambiguous=>self.issue("AMBIGUOUS_QUANTITY",m.start(),"编号、日期、范围或复合单位需核对。","review"),
+                QuantityCheck::Skip=>{}
+            }
             pos=m.end();
         }
         let ambiguous=fx!(r"(?<![\w.])\d+(?:\.\d+)?[ \t]+[A-Za-zµμ°]+\b");let mut pos=a;
@@ -377,12 +516,40 @@ impl<'a> Pass<'a>{
             }
             if s.kind=="literal" && rx!(r"^ {0,3}#{1,6}[ \t]+\S").is_match(&self.text[s.a..s.b]){
                 self.heading_cjk_space(s.a,s.b)?;
+            }else if s.kind=="table"{
+                self.clean_rich_table_cjk_space(s.a,s.b)?;
             }
             cursor=s.b;
         }
         if cursor<text.len(){
             self.prose(cursor,text.len())?;
             check_wrapper_spaces(&mut self.edits,cursor,text.len());
+        }
+        if !self.heading_renames.is_empty(){
+            let renames=self.heading_renames.clone();
+            for s in &spans{
+                if s.kind!="link"||text[s.a..].starts_with("!["){continue;}
+                if let Some(l)=links.get(&s.a){
+                    if !l.image && l.href.starts_with('#') && !l.href.starts_with("#^"){
+                        let decoded=percent_encoding::percent_decode_str(&l.href[1..]).decode_utf8_lossy();
+                        if let Some(new_h)=renames.get(decoded.as_ref()){
+                            if let Some((ds,de,angle))=syntax::image_destination_span(text,l){
+                                let encoded=if !angle && new_h.contains(char::is_whitespace){
+                                    format!("#{}",new_h.replace(' ',"%20"))
+                                }else{format!("#{new_h}")};
+                                self.edit(ds,de,"heading_link_sync",encoded);
+                            }
+                        }
+                    }
+                }else if text[s.a..s.b].starts_with("[[#")&&text[s.a..s.b].ends_with("]]"){
+                    let inner_start=s.a+3;
+                    let inner_end=text[inner_start..s.b-2].find('|').map_or(s.b-2,|i|inner_start+i);
+                    let decoded=percent_encoding::percent_decode_str(&text[inner_start..inner_end]).decode_utf8_lossy();
+                    if let Some(new_h)=renames.get(decoded.as_ref()){
+                        self.edit(inner_start,inner_end,"heading_link_sync",new_h.clone());
+                    }
+                }
+            }
         }
         for(a,b)in labels{
             let s=&text[a..b];
@@ -457,7 +624,8 @@ impl<'a> Pass<'a>{
             output.push_str(untouched);output.push_str(&e.after);
             let a=self.offsets.index(e.a);let b=self.offsets.index(e.b);
             let stage=if matches!(e.rule,"split_percent"|"split_quantity"|"quantity"|"display_closing_punctuation"|"display_trailing_punctuation"){"math_formatting"}
-                else if matches!(e.rule,"block_spacing"|"cjk_space"|"image_hard_break"){"whitespace_formatting"}else{"punctuation_formatting"};
+                else if matches!(e.rule,"block_spacing"|"cjk_space"|"image_hard_break"|"table_cjk_space"|"line_ending"){"whitespace_formatting"}
+                else if e.rule=="heading_link_sync"{"internal_links"}else{"punctuation_formatting"};
             changes.push(json!({"start":a as isize+shift,"end":b as isize+shift,"before":&self.text[e.a..e.b],"after":e.after,
                 "line":line,"column":column,"stage":stage,"rule":e.rule}));
             advance(&mut line,&mut column,&e.after);
@@ -471,9 +639,51 @@ fn advance(line:&mut usize,column:&mut usize,s:&str){
     for m in rx!(r"\r\n|\r|\n").find_iter(s){*line+=1;last=Some(m.end());}
     if let Some(end)=last{*column=1+s[end..].chars().count();}else{*column+=s.chars().count();}
 }
+fn pass_line_endings(text:&str)->(String,Vec<Value>){
+    let mut out=String::with_capacity(text.len());
+    let mut changes=Vec::new();
+    let mut line=1usize;let mut col=1usize;let mut shift=0isize;let mut cp=0usize;
+    let mut plain_start=0usize;
+    let mut it=text.char_indices().peekable();
+    while let Some((i,ch))=it.next(){
+        if ch=='\r'{
+            let mut end=i+1;
+            let before=if it.peek().is_some_and(|(_,c)|*c=='\n'){it.next();end+=1;"\r\n"}else{"\r"};
+            let untouched=&text[plain_start..i];
+            cp+=untouched.chars().count();
+            advance(&mut line,&mut col,untouched);
+            out.push_str(untouched);
+            out.push('\n');
+            let blen=before.chars().count();
+            changes.push(json!({
+                "start":cp as isize+shift,"end":(cp+blen) as isize+shift,
+                "before":before,"after":"\n","line":line,"column":col,
+                "stage":"whitespace_formatting","rule":"line_ending"
+            }));
+            advance(&mut line,&mut col,"\n");
+            cp+=blen;
+            shift+=1isize-blen as isize;
+            plain_start=end;
+        }
+    }
+    out.push_str(&text[plain_start..]);
+    (out,changes)
+}
 fn pass(text:&str,options:Options)->Result<(String,Vec<Value>,Vec<Value>)>{let mut pass=Pass::new(text,options);pass.scan()?;Ok(pass.finish())}
 fn stable(text:&str,options:Options)->Result<(String,Vec<Value>,Vec<Value>)>{
-    let(mut candidate,mut changes,mut issues)=pass(text,options)?;
+    let owned;
+    let mut prefix_changes=Vec::new();
+    let work=if options.normalize_line_endings&&text.contains('\r'){
+        let (lf,cr_edits)=pass_line_endings(text);
+        owned=lf;
+        prefix_changes=cr_edits;
+        owned.as_str()
+    }else{text};
+    let(mut candidate,mut changes,mut issues)=pass(work,options)?;
+    if !prefix_changes.is_empty(){
+        prefix_changes.extend(changes);
+        changes=prefix_changes;
+    }
     for _ in 0..3{
         let(verified,more,_)=pass(&candidate,options)?;
         if verified==candidate{return Ok((candidate,changes,issues));}
@@ -531,9 +741,40 @@ mod tests{
         assert!(!out.contains("$$."),"{out}");
         assert!(res["unresolved"].as_array().unwrap().is_empty(),"{res}");
 
-        let opted=normalize_with_options("$$\nx = 1,\n$$.\n",Options{strip_display_trailing_punctuation:true}).unwrap();
+        let opted=normalize_with_options("$$\nx = 1,\n$$.\n",Options{strip_display_trailing_punctuation:true,..Options::default()}).unwrap();
         assert_eq!(opted["text"].as_str().unwrap(),"$$\nx = 1\n$$\n");
         assert_eq!(normalize("[持续60 min](https://x/a(b)—c) [[图—1|值25%]]").unwrap()["text"],r"[持续$60\,\mathrm{min}$](https://x/a(b)—c) [[图—1|值$25\%$]]");
+    }
+
+    #[test]
+    fn heading_link_sync_table_cjk_space_and_quantity_filter(){
+        let md=concat!(
+            "## 4 持久 Mayer 路径同调\n\n",
+            "见 [第4节](<#4 持久 Mayer 路径同调>)、",
+            "[编码链接](#4%20%E6%8C%81%E4%B9%85%20Mayer%20%E8%B7%AF%E5%BE%84%E5%90%8C%E8%B0%83) 与 ",
+            "[[#4 持久 Mayer 路径同调|别名]]。\n\n",
+            "```rich-table\n",
+            "id: tbl-1\n",
+            "columns:\n",
+            "  - id: c_000001\n",
+            "    name: Foo 条目\n",
+            "rows:\n",
+            "  - id: r_000001\n",
+            "    cells:\n",
+            "      c_000001: 值 A 与 B 对比\n",
+            "```\n\n",
+            "在第2节与图3中，2024年N=3（UTC时间）下测量了 5–7 km。\n"
+        );
+        let res=normalize(md).unwrap();
+        let out=res["text"].as_str().unwrap();
+        assert!(out.contains("## 4 持久Mayer路径同调\n"),"{out}");
+        assert!(out.contains("[第4节](<#4 持久Mayer路径同调>)"),"{out}");
+        assert!(out.contains("[编码链接](#4%20持久Mayer路径同调)"),"{out}");
+        assert!(out.contains("[[#4 持久Mayer路径同调|别名]]"),"{out}");
+        assert!(out.contains("name: Foo条目"),"{out}");
+        assert!(out.contains("c_000001: 值A与B对比"),"{out}");
+        let ambig:Vec<_>=res["unresolved"].as_array().unwrap().iter().filter(|r|r["code"]=="AMBIGUOUS_QUANTITY").collect();
+        assert_eq!(ambig.len(),1,"only 5-7 km should remain ambiguous: {ambig:?}");
     }
 
     #[test]
@@ -542,22 +783,27 @@ mod tests{
         let dir=tempdir().unwrap();
         let src=dir.path().join("source.txt");fs::write(&src,b"src").unwrap();
         let cand=dir.path().join("note.md");
-        fs::write(&cand,"---\ntype: note\n---\n\n# Title\n\n### 1.2 Foo 条目\n每60 min观测。\n").unwrap();
+        fs::write(&cand,"---\r\ntype: note\r\n---\r\n\r\n# Title\r\n\r\n### 1.2 Foo 条目\r\n每60 min观测。\r\n\r\n**表1：** 测试表\r\n| 列A | 列B |\r\n| --- | --- |\r\n| 值1 | 值2 |\r\n^tbl-1\r\n").unwrap();
         let out_root=dir.path().join("out");
         let direct=dir.path().join("direct.md");
         let contract=json!({"schema_version":1,"sources":{"main":{"path":src,"sha256":files::digest(b"src")}},
-            "counts":{"figures":0,"equations":0,"tables":0,"bibliography":0}});
+            "counts":{"figures":0,"equations":0,"tables":1,"bibliography":0}});
         let r=process_with_options(Some(&cand),&Value::Null,&Value::Null,&out_root,&contract,Some(dir.path()),
-            ProcessOptions{write_normalized_to:Some(&direct),strip_display_trailing_punctuation:true},|_,_,_|{}).unwrap();
-        assert_eq!(r["status"],"mechanical_pass");
+            ProcessOptions{write_normalized_to:Some(&direct),strip_display_trailing_punctuation:true,force_lf:true,convert_markdown_tables:true},|_,_,_|{}).unwrap();
+        assert_eq!(r["status"],"mechanical_pass","{r}");
         assert_eq!(r["published_candidate"]["written"],true);
-        assert!(r["summary"].is_object());
-        assert!(fs::read_to_string(&direct).unwrap().contains("### 1.2 Foo条目"));
+        assert_eq!(r["summary"]["tables_converted"],1);
+        let norm_json:Value=serde_json::from_str(&fs::read_to_string(r["outputs"]["normalization.json"]["path"].as_str().unwrap()).unwrap()).unwrap();
+        assert!(norm_json.get("text").is_none(),"normalization.json should omit full text");
+        let direct_text=fs::read_to_string(&direct).unwrap();
+        assert!(!direct_text.contains('\r'),"force_lf should emit LF only");
+        assert!(direct_text.contains("### 1.2 Foo条目"));
+        assert!(direct_text.contains("```rich-table"),"{direct_text}");
 
         let vault=dir.path().join("vault");
         fs::create_dir_all(vault.join(".obsidian")).unwrap();
         let blocked_target=vault.join("03_Literature/note.md");
         assert!(process_with_options(Some(&cand),&Value::Null,&Value::Null,&out_root,&contract,Some(dir.path()),
-            ProcessOptions{write_normalized_to:Some(&blocked_target),strip_display_trailing_punctuation:false},|_,_,_|{}).is_err());
+            ProcessOptions{write_normalized_to:Some(&blocked_target),..ProcessOptions::default()},|_,_,_|{}).is_err());
     }
 }

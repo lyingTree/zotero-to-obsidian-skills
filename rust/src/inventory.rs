@@ -66,6 +66,11 @@ fn strings<'a>(v:&'a Value,out:&mut Vec<&'a str>){
         Value::Object(m)=>for x in m.values(){strings(x,out);},_=>{}}
 }
 pub fn inspect(text:&str)->Result<Inventory>{
+    let text_owned;
+    let text=if text.contains('\r'){
+        text_owned=text.replace("\r\n","\n").replace('\r',"\n");
+        text_owned.as_str()
+    }else{text};
     let lines:Vec<_>=text.split('\n').collect();
     let visible=visible(text,false);let tables=self::visible(text,true);
     let mut inv=Inventory::default();

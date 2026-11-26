@@ -20,7 +20,8 @@ fn segment(s:&str)->Result<()>{
 }
 fn relative(s:&str)->Result<PathBuf>{let mut p=PathBuf::new();for v in s.split('/'){segment(v)?;p.push(v);}Ok(p)}
 fn actual_root(p:&Path)->Result<PathBuf>{
-    let m=fs::symlink_metadata(p)?;ensure!(m.is_dir()&&!files::is_linked(p,&m),"Expected real directory");
+    let m=fs::symlink_metadata(p).with_context(||format!("Directory not found or inaccessible: {}",p.display()))?;
+    ensure!(m.is_dir()&&!files::is_linked(p,&m),"Expected real directory: {}",p.display());
     files::canonical(p)
 }
 /// Check every existing parent, including case/normalization aliases, without
@@ -391,6 +392,7 @@ pub struct StandalonePlanOptions<'a>{
     pub note_relative:&'a str,
     pub candidate:&'a Path,
     pub resource_root:&'a Path,
+    pub asset_source_dir:Option<&'a Path>,
     pub backup_root:Option<&'a Path>,
     pub expected_existing_sha:Option<&'a str>,
     pub reuse_identical_assets:bool,
@@ -517,25 +519,32 @@ fn rewrite_embed_links(text:&str,rewrites:&BTreeMap<String,String>)->Result<Stri
 
 pub fn plan_standalone(opt:StandalonePlanOptions<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
     if let Some(h)=opt.expected_existing_sha{ensure!(sha(h),"Expected target SHA-256 must be an actual digest");}
-    let root=actual_root(opt.vault)?;
+    let root=actual_root(opt.vault).with_context(||format!("Invalid vault_root {}",opt.vault.display()))?;
     ensure!(actual_root(&root.join(".obsidian"))?.starts_with(&root),"Confirm an actual vault root");
     let lit=target(&root,opt.literature_relative,true)?;
-    ensure!(lit.is_dir(),"Confirmed literature directory must exist");
+    ensure!(lit.is_dir(),"Confirmed literature directory must exist: {}",lit.display());
     let assets=target(&root,opt.assets_relative,true)?;
-    ensure!(assets.starts_with(&lit)&&assets!=lit,"Confirm separate asset directory within literature root");
+    ensure!(assets.starts_with(&lit)&&assets!=lit,"Confirm separate asset directory within literature root: {}",assets.display());
     let note=target(&root,opt.note_relative,false)?;
     ensure!(note.starts_with(&lit)&&!note.starts_with(&assets)&&note.extension().is_some_and(|v|v=="md"),
         "Note target must be a Markdown file within the literature root, outside assets");
     let backup=opt.backup_root.map(|b|->Result<PathBuf>{
+        crate::pipeline::ensure_outside_vault(&b.join("probe"))?;
+        if !b.exists(){fs::create_dir_all(b).with_context(||format!("Create backup_root {}",b.display()))?;}
         let b=actual_root(b)?;
-        ensure!(!b.starts_with(&root)&&!root.starts_with(&b),"Backup root must lie outside vault");
+        ensure!(!b.starts_with(&root)&&!root.starts_with(&b),"Backup root must lie outside vault: {}",b.display());
         Ok(b)
     }).transpose()?;
     crate::check_write::no_link(opt.candidate)?;
-    let cp=files::canonical(opt.candidate)?;
-    ensure!(!cp.starts_with(&root)&&cp!=note,"Candidate must be an independent vault-external file");
-    let rr=actual_root(opt.resource_root)?;
-    ensure!(!rr.starts_with(&root),"Resource root must remain outside vault");
+    let cp=files::canonical(opt.candidate).with_context(||format!("Invalid candidate_path {}",opt.candidate.display()))?;
+    ensure!(!cp.starts_with(&root)&&cp!=note,"Candidate must be an independent vault-external file: {}",cp.display());
+    let rr=actual_root(opt.resource_root).with_context(||format!("Invalid resource_root {}",opt.resource_root.display()))?;
+    ensure!(!rr.starts_with(&root),"Resource root must remain outside vault: {}",rr.display());
+    let flat_asset_dir=opt.asset_source_dir.map(|d|->Result<PathBuf>{
+        let d=actual_root(d).with_context(||format!("Invalid asset_source_dir {}",d.display()))?;
+        ensure!(!d.starts_with(&root)&&!root.starts_with(&d),"asset_source_dir must remain outside vault: {}",d.display());
+        Ok(d)
+    }).transpose()?;
     if let Some(out)=opt.commit_request_output{
         crate::pipeline::ensure_outside_vault(out)?;
         ensure!(!out.starts_with(&root),"Commit request output must remain outside vault");
@@ -589,8 +598,21 @@ pub fn plan_standalone(opt:StandalonePlanOptions<'_>,mut progress:impl FnMut(usi
         let dst=target(&root,&href,false)?;
         ensure!(dst.starts_with(&assets),"Embed outside declared vault asset directory");
         let src=target(&rr,&href,false)?;
-        let source=record(&src)?.context("Actual candidate embed bytes missing")?;
-        ensure!(fs::metadata(&src)?.len()>0,"Candidate embed is empty");
+        let (source,src_actual)=match record(&src)?{
+            Some(s)=>(s,src.clone()),
+            None=>{
+                if let Some(ref flat)=flat_asset_dir{
+                    let fname=Path::new(&href).file_name().and_then(|s|s.to_str()).context("Asset file name")?;
+                    let cand_flat=flat.join(fname);
+                    let rec=record(&cand_flat)?.with_context(||format!("Actual candidate embed bytes missing at {} or {}",src.display(),cand_flat.display()))?;
+                    ensure!(files::canonical(&cand_flat)?.starts_with(flat),"Flat asset escaped asset_source_dir");
+                    (rec,cand_flat)
+                }else{
+                    anyhow::bail!("Actual candidate embed bytes missing: {}",src.display());
+                }
+            }
+        };
+        ensure!(fs::metadata(&src_actual)?.len()>0,"Candidate embed is empty");
         let src_sha=source["sha256"].as_str().context("source sha256")?.to_owned();
         let prior=record(&dst)?;
         let mut final_rel=href.clone();
@@ -718,6 +740,104 @@ pub fn plan_standalone(opt:StandalonePlanOptions<'_>,mut progress:impl FnMut(usi
     }))
 }
 
+pub struct PublishStandaloneOptions<'a>{
+    pub vault:&'a Path,
+    pub backup_root:&'a Path,
+    pub literature_relative:&'a str,
+    pub assets_relative:&'a str,
+    pub note_relative:&'a str,
+    pub candidate:&'a Path,
+    pub resource_root:&'a Path,
+    pub asset_source_dir:Option<&'a Path>,
+    pub expected_existing_sha:Option<&'a str>,
+    pub reuse_identical_assets:bool,
+    pub disambiguate_conflicts:bool,
+    pub authorized:bool,
+    pub report_output:Option<&'a Path>,
+}
+
+pub fn publish_standalone(opt:PublishStandaloneOptions<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    ensure!(opt.authorized,"Explicit write authorization required (authorized=true)");
+    let root=actual_root(opt.vault).with_context(||format!("Invalid vault_root {}",opt.vault.display()))?;
+    crate::pipeline::ensure_outside_vault(&opt.backup_root.join("probe"))?;
+    if !opt.backup_root.exists(){fs::create_dir_all(opt.backup_root).with_context(||format!("Create backup_root {}",opt.backup_root.display()))?;}
+    if let Some(rep)=opt.report_output{
+        crate::pipeline::ensure_outside_vault(rep)?;
+        ensure!(!rep.starts_with(&root),"report_output must remain outside vault");
+    }
+    let plan=plan_standalone(StandalonePlanOptions{
+        vault:&root,
+        literature_relative:opt.literature_relative,
+        assets_relative:opt.assets_relative,
+        note_relative:opt.note_relative,
+        candidate:opt.candidate,
+        resource_root:opt.resource_root,
+        asset_source_dir:opt.asset_source_dir,
+        backup_root:Some(opt.backup_root),
+        expected_existing_sha:opt.expected_existing_sha,
+        reuse_identical_assets:opt.reuse_identical_assets,
+        disambiguate_conflicts:opt.disambiguate_conflicts,
+        commit_request_output:None,
+    },&mut progress)?;
+    if plan["preconditions_ready"]!=true{
+        anyhow::bail!("Standalone publish preconditions failed: {}",serde_json::to_string_pretty(&plan["findings"])?);
+    }
+    let kwargs=&plan["commit_request"]["kwargs"];
+    let cand_path=path(&kwargs["candidate_path"])?;
+    let cand_sha=kwargs["expected_candidate_sha256"].as_str().context("planned candidate_sha256")?;
+    let commit_res=commit(CommitOptions{
+        vault:&root,
+        backup_root:opt.backup_root,
+        literature_relative:opt.literature_relative,
+        assets_relative:opt.assets_relative,
+        note_relative:opt.note_relative,
+        candidate:&cand_path,
+        candidate_sha:cand_sha,
+        expected_existing_sha:opt.expected_existing_sha,
+        resources:&kwargs["resources"],
+        authorized:true,
+        scope:"standalone_markdown",
+        workflow_run:None,
+    },progress)?;
+    ensure!(commit_res["status"]=="verified_file_write","Standalone commit failed: {}",commit_res["error"]);
+
+    let target_path=commit_res["note"]["path"].as_str().unwrap_or("");
+    let note_sha256=commit_res["note"]["sha256"].as_str().unwrap_or("");
+    let created_count=commit_res["created_resources"].as_array().map_or(0,Vec::len);
+    let reused_count=commit_res["reused_resources"].as_array().map_or(0,Vec::len);
+    let mut report_file=Value::Null;
+    if let Some(rep_path)=opt.report_output{
+        if let Some(parent)=rep_path.parent().filter(|p|!p.as_os_str().is_empty()){fs::create_dir_all(parent)?;}
+        let mut md=format!("# 文献发布回执（{}）\n\n",opt.note_relative);
+        md.push_str(&format!("- 状态：`{}`\n",commit_res["status"].as_str().unwrap_or("")));
+        md.push_str(&format!("- 目标笔记：`{target_path}`\n"));
+        md.push_str(&format!("- 笔记 SHA-256：`{note_sha256}`\n"));
+        md.push_str(&format!("- 新建附件数：{created_count}，复用附件数：{reused_count}\n"));
+        if let Some(bk_dir)=commit_res["backup_directory"].as_str(){
+            md.push_str(&format!("- 事务备份目录：`{bk_dir}`\n"));
+        }
+        if let Some(rc)=commit_res["receipt"]["path"].as_str().or_else(||commit_res["transaction"]["path"].as_str()){
+            md.push_str(&format!("- 事务回执：`{rc}`\n"));
+        }
+        crate::pipeline::publish_replace(rep_path,md.as_bytes())?;
+        report_file=check_ledger::bind_file(rep_path)?;
+    }
+
+    Ok(json!({
+        "schema_version":1,
+        "status":commit_res["status"],
+        "vault_write_verified":true,
+        "target_path":target_path,
+        "note_sha256":note_sha256,
+        "candidate_rewritten":plan["candidate_rewritten"],
+        "rewritten_assets":plan["rewritten_assets"],
+        "commit":commit_res,
+        "report_file":report_file,
+        "post_commit_action":"report_written_facts_only_do_not_poll_obsidian_cli",
+        "source_fidelity":"not_assessed",
+    }))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -763,6 +883,7 @@ mod tests{
             note_relative:"03_Literature/Paper.md",
             candidate:&cand,
             resource_root:&work,
+            asset_source_dir:None,
             backup_root:Some(&backup),
             expected_existing_sha:None,
             reuse_identical_assets:true,
@@ -805,5 +926,49 @@ mod tests{
         assert!(vault.join("03_Literature/Paper.md").exists());
         assert_eq!(fs::read(vault.join(new_rel)).unwrap(),conflict_new);
         assert_eq!(fs::read(vault.join("03_Literature/Assets/Paper/diff.png")).unwrap(),conflict_old);
+    }
+
+    #[test]
+    fn publish_standalone_auto_creates_backup_resolves_flat_assets_and_writes_report(){
+        let dir=tempdir().unwrap();
+        let vault=dir.path().join("vault");
+        let missing_backup=dir.path().join("new-backups/tx");
+        let work=dir.path().join("work");
+        let flat_assets=dir.path().join("flat-assets");
+        fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        fs::create_dir_all(vault.join("文献/attachments")).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&flat_assets).unwrap();
+
+        let fig_bytes=b"png-placeholder-bytes";
+        fs::write(flat_assets.join("fig1.png"),fig_bytes).unwrap();
+        let cand=work.join("candidate.md");
+        fs::write(&cand,"---\ntype: paper\n---\n\n# Title\n\n![[文献/attachments/2024/Fan/abcd/fig1.png]]\n").unwrap();
+        let rep=work.join("report.md");
+
+        let res=publish_standalone(PublishStandaloneOptions{
+            vault:&vault,
+            backup_root:&missing_backup,
+            literature_relative:"文献",
+            assets_relative:"文献/attachments",
+            note_relative:"文献/2024-Fan-Test.md",
+            candidate:&cand,
+            resource_root:&work,
+            asset_source_dir:Some(&flat_assets),
+            expected_existing_sha:None,
+            reuse_identical_assets:true,
+            disambiguate_conflicts:true,
+            authorized:true,
+            report_output:Some(&rep),
+        },|_,_,_|{}).unwrap();
+        assert_eq!(res["vault_write_verified"],true);
+        assert!(res["target_path"].as_str().is_some_and(|s|s.ends_with("2024-Fan-Test.md")),"{res}");
+        assert!(res["note_sha256"].as_str().is_some_and(|s|s.len()==64),"{res}");
+        assert!(missing_backup.is_dir());
+        assert!(vault.join("文献/2024-Fan-Test.md").is_file());
+        assert_eq!(fs::read(vault.join("文献/attachments/2024/Fan/abcd/fig1.png")).unwrap(),fig_bytes);
+        assert!(rep.is_file());
+        let rep_text=fs::read_to_string(&rep).unwrap();
+        assert!(rep_text.contains("verified_file_write")&&rep_text.contains("新建附件数：1"),"{rep_text}");
     }
 }
