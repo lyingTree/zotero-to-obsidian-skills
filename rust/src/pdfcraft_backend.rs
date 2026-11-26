@@ -72,6 +72,7 @@ pub struct Backend{
     source_path:PathBuf,
     source:Value,
     structural:Pdf,
+    bytes:Arc<Vec<u8>>,
     renderer:PageRenderer,
     pages:Vec<PageInfo>,
     inspection_warnings:Vec<String>,
@@ -92,10 +93,10 @@ impl Backend{
         // dimensions. Cross-check them against the independent structural parser.
         let info=pdfcraft_render::inspect(bytes.clone(),None)?;
         ensure!(!info.encrypted,"An accessible unencrypted PDF is required");
-        let renderer=PageRenderer::new(bytes,RenderConfig{reject_oversize:true,system_fonts:false,..Default::default()});
+        let renderer=PageRenderer::new(bytes.clone(),RenderConfig{reject_oversize:true,system_fonts:false,..Default::default()});
         ensure!(renderer.page_count()==structural.len()&&info.pages.len()==structural.len(),
             "PdfCraft and the structural parser disagree about actual page count");
-        let engine=Self{source_path:p,source:before,structural,renderer,pages:info.pages,inspection_warnings:info.warnings};
+        let engine=Self{source_path:p,source:before,structural,bytes:bytes.clone(),renderer,pages:info.pages,inspection_warnings:info.warnings};
         engine.verify()?;Ok(engine)
     }
     pub fn len(&self)->usize{self.pages.len()}
@@ -178,7 +179,7 @@ impl Backend{
         }
         self.verify()
     }
-    pub(crate) fn raster(&mut self,page:u64,region:Option<[f64;4]>,dpi:u64)->Result<(Vec<u8>,Value)>{
+    pub(crate) fn raster(&mut self,page:u64,region:Option<[f64;4]>,dpi:u64,transparent:bool)->Result<(Vec<u8>,Value)>{
         ensure!((72..=1200).contains(&dpi),"dpi must be an integer between 72 and 1200");
         let (index,geometry,bounds,m)=self.geometry(page)?;
         let scale=dpi as f32/72.;
@@ -200,23 +201,35 @@ impl Backend{
             Self::validate_whole_dimensions(w,h)?;
             (bounds,None,[0,0,w,h])
         };
-        let result=self.renderer.render(RenderRequest{page:index,kind:RequestKind::Pixels,tile,scale,tag:0,preview:false});
+        let request=RenderRequest{page:index,kind:RequestKind::Pixels,tile,scale,tag:0,preview:false};
+        let result=if transparent{
+            PageRenderer::new(self.bytes.clone(),RenderConfig{reject_oversize:true,system_fonts:false,transparent:true,..Default::default()})
+                .render(request)
+        }else{
+            self.renderer.render(request)
+        };
         if let Some(e)=result.error{anyhow::bail!("PdfCraft raster: {e}");}
         ensure!(result.width==px[2]-px[0]&&result.height==px[3]-px[1],
             "PdfCraft returned unexpected raster dimensions; no silent downscaling or tile clipping");
         let rgba=result.rgba.as_ref();
         let length=(result.width as usize).checked_mul(result.height as usize).and_then(|n|n.checked_mul(4)).context("Raster size overflow")?;
-        ensure!(rgba.len()==length&&rgba.as_chunks::<4>().0.iter().all(|p|p[3]==255),"PdfCraft white-background raster is not opaque RGBA8");
-        // Canonical opaque RGB pixel digest, independent of PNG compression.
-        // Batch the conversion instead of copying the entire RGBA raster.
+        ensure!(rgba.len()==length,"PdfCraft raster is not RGBA8");
+        let alpha_min=rgba.as_chunks::<4>().0.iter().map(|p|p[3]).min().unwrap_or(255);
+        let alpha_max=rgba.as_chunks::<4>().0.iter().map(|p|p[3]).max().unwrap_or(255);
+        ensure!(transparent||alpha_min==255,"PdfCraft raster demanded an opaque background but returned transparency");
+        // Canonical decoded pixel digest, independent of PNG compression.
         let mut hash=Sha256::new();
-        let mut rgb=[0u8;12_288];
-        for chunk in rgba.chunks(16_384){
-            let count=chunk.len()/4;
-            for (out,pixel) in rgb[..count*3].as_chunks_mut::<3>().0.iter_mut().zip(chunk.as_chunks::<4>().0){
-                out.copy_from_slice(&pixel[..3]);
+        if transparent{
+            hash.update(rgba);
+        }else{
+            let mut rgb=[0u8;12_288];
+            for chunk in rgba.chunks(16_384){
+                let count=chunk.len()/4;
+                for (out,pixel) in rgb[..count*3].as_chunks_mut::<3>().0.iter_mut().zip(chunk.as_chunks::<4>().0){
+                    out.copy_from_slice(&pixel[..3]);
+                }
+                hash.update(&rgb[..count*3]);
             }
-            hash.update(&rgb[..count*3]);
         }
         let pixel_sha256=format!("{:x}",hash.finalize());
         let mut bytes=Vec::new();
@@ -226,7 +239,9 @@ impl Backend{
         let pixel_matrix=[m[0]*f,m[1]*f,m[2]*f,m[3]*f,m[4]*f-f64::from(px[0]),m[5]*f-f64::from(px[1])];
         let value=json!({"schema_version":1,"backend":"pdfcraft-render","backend_revision":PDFCRAFT_REV,
             "source_file":self.source,"page":page,"page_geometry":geometry,"coordinate_system":coordinates(),
-            "requested_bbox":clip,"dpi":dpi,"width":result.width,"height":result.height,"pixel_sha256":pixel_sha256,"pixel_format":"rgb8",
+            "requested_bbox":clip,"dpi":dpi,"width":result.width,"height":result.height,"pixel_sha256":pixel_sha256,
+            "pixel_format":if transparent{"rgba8"}else{"rgb8"},"transparent_background":transparent,
+            "alpha_min":alpha_min,"alpha_max":alpha_max,"alpha_preserved":transparent,
             "pixel_bounds_in_rotated_page":px,"unrotated_page_to_pixel_transform":pixel_matrix,
             "orientation":"source_page_display","method":if tile.is_some(){"pdfcraft_tile_render"}else{"pdfcraft_page_render"},
             "warnings":warnings,"inspection_warnings":self.inspection_warnings,
@@ -235,12 +250,22 @@ impl Backend{
         Ok((bytes,value))
     }
     pub fn render(&mut self,page:u64,region:Option<[f64;4]>,dpi:u64,destination:&Path)->Result<Value>{
-        let (bytes,mut result)=self.raster(page,region,dpi)?;
+        self.render_with_options(page,region,dpi,destination,false,false)
+    }
+    pub fn render_with_overwrite(&mut self,page:u64,region:Option<[f64;4]>,dpi:u64,destination:&Path,overwrite:bool)->Result<Value>{
+        self.render_with_options(page,region,dpi,destination,overwrite,false)
+    }
+    pub fn render_with_options(&mut self,page:u64,region:Option<[f64;4]>,dpi:u64,destination:&Path,overwrite:bool,transparent:bool)->Result<Value>{
+        let (bytes,mut result)=self.raster(page,region,dpi,transparent)?;
         let dest=output(&png_path(destination)?)?;
         ensure!(dest!=self.source_path,"Cannot replace the source PDF");
         self.verify()?;
-        // Reuse exactly matching output bytes; do not follow or replace links.
-        pipeline::publish(&dest,&bytes)?;
+        if overwrite{
+            pipeline::publish_replace(&dest,&bytes)?;
+        }else{
+            // Reuse exactly matching output bytes; do not follow or replace links.
+            pipeline::publish(&dest,&bytes)?;
+        }
         let asset=check_ledger::bind_file(&dest)?;
         ensure!(asset["sha256"]==files::digest(&bytes),"Rendered evidence changed after publication");
         self.verify()?;result["asset"]=asset;Ok(result)
@@ -248,11 +273,24 @@ impl Backend{
 }
 pub fn extract_text(p:&Path,page:u64,expected:Option<&str>)->Result<Value>{Backend::open(p,expected)?.text(page)}
 pub fn render_page(p:&Path,page:u64,dpi:u64,dest:&Path,expected:Option<&str>)->Result<Value>{
-    Backend::open(p,expected)?.render(page,None,dpi,dest)
+    render_page_with_overwrite(p,page,dpi,dest,expected,false)
+}
+pub fn render_page_with_overwrite(p:&Path,page:u64,dpi:u64,dest:&Path,expected:Option<&str>,overwrite:bool)->Result<Value>{
+    Backend::open(p,expected)?.render_with_overwrite(page,None,dpi,dest,overwrite)
+}
+pub fn render_page_with_options(p:&Path,page:u64,dpi:u64,dest:&Path,expected:Option<&str>,overwrite:bool,transparent:bool)->Result<Value>{
+    Backend::open(p,expected)?.render_with_options(page,None,dpi,dest,overwrite,transparent)
 }
 pub fn render_region(p:&Path,page:u64,region:&Value,coordinate_system:&Value,dpi:u64,dest:&Path,expected:Option<&str>)->Result<Value>{
+    render_region_with_overwrite(p,page,region,coordinate_system,dpi,dest,expected,false)
+}
+pub fn render_region_with_overwrite(p:&Path,page:u64,region:&Value,coordinate_system:&Value,dpi:u64,dest:&Path,expected:Option<&str>,overwrite:bool)->Result<Value>{
     ensure!(*coordinate_system==coordinates(),"Declare unrotated PDF-point coordinates explicitly");
-    Backend::open(p,expected)?.render(page,Some(bbox(region)?),dpi,dest)
+    Backend::open(p,expected)?.render_with_overwrite(page,Some(bbox(region)?),dpi,dest,overwrite)
+}
+pub fn render_region_with_options(p:&Path,page:u64,region:&Value,coordinate_system:&Value,dpi:u64,dest:&Path,expected:Option<&str>,overwrite:bool,transparent:bool)->Result<Value>{
+    ensure!(*coordinate_system==coordinates(),"Declare unrotated PDF-point coordinates explicitly");
+    Backend::open(p,expected)?.render_with_options(page,Some(bbox(region)?),dpi,dest,overwrite,transparent)
 }
 /// Produce actual page images, text and per-glyph locations; retain structural
 /// image-call evidence without promoting it into legacy PyMuPDF block IDs.

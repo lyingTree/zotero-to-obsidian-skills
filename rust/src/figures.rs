@@ -3,6 +3,7 @@ use crate::string;
 use anyhow::{anyhow,ensure,Result};
 use regex::Regex;
 use serde_json::{json,Value};
+use std::sync::OnceLock;
 
 pub fn new_anchor(source:&str,number:&str,occupied:&Value)->Result<String>{
     ensure!([source,number].iter().all(|s|!s.is_empty()&&s.bytes().all(|b|b.is_ascii_alphanumeric())),
@@ -15,7 +16,8 @@ pub fn new_anchor(source:&str,number:&str,occupied:&Value)->Result<String>{
     Ok(anchor)
 }
 pub fn bold_label(text:&str)->bool{
-    Regex::new(r"^ {0,3}\*\*(?:\\[^\r\n]|[^*\\\r\n])+\*\*").expect("static regex").is_match(text)
+    static RE:OnceLock<Regex>=OnceLock::new();
+    RE.get_or_init(||Regex::new(r"^ {0,3}\*\*(?:\\[^\r\n]|[^*\\\r\n])+\*\*").expect("static regex")).is_match(text)
 }
 pub fn build(images:&Value,caption:&str,anchor:&str,newline:&str)->Result<String>{
     let images=images.as_array().filter(|v|!v.is_empty()).ok_or_else(||anyhow!("images must be a nonempty array"))?;
@@ -40,8 +42,10 @@ pub fn build(images:&Value,caption:&str,anchor:&str,newline:&str)->Result<String
     Ok(lines.join(newline)+newline)
 }
 fn number(v:&Value,label:&str)->Result<String>{
+    static RE:OnceLock<Regex>=OnceLock::new();
+    let re=RE.get_or_init(||Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]").expect("static regex"));
     let text=string(v,label)?;
-    ensure!(text==text.trim()&&!Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]").expect("static regex").is_match(&text),
+    ensure!(text==text.trim()&&!re.is_match(&text),
         "{label} must be a literal number without controls or outer whitespace");
     Ok(text)
 }

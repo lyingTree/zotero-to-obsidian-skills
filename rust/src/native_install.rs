@@ -48,6 +48,7 @@ fn posix(p:&Path)->Result<String>{
     }
     ensure!(!parts.is_empty(),"Empty relative path");Ok(parts.join("/"))
 }
+fn user_state(raw:&str)->bool{raw=="user"||raw.starts_with("user/")}
 fn portable_key(s:&str)->String{
     use unicode_casefold::UnicodeCaseFold;
     use unicode_normalization::UnicodeNormalization;
@@ -87,6 +88,7 @@ fn scan(root:&Path,skip_cache:bool)->Result<FileMap>{
             ensure!(!files::is_linked(&p,&m)&&(m.is_file()||m.is_dir()),"Refusing linked or special file: {}",p.display());
             if skip_cache&&(e.file_name()=="__pycache__"||m.is_file()&&p.extension().and_then(|s|s.to_str()).is_some_and(|s|matches!(s,"pyc"|"pyo"))){continue;}
             let name=posix(p.strip_prefix(&root)?)?;
+            if user_state(&name){continue;}
             ensure!(aliases.insert(portable_key(&name)),"Ambiguous portable path: {name}");
             ensure!(aliases.len()<=MAX_FILES,"Package path count exceeds budget");
             if m.is_dir(){stack.push(p);continue;}
@@ -283,6 +285,8 @@ pub fn install(manifest:&Path,expected:&str,skills_root:&Path,mut progress:impl 
             if before[name].is_some(){fs::rename(&target,previous.join(name))?;actions.last_mut().unwrap().1=true;}
             ensure!(!target.exists()&&!target.is_symlink(),"Unexpected installation target");
             fs::rename(staged.join(name),&target)?;actions.last_mut().unwrap().2=true;
+            let old_user=previous.join(name).join("user");
+            if old_user.is_dir(){fs::rename(&old_user,target.join("user"))?;}
             ensure!(snapshot(&target,name)?==Some(skill_files(&b.files,name)),"Published skill differs");
             progress(i+1,changed.len(),"install native skill");
         }
@@ -296,6 +300,8 @@ pub fn install(manifest:&Path,expected:&str,skills_root:&Path,mut progress:impl 
             let r=(||->Result<()>{
                 if new{
                     ensure!(snapshot(&target,name)?==Some(skill_files(&b.files,name)),"Installed files changed; preserve them");
+                    let new_user=target.join("user");
+                    if new_user.is_dir(){fs::rename(&new_user,previous.join(name).join("user"))?;}
                     fs::rename(&target,rejected.join(name))?;
                 }
                 if old{ensure!(!target.exists()&&!target.is_symlink(),"Target appeared; preserve existing");fs::rename(previous.join(name),&target)?;}

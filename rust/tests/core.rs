@@ -164,6 +164,12 @@ fn native_binary_with_empty_path(){
     assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap()["result"],"欧阳 and Smith");
     assert_eq!(call("deterministic_stage_checks.split_frontmatter",json!([encoded_bytes(b"# x\n")]),json!({}))[1],
         encoded_bytes(b"# x\n"));
+    assert_eq!(call("deterministic_stage_checks.split_frontmatter",json!(["# x\n"]),json!({}))[1],
+        encoded_bytes(b"# x\n"));
+    let built_str=call("deterministic_stage_checks.build_properties",json!(["# Title\n"]),json!({"item_type":"thesis","confirmed":{"类型":"学位论文","年份":2024,"关键词":[]}}));
+    let built_b64=call("deterministic_stage_checks.build_properties",json!([encoded_bytes(b"# Title\n")]),json!({"item_type":"thesis","confirmed":{"类型":"学位论文","年份":2024,"关键词":[]}}));
+    assert_eq!(built_str,built_b64);
+    assert!(invoke(json!({"schema_version":1,"operation":"deterministic_stage_checks.split_frontmatter","args":[123]})).is_err());
 }
 
 #[test]
@@ -258,6 +264,57 @@ fn renderer_blocks_invalid_contracts_without_partial_output(){
         assert_eq!(report["mapping"],json!([]));
         assert_eq!(report["findings"][0]["code"],"RENDER_INVALID");
     }
+}
+#[test]
+fn renderer_supports_inline_links_and_math_across_units(){
+    let plan=json!({"schema_version":1,"properties":{"类型":"预印本","年份":2026},"units":[
+        {"unit_id":"h","kind":"header","scope":"main","source":{"source_id":"main","locator":"p1"},
+            "original_title":"Title","authors":["Alice"],"affiliations":["Dept"],"translated":true,
+            "notes":["通讯作者邮箱：{{link:mail}}"],
+            "links":{"mail":{"url":"mailto:alice@example.edu","label":"alice@example.edu"}}},
+        {"unit_id":"sec","kind":"heading","scope":"main","source":{"source_id":"main","locator":"s1"},
+            "level":2,"literals":{"n":"$N=3$"}},
+        {"unit_id":"lst","kind":"list","scope":"main","source":{"source_id":"main","locator":"l1"},
+            "style":"ordered","count":2,
+            "literals":{"val":"$10\\,\\mathrm{m}$"},
+            "links":{"cite":{"citation":["r1"]}}},
+        {"unit_id":"r1","kind":"reference","scope":"main","source":{"source_id":"main","locator":"r1"},
+            "source_text":"Smith J. Paper. {{link:doi}} {{link:lib}}",
+            "links":{
+                "doi":{"url":"https://doi.org/10.3934/fods.2026025","label":"10.3934/fods.2026025"},
+                "lib":{"file":"2020-Smith-Related (1).md","label":"库内笔记"}
+            }},
+        {"unit_id":"end","kind":"zotero_link","scope":"main","source":{"source_id":"main","locator":"z"},"uri":"zotero://select/library/items/ABCDEFGH"}
+    ]});
+    let mut content=z2o_native::render::content_template(&plan).unwrap();
+    content["h"]["translated_title"]=json!("中文题名");
+    content["sec"]["text"]=json!("{{literal:n}}时的性质");
+    content["lst"]["items"]=json!(["长度为{{literal:val}}","证明见{{link:cite}}"]);
+    let report=z2o_native::render::render_note(&plan,&content);
+    assert_eq!(report["status"],"rendered","{report}");
+    let text=report["text"].as_str().unwrap();
+    assert!(text.contains("> 通讯作者邮箱：[alice@example.edu](mailto:alice@example.edu)"));
+    assert!(text.contains("## 1 $N=3$时的性质"));
+    assert!(text.contains("1. 长度为$10\\,\\mathrm{m}$\n2. 证明见<sup>\\[[1](<#^ref-1>)\\]</sup>"));
+    assert!(text.contains("[10.3934/fods.2026025](https://doi.org/10.3934/fods.2026025)"));
+    assert!(text.contains("[库内笔记](<2020-Smith-Related (1).md>)"));
+    assert!(z2o_native::validate::validate_note(text).iter().all(|f|f.level!="error"));
+    let prompts=z2o_native::presentation::lint(text).unwrap();
+    assert!(!prompts.iter().any(|p|matches!(p.code,"NAKED_EMAIL"|"NAKED_DOI")),"{prompts:?}");
+
+    for bad_link in [
+        json!({"url":"javascript:alert(1)","label":"x"}),
+        json!({"file":"../escape.md","label":"x"}),
+        json!({"file":"C:/abs.md","label":"x"}),
+        json!({"file":"not-markdown.txt","label":"x"}),
+    ]{
+        let mut bad_plan=plan.clone();
+        bad_plan["units"][3]["links"]["doi"]=bad_link;
+        assert_eq!(z2o_native::render::render_note(&bad_plan,&content)["status"],"blocked");
+    }
+    let mut missing_content=content.clone();
+    missing_content["lst"]["items"]=json!(["只有一项有{{literal:val}}","另一项缺少引用"]);
+    assert_eq!(z2o_native::render::render_note(&plan,&missing_content)["status"],"blocked");
 }
 #[test]
 fn table_writer_roundtrip_and_fence_length(){

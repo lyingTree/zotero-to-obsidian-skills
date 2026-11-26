@@ -34,6 +34,17 @@ pub fn publish(p:&Path,data:&[u8])->Result<()>{
         Err(e)=>Err(e.error.into()),
     }
 }
+pub fn publish_replace(p:&Path,data:&[u8])->Result<()>{
+    match fs::symlink_metadata(p){
+        Ok(m)=>ensure!(!files::is_linked(p,&m)&&m.is_file(),"Refusing a symlink or non-file artifact: {}",p.display()),
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},
+        Err(e)=>return Err(e.into()),
+    }
+    let mut tmp=tempfile::Builder::new().prefix(".pending-").tempfile_in(p.parent().context("artifact parent")?)?;
+    tmp.write_all(data)?;tmp.as_file().sync_all()?;
+    tmp.persist(p).map_err(|e|anyhow!("Cannot replace {}: {}",p.display(),e.error))?;
+    identical(p,data)
+}
 fn units(plan:&Value)->Result<&Vec<Value>>{plan["units"].as_array().context("plan units must be an array")}
 pub fn build_contract(plan:&Value,sources:&Value)->Result<Value>{
     render::content_template(plan)?;
@@ -245,8 +256,71 @@ fn report(result:&Value,norm:&Option<Value>,audit:&Option<Value>)->String{
     }
     s+="\n## 结果边界\n\n缺少来源合同或单元映射时，未核实范围明确保留。程序不修改源 PDF、DOCX、已有原稿或原资源，不写入 Zotero / Obsidian。\n";s
 }
+fn summary(norm:&Option<Value>,audit:&Option<Value>)->Value{
+    let norm_changes=norm.as_ref().and_then(|n|n["changes"].as_array()).map_or(0,Vec::len);
+    let norm_unresolved=norm.as_ref().and_then(|n|n["unresolved"].as_array()).map_or(0,Vec::len);
+    let mut failed_checks=Vec::new();
+    let mut prompt_total=0usize;
+    let mut prompt_counts:BTreeMap<String,usize>=BTreeMap::new();
+    if let Some(a)=audit{
+        for row in a["checks"].as_array().into_iter().flatten().filter(|r|r["status"]=="fail"){
+            failed_checks.push(json!({"stage":row["stage"],"code":row["code"],"location":row["location"]}));
+        }
+        if let Some(prompts)=a["review_prompts"].as_array(){
+            prompt_total=prompts.len();
+            for row in prompts{
+                let code=row["code"].as_str().unwrap_or("UNKNOWN").to_owned();
+                *prompt_counts.entry(code).or_insert(0)+=1;
+            }
+        }
+    }
+    json!({
+        "normalization_changes":norm_changes,
+        "normalization_unresolved":norm_unresolved,
+        "mechanical_status":audit.as_ref().and_then(|a|a["mechanical_status"].as_str()),
+        "source_coverage":audit.as_ref().and_then(|a|a["source_coverage"].as_str()),
+        "failed_checks":failed_checks,
+        "review_prompts_total":prompt_total,
+        "review_prompts_by_code":prompt_counts,
+    })
+}
+pub(crate) fn ensure_outside_vault(dest:&Path)->Result<()>{
+    if let Ok(m)=fs::symlink_metadata(dest){
+        ensure!(!files::is_linked(dest,&m),"Refusing symlink or reparse point write_normalized_to target: {}",dest.display());
+    }
+    let abs=if dest.is_absolute(){dest.to_path_buf()}else{std::env::current_dir()?.join(dest)};
+    let mut cur=abs.parent();
+    while let Some(dir)=cur{
+        ensure!(!dir.join(".obsidian").exists(),"Refusing write_normalized_to inside an Obsidian vault: {}",dest.display());
+        cur=dir.parent();
+    }
+    let mut existing=abs.parent();
+    while let Some(dir)=existing{
+        if dir.exists(){
+            let canon=files::canonical(dir)?;
+            let mut ccur=Some(canon.as_path());
+            while let Some(cd)=ccur{
+                ensure!(!cd.join(".obsidian").exists(),"Refusing write_normalized_to inside an Obsidian vault: {}",dest.display());
+                ccur=cd.parent();
+            }
+            break;
+        }
+        existing=dir.parent();
+    }
+    Ok(())
+}
+#[derive(Clone,Copy,Debug,Default)]
+pub struct ProcessOptions<'a>{
+    pub write_normalized_to:Option<&'a Path>,
+    pub strip_display_trailing_punctuation:bool,
+}
 pub fn process(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,contract:&Value,
-               resource_root:Option<&Path>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+               resource_root:Option<&Path>,progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    process_with_options(source,plan,content,output,contract,resource_root,ProcessOptions::default(),progress)
+}
+pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,contract:&Value,
+                            resource_root:Option<&Path>,options:ProcessOptions<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    if let Some(dest)=options.write_normalized_to{ensure_outside_vault(dest)?;}
     let eng=engine()?;
     let source_path=source.map(files::canonical).transpose()?;
     let original=source_path.as_ref().map(fs::read).transpose()?;
@@ -254,8 +328,9 @@ pub fn process(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,cont
     let contract=resolve_contract(contract,&base)?;
     let resource_root=acceptance::resolve(resource_root.unwrap_or(&base))?;
     let input=match (&source_path,&original){(Some(p),Some(b))=>json!({"path":path_text(p)?,"sha256":files::digest(b)}),_=>Value::Null};
-    let request=json!({"schema_version":1,"mode":if source.is_some(){"markdown"}else{"structured"},"input":input,
+    let mut request=json!({"schema_version":1,"mode":if source.is_some(){"markdown"}else{"structured"},"input":input,
         "plan":plan,"content":content,"contract":contract,"resource_root":path_text(&resource_root)?,"engine":eng});
+    if options.strip_display_trailing_punctuation{request["strip_display_trailing_punctuation"]=json!(true);}
     let request_bytes=pretty(&request)?;let id=files::digest(&request_bytes);
     fs::create_dir_all(output)?;let root=files::canonical(output)?;let directory=root.join(&id);
     match fs::create_dir(&directory){Ok(())=>{},Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{},Err(e)=>return Err(e.into())}
@@ -282,10 +357,11 @@ pub fn process(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,cont
         }
         rendering=Some(r);text
     };
+    let norm_opts=normalize::Options{strip_display_trailing_punctuation:options.strip_display_trailing_punctuation};
     let normalized=if let Some(s)=&raw{
-        let n=normalize::normalize(s)?;
+        let n=normalize::normalize_with_options(s,norm_opts)?;
         let t=n["text"].as_str().context("normalized text")?;
-        let second=normalize::normalize(t)?;
+        let second=normalize::normalize_with_options(t,norm_opts)?;
         ensure!(replay(s,&n["changes"])?==t&&second["text"]==t&&second["changes"].as_array().is_some_and(Vec::is_empty),
             "Normalization failed replay or idempotence verification");
         publish_record(&directory,&mut receipts,"normalization.json",&pretty(&n)?)?;
@@ -325,7 +401,7 @@ pub fn process(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,cont
     publish_record(&directory,&mut receipts,"phases.json",&pretty(&phases(&normalized,&audit,&events))?)?;
     let outputs=receipts.iter().map(|(k,v)|Ok((k.clone(),json!({"path":path_text(&directory.join(k))?,"sha256":v})))).collect::<Result<Map<String,Value>>>()?;
     let mut result=json!({"schema_version":1,"run_id":id,"directory":path_text(&directory)?,"status":status,
-        "source_fidelity":"not_assessed","stages":events,"issues":issues,"outputs":outputs});
+        "source_fidelity":"not_assessed","summary":summary(&normalized,&audit),"stages":events,"issues":issues,"outputs":outputs});
     let markdown=report(&result,&normalized,&audit);
     publish_record(&directory,&mut receipts,"report.md",markdown.as_bytes())?;
     result["outputs"]["report.md"]=json!({"path":path_text(&directory.join("report.md"))?,"sha256":files::digest(markdown.as_bytes())});
@@ -334,5 +410,26 @@ pub fn process(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,cont
         let p=directory.join(name);let m=fs::symlink_metadata(&p)?;
         ensure!(m.is_file()&&!m.file_type().is_symlink()&&files::snapshot(&p)?["sha256"]==hash.as_str(),"Artifact changed before receipt: {}",p.display());
     }
-    publish(&directory.join("result.json"),&pretty(&result)?)?;Ok(result)
+    publish(&directory.join("result.json"),&pretty(&result)?)?;
+    if let Some(dest)=options.write_normalized_to{
+        ensure_outside_vault(dest)?;
+        let norm_text=normalized.as_ref().and_then(|n|n["text"].as_str());
+        if !unsafe_parse{
+            if let Some(text)=norm_text{
+                let parent=dest.parent().filter(|p|!p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+                fs::create_dir_all(parent)?;
+                publish_replace(dest,text.as_bytes())?;
+                result["published_candidate"]=json!({
+                    "written":true,
+                    "path":path_text(&files::canonical(dest)?)?,
+                    "sha256":files::digest(text.as_bytes()),
+                });
+            }else{
+                result["published_candidate"]=json!({"written":false,"path":path_text(dest)?,"reason":"no_normalized_text"});
+            }
+        }else{
+            result["published_candidate"]=json!({"written":false,"path":path_text(dest)?,"reason":"unsafe_parse"});
+        }
+    }
+    Ok(result)
 }

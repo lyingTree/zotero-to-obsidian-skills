@@ -2,8 +2,8 @@
 //! A note footer is a locator, not proof of its publication version.
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
-use std::{collections::BTreeMap,fs,path::{Path,PathBuf}};
-use crate::{check_ledger,files,handoff_scan::Candidate,path,path_text,properties};
+use std::{borrow::Cow,collections::BTreeMap,fs,path::{Path,PathBuf}};
+use crate::{check_ledger,files,path,path_text,properties,syntax};
 const LIMIT:u64=32*1024*1024;
 const MAX_NOTES:usize=250_000;
 const BOUNDARY:&str="Read-only vault note and Zotero-record identity candidates. Exact bibliographic metadata and the original-item URI are evidence, not proof of the note's full text or publication version. No note is created, rewritten, linked automatically, or deleted.";
@@ -37,6 +37,153 @@ fn parse_uri(s:&str)->Option<(Option<u64>,String)>{
     if k.len()!=8||!k.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()){return None;}
     Some((group,k.to_owned()))
 }
+fn fence(s:&str)->Option<(u8,usize,&str)>{
+    let body=s.trim_start_matches(' ');if s.len()-body.len()>3{return None;}
+    let first=*body.as_bytes().first()?;
+    if first!=b'~'&&first!=96{return None;}
+    let n=body.as_bytes().iter().take_while(|v|**v==first).count();
+    (n>=3).then(||(first,n,body[n..].trim()))
+}
+fn blank_bytes(data:&mut[u8],a:usize,b:usize){
+    for c in &mut data[a..b]{if !matches!(*c,b'\r'|b'\n'){*c=b' ';}}
+}
+fn mask_line_comments<'a>(line:&'a str,state:&mut Option<&'static str>)->Cow<'a,str>{
+    if state.is_none()&&!line.contains("<!--")&&!line.contains("%%"){return Cow::Borrowed(line);}
+    let mut buf=line.as_bytes().to_vec();
+    let mut i=0usize;
+    let b=line.len();
+    while i<b{
+        if let Some(end)=*state{
+            if let Some(n)=line[i..b].find(end){let n=i+n+end.len();blank_bytes(&mut buf,i,n);i=n;*state=None;}
+            else{blank_bytes(&mut buf,i,b);break;}
+        }else{
+            let x=line[i..b].find("<!--").map(|n|(i+n,4,"-->"));
+            let y=line[i..b].find("%%").map(|n|(i+n,2,"%%"));
+            let Some((at,n,end))=(match(x,y){(Some(a),Some(b))=>Some(if a.0<b.0{a}else{b}),(a,b)=>a.or(b)})else{break;};
+            if syntax::escaped(line,at){i=at+n;continue;}
+            blank_bytes(&mut buf,at,at+n);i=at+n;*state=Some(end);
+        }
+    }
+    Cow::Owned(String::from_utf8(buf).expect("equal-byte mask"))
+}
+fn collect_delimiter_spans(prose_lines:&[(usize,Cow<'_,str>)],mark:u8,masked:&[(usize,usize)])->Vec<(usize,usize)>{
+    let mut ranges=Vec::new();
+    let mut open:Option<(usize,usize)>=None;
+    let mut mask_idx=0usize;
+    for (line_start,line) in prose_lines{
+        let bytes=line.as_bytes();
+        if !bytes.contains(&mark){continue;}
+        let mut i=0usize;
+        while i<bytes.len(){
+            let g=line_start+i;
+            while mask_idx<masked.len()&&masked[mask_idx].1<=g{mask_idx+=1;}
+            if mask_idx<masked.len()&&masked[mask_idx].0<=g{
+                let end_in_line=(masked[mask_idx].1-line_start).min(bytes.len());
+                i=end_in_line.max(i+1);
+                continue;
+            }
+            if bytes[i]!=mark||syntax::escaped(line,i){i+=1;continue;}
+            let a=i;
+            while i<bytes.len()&&bytes[i]==mark{
+                let gi=line_start+i;
+                while mask_idx<masked.len()&&masked[mask_idx].1<=gi{mask_idx+=1;}
+                if mask_idx<masked.len()&&masked[mask_idx].0<=gi{break;}
+                i+=1;
+            }
+            let n=i-a;
+            if let Some((b,m))=open{
+                if n==m{ranges.push((b,line_start+i));open=None;}
+            }else{
+                open=Some((line_start+a,n));
+            }
+        }
+    }
+    ranges
+}
+fn in_delimited_span(prose_lines:&[(usize,Cow<'_,str>)],target_byte:usize,mark:u8)->bool{
+    let masked=if mark==b'$'{collect_delimiter_spans(prose_lines,96,&[])}else{vec![]};
+    let spans=collect_delimiter_spans(prose_lines,mark,&masked);
+    spans.partition_point(|&(a,_)|a<=target_byte).checked_sub(1).is_some_and(|idx|target_byte<spans[idx].1)
+}
+fn any_delimited(prose_lines:&[(usize,Cow<'_,str>)],targets:&[usize])->Vec<bool>{
+    let backticks=collect_delimiter_spans(prose_lines,96,&[]);
+    let dollars=collect_delimiter_spans(prose_lines,b'$',&backticks);
+    targets.iter().map(|&pos|{
+        let in_bt=backticks.partition_point(|&(a,_)|a<=pos).checked_sub(1).is_some_and(|idx|pos<backticks[idx].1);
+        let in_dl=dollars.partition_point(|&(a,_)|a<=pos).checked_sub(1).is_some_and(|idx|pos<dollars[idx].1);
+        in_bt||in_dl
+    }).collect()
+}
+fn find_zotero_footers(bytes:&[u8])->Result<Vec<Value>>{
+    let text=std::str::from_utf8(bytes)?;
+    let raw=text.strip_prefix('\u{feff}').unwrap_or(text);
+    let rows=syntax::lines(raw);
+    let trimmed_end=raw.trim_end().len();
+    let mut front=rows.first().is_some_and(|r|syntax::body(raw,*r).trim()=="---");
+    let mut opened:Option<(u8,usize)>=None;
+    let mut comment:Option<&'static str>=None;
+    let mut prose_lines:Vec<(usize,Cow<'_,str>)>=Vec::with_capacity(rows.len());
+    let mut prior_headings:Vec<(usize,Value)>=Vec::new();
+    let mut final_locator:Option<(usize,Value)>=None;
+    for(i,&r)in rows.iter().enumerate(){
+        let body=syntax::body(raw,r);
+        if front{
+            if i>0&&body.trim()=="---"{front=false;}
+            continue;
+        }
+        if let Some((mark,count))=opened{
+            if fence(body).is_some_and(|(m,n,x)|m==mark&&n>=count&&x.is_empty()){opened=None;}
+            continue;
+        }
+        let safe=mask_line_comments(body,&mut comment);
+        if let Some((mark,n,_))=fence(&safe){opened=Some((mark,n));continue;}
+        let indent=safe.chars().take_while(|c|matches!(c,' '|'\t')).fold(0usize,|n,c|if c=='\t'{n+4-n%4}else{n+1});
+        if indent>=4{continue;}
+        let has_candidate=safe.contains("](")&&safe.contains("select");
+        prose_lines.push((r.start,safe));
+        if !has_candidate{continue;}
+        let safe_ref=prose_lines.last().unwrap().1.as_ref();
+        for l in syntax::scan_links(safe_ref){
+            if l.image{continue;}
+            let span_start=r.start+l.start;
+            let span_end=r.start+l.end;
+            let label=&raw[r.start+l.label_start..r.start+l.label_end];
+            if !matches!(norm(label).as_str(),"zotero 原条目"|"zotero原条目"){continue;}
+            let Some((group,k))=parse_uri(&l.href)else{continue;};
+            let prefix=&raw[r.start..span_start];
+            let heading=prefix.strip_prefix("##").is_some_and(|rest|!rest.is_empty()&&rest.bytes().all(|b|matches!(b,b' '|b'\t')));
+            if !heading{
+                if !prefix.is_empty(){continue;}
+                let previous=&raw[..r.start];
+                let previous=previous.strip_suffix("\r\n").or_else(||previous.strip_suffix(['\r','\n'])).unwrap_or(previous);
+                if !previous.rsplit(['\r','\n']).next().unwrap_or_default().trim().is_empty(){continue;}
+            }
+            let same_line=&raw[span_end..r.body_end];
+            if !same_line.bytes().all(|b|matches!(b,b' '|b'\t')){continue;}
+            if span_end==trimmed_end||heading{
+                let snippet=&raw[span_start..span_end];
+                let start_cp=raw[..span_start].chars().count();
+                let end_cp=start_cp+snippet.chars().count();
+                let locator=json!({"group_id":group,"item_key":k,"uri":l.href,"locator":{"kind":"characters","unit":"unicode_code_points","start":start_cp,"end":end_cp,"sha256":files::digest(snippet.as_bytes())}});
+                if span_end==trimmed_end{final_locator=Some((span_start,locator));}
+                else{prior_headings.push((span_start,locator));}
+            }
+        }
+    }
+    ensure!(!front&&opened.is_none()&&comment.is_none(),"MAP_UNCLOSED_MARKUP: finish frontmatter/fences/comments");
+    let Some((final_start,locator))=final_locator else{return Ok(vec![]);};
+    if prior_headings.is_empty(){
+        if in_delimited_span(&prose_lines,final_start,96)||in_delimited_span(&prose_lines,final_start,b'$'){return Ok(vec![]);}
+        return Ok(vec![locator]);
+    }
+    let mut positions:Vec<usize>=prior_headings.iter().map(|(pos,_)|*pos).collect();
+    positions.push(final_start);
+    let hidden=any_delimited(&prose_lines,&positions);
+    if *hidden.last().unwrap(){return Ok(vec![]);}
+    let mut out:Vec<Value>=prior_headings.into_iter().zip(hidden).filter_map(|((_,loc),is_hidden)|(!is_hidden).then_some(loc)).collect();
+    out.push(locator);
+    Ok(out)
+}
 fn inspect_note(p:&Path,root:&Path)->Result<Value>{
     no_link(p)?;ensure!(fs::metadata(p)?.len()<=LIMIT,"Note exceeds size budget");
     let (raw,b)=files::read_bound(p)?;ensure!(raw.len() as u64<=LIMIT,"Note exceeds size budget");
@@ -44,46 +191,9 @@ fn inspect_note(p:&Path,root:&Path)->Result<Value>{
     let meta=if let Some(payload)=parts.payload{properties::parse_yaml(payload)?}else{Value::Null};
     // The source link must itself be the final visible standalone footer
     // line. A matching link at the end of a sentence, a list/blockquote, or
-    // a decoded table field whose fallback span reaches EOF is not a footer.
-    let c=Candidate::new(&raw)?;
-    let trimmed_end=c.raw.trim_end().len();
-    let mut prior_headings=vec![];
-    let mut final_locator=None;
-    let (mut searched,mut line_start)=(0,0);
-    for l in &c.links{
-        if l.image||l.syntax!="markdown"||l.locator["kind"]!="characters"||
-            !matches!(norm(&l.label).as_str(),"zotero 原条目"|"zotero原条目"){continue;}
-        let Some((group,k))=parse_uri(&l.href)else{continue;};
-        // Links are already sorted by source span. Search each disjoint
-        // interval only once even with many matching labels on one line.
-        if let Some(pos)=c.raw[searched..l.span.start].rfind(['\r','\n']){
-            line_start=searched+pos+1;
-        }
-        searched=l.span.start;
-        let prefix=&c.raw[line_start..l.span.start];
-        let heading=prefix.strip_prefix("##").is_some_and(|rest|
-            !rest.is_empty()&&rest.bytes().all(|b|matches!(b,b' '|b'\t')));
-        if !heading{
-            if !prefix.is_empty(){continue;}
-            // A historical bare link begins its own paragraph, not a
-            // soft-wrapped line or a lazy continuation of a list/blockquote.
-            let previous=&c.raw[..line_start];
-            let previous=previous.strip_suffix("\r\n").or_else(||previous.strip_suffix(['\r','\n'])).unwrap_or(previous);
-            if !previous.rsplit(['\r','\n']).next().unwrap_or_default().trim().is_empty(){continue;}
-        }
-        if c.raw[l.span.start..l.span.end].contains(['\r','\n']){continue;}
-        let tail=&c.raw[l.span.end..];
-        let same_line=tail.split(['\r','\n']).next().unwrap_or_default();
-        if !same_line.bytes().all(|b|matches!(b,b' '|b'\t')){continue;}
-        let locator=json!({"group_id":group,"item_key":k,"uri":l.href,"locator":l.locator});
-        if l.span.end==trimmed_end{final_locator=Some(locator);}
-        else if heading{prior_headings.push(locator);}
-    }
-    let locations=if let Some(locator)=final_locator{
-        // Earlier canonical headings make the note ambiguous rather than
-        // silently allowing the last one to replace a competing identity.
-        prior_headings.push(locator);prior_headings
-    }else{vec![]};
+    // a table field is not a footer; unrelated historical HTML tags or prose
+    // inequalities in the body must not block library indexing.
+    let locations=find_zotero_footers(&raw)?;
     ensure!(check_ledger::bind_file(p)?==b,"Note changed during inspection");
     Ok(json!({"relative_path":rel(root,p)?,"file":b,"metadata":meta,"identity_candidates":locations,
         "status":if locations.len()==1{"item_locator_found"}else if locations.is_empty(){"item_locator_missing"}else{"ambiguous_item_locator"},
@@ -152,7 +262,8 @@ fn author_tokens(v:&Value)->Option<Vec<String>>{
     (!result.is_empty()).then_some(result)
 }
 fn year(s:&str)->Option<String>{
-    let r=regex::Regex::new(r"(?:^|[^0-9])([12][0-9]{3})(?:[^0-9]|$)").ok()?;
+    static RE:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
+    let r=RE.get_or_init(||regex::Regex::new(r"(?:^|[^0-9])([12][0-9]{3})(?:[^0-9]|$)").expect("static year regex"));
     let v=r.captures(s)?;Some(v[1].to_owned())
 }
 fn identity(v:&Value)->Option<(&str,u64,&str)>{
@@ -235,5 +346,57 @@ mod tests{
         assert_eq!(r["identity_candidates"].as_array().unwrap().len(),1);
         assert_eq!(r["identity_candidates"][0]["item_key"],"ACTUAL01");
         assert_eq!(parse_uri("zotero://select/groups/10/items/ACTUAL01"),Some((Some(10),"ACTUAL01".into())));
+    }
+    #[test]
+    fn prose_index_skips_unrelated_rich_table_yaml_and_never_promotes_table_links(){
+        let root=tempfile::tempdir().unwrap();
+        let good=root.path().join("with-table-and-footer.md");
+        fs::write(&good,"---\n年份: 2020\n---\n~~~rich-table\nnot: [valid\n~~~\n\n---\n\n## [Zotero原条目](zotero://select/library/items/GOOD0001)\n").unwrap();
+        let r=inspect_note(&good,root.path()).unwrap();
+        assert_eq!(r["status"],"item_locator_found");
+        assert_eq!(r["identity_candidates"][0]["item_key"],"GOOD0001");
+
+        let bad=root.path().join("table-only.md");
+        fs::write(&bad,"~~~rich-table\n## [Zotero原条目](zotero://select/library/items/BAD00001)\n~~~\n").unwrap();
+        let r=inspect_note(&bad,root.path()).unwrap();
+        assert_eq!(r["status"],"item_locator_missing");
+        assert_eq!(r["identity_candidates"],json!([]));
+    }
+    #[test]
+    fn historical_notes_with_html_anchors_media_and_inequalities_index_cleanly(){
+        let root=tempfile::tempdir().unwrap();
+        let note=root.path().join("historical.md");
+        fs::write(&note,concat!(
+            "---\n年份: 2022\n---\n",
+            "<a id=\"q53-table01\"></a>\n\n",
+            "Comparison B,C<A，后续说明。\n\n",
+            "<video controls preload=\"metadata\" src=\"文献/attachments/v.mp4\"></video>\n\n",
+            "<tr><td><img alt=\"图\" src=\"../img.png\" /></td></tr>\n\n",
+            "---\n\n",
+            "## [Zotero原条目](zotero://select/library/items/HIST0001)\n"
+        )).unwrap();
+        let r=inspect_note(&note,root.path()).unwrap();
+        assert_eq!(r["status"],"item_locator_found");
+        assert_eq!(r["identity_candidates"][0]["item_key"],"HIST0001");
+    }
+    #[test]
+    fn comments_and_delimited_spans_hide_fake_headings_and_reject_unclosed_markup(){
+        let root=tempfile::tempdir().unwrap();
+        let commented=root.path().join("commented.md");
+        fs::write(&commented,concat!(
+            "<!--\n## [Zotero原条目](zotero://select/library/items/FAKE0001)\n-->\n",
+            "%% ## [Zotero原条目](zotero://select/library/items/FAKE0002) %%\n",
+            "`\n## [Zotero原条目](zotero://select/library/items/FAKE0003)\n`\n\n",
+            "## [Zotero原条目](zotero://select/library/items/REAL0001)\n"
+        )).unwrap();
+        let r=inspect_note(&commented,root.path()).unwrap();
+        assert_eq!(r["status"],"item_locator_found");
+        assert_eq!(r["identity_candidates"].as_array().unwrap().len(),1);
+        assert_eq!(r["identity_candidates"][0]["item_key"],"REAL0001");
+
+        let unclosed=root.path().join("unclosed.md");
+        fs::write(&unclosed,"<!-- unclosed comment\n## [Zotero原条目](zotero://select/library/items/REAL0001)\n").unwrap();
+        let err=inspect_note(&unclosed,root.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("MAP_UNCLOSED_MARKUP"));
     }
 }

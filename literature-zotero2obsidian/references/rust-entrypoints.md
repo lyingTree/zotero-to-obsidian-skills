@@ -4,7 +4,10 @@
 
 ## 统一协议
 
-先调用实际二进制 `describe`，检查 `engine=rust`、`version=v2.0.3` 和 `operations`。只有注册的操作才能调用。将 UTF-8 JSON 请求写到实际任务文件，例如：
+先调用实际二进制查看支持的能力与精确参数：
+- `z2o describe`：检查 `engine=rust`、`version=v2.0.3` 与全部注册 `operations`。
+- `z2o describe <operation>`：查询单个操作的位置参数 `args`、关键字参数 `kwargs`、默认值与 `request_template`（也可用 `z2o describe --all` 或 `z2o --help`）。
+- 只有 `describe` 中注册的操作才能调用。将 UTF-8 JSON 请求写到实际任务文件，或通过标准输入传给 `z2o invoke -`，例如：
 
 ```json
 {
@@ -15,24 +18,27 @@
 }
 ```
 
-通过 `z2o invoke request.json` 执行该文件（使用已确认的实际可执行文件、请求文件路径）。读取标准输出的完整 JSON 与 `result`；标准错误用于进度和异常。上例只演示虚构姓名接口。非零退出、未注册操作、字段错误、未完成证据或工作流门禁都保持阻断或待核；不从退出码为零推断来源语义通过。路径用实际 Unicode 路径字符串或协议规定的路径对象。所有文件、来源定位、哈希、范围和决定必须来自本次任务，不复制示例值。
+通过 `z2o invoke request.json [--output response.json]`（或 `-o <file>`，也支持 `z2o invoke -` 从标准输入读取）执行（使用已确认的实际可执行文件、请求文件路径）。传入 `--output` 时完整美化 JSON 写入 `<file>`，标准输出只打印紧凑 `saved_output` 回执，避免大 JSON 挤占对话上下文；非终端管道上标准错误自动抑制中间进度刷新。上例只演示虚构姓名接口。非零退出、未注册操作、字段错误、未完成证据或工作流门禁都保持阻断或待核；不从退出码为零推断来源语义通过。路径用实际 Unicode 路径字符串或协议规定的路径对象。所有文件、来源定位、哈希、范围和决定必须来自本次任务，不复制示例值。
 
 ## 正文组装与机械验收
 
 | Rust operation | args（依序） | kwargs |
 |---|---|---|
-| `prepare_source_inventory.prepare_sources` | 源文件列表、工作目录 | source_roles、glossary_path、dpi、ocr（按实际需要） |
+| `user_profile.preflight` | 无 | `skill_root`、`query`、`item_key`、`zotero_storage_dir`（单次完成档案校验+Zotero 探测+模板枚举+工作目录规划） |
+| `prepare_source_inventory.fetch_arxiv_tex` | `target`（arXiv ID/URL/DOI/item JSON）、`destination` | `source_id`（默认 `"main"`）、`pdf_path`、`timeout_seconds`、`compact`（默认 `true`） |
+| `prepare_source_inventory.prepare_pdf_layout` | `source_path`、`destination` | `source_id`、`render_pages`（`selective`\|`all`\|`none`，默认 `selective`）、`dpi`、`expected_source_sha256` |
+| `prepare_source_inventory.prepare_sources` | `source_pdfs` 映射对象（如 `{"main": "<文件路径>"}`）、`work_directory` | `source_roles`、`glossary_path`、`dpi`、`ocr`（按实际需要） |
+| `pdf_image_objects.render_page_region` / `inspect_crop_boundaries` | `source_pdf` | `page_number`、`bbox`、`coordinate_system`、`destination` / `context_destination`、可选 `overwrite`（二次微调裁剪时设为 `true`） |
+| `pdf_image_objects.render_pdfcraft_region` | `source_pdf` | `page_number`、`bbox`、`coordinate_system`、`destination`；`transparent` 默认 `true`，保留透明背景，不合成白底 |
+| `prepare_source_inventory.inspect_tex_source` | 实际 `.tex` / `.zip` / `.tar` / `.tar.gz` / `.gz` 路径 | `source_id`（必填）、`expected_source_sha256`（可选） |
+| `prepare_source_inventory.prepare_tex_source` | 实际源码路径、证据目录 | `source_id`（必填）、`expected_source_sha256`（可选） |
 | `note_pipeline.prepare_content_job` | 实际 plan、sources、output_root | 无 |
-| `note_pipeline.process_content` | plan、实际 content、output_root | contract、resource_root（可选） |
-| `note_pipeline.process_markdown` | 实际 source_path、output_root | contract、resource_root（可选） |
+| `note_pipeline.process_content` | plan、实际 content、output_root | `contract`、`resource_root`、`write_normalized_to`、`strip_display_trailing_punctuation`（可选） |
+| `note_pipeline.process_markdown` | 实际 source_path、output_root | `contract`、`resource_root`、`write_normalized_to`、`strip_display_trailing_punctuation`（可选；返回内置 `summary`） |
 | `render_note.render_note` / `normalize_note.normalize_note` / `accept_note.accept_note` | 按当前实际接口与来源合同 | 不伪造来源 |
 | `validate_delivery.validate_delivery` | 实际 manifest_path | 无 |
 | `lint_presentation.lint_file` | 实际候选路径 | 无 |
-| `complete_workflow.resume_workflow` | 实际 run_path | 无 |
-| `complete_workflow.set_naming_plan` | 实际 run_path、naming_plan | expected_run_sha256（可选） |
-| `complete_workflow.bind_candidate` | 实际 run_path | 无 |
-| `complete_workflow.write_manifest` | 实际 run_path、deliveries | 无 |
-| `complete_workflow.set_vault_write_scope` | 实际 run_path、authorized | vault_path、expected_run_sha256（可选） |
+| `complete_workflow.*`（仅旧工作目录恢复：`resume_workflow` / `set_naming_plan` / `bind_candidate` / `write_manifest` / `set_vault_write_scope`） | 实际 run_path 等 | 仅用于已有 `complete_pdf_candidate_v1` 目录恢复 |
 
 仅在候选版本固定后绑定。写交付索引前，运行入口检查实际附件、目标路径，以及来源清单引用的验收台账；未通过的预检不改动台账。相对路径以各自记录所在目录解析。首次绑定与写索引分别原子落盘，不是跨文件原子操作；如中断，保留台账目录中 `.z2o-workflow-manifest-*` 的恢复记录，按 `plan.json` 对照实际哈希后再处理，不覆盖期间的外部修改。
 
@@ -52,13 +58,14 @@
 
 | 步骤 | 主要 Rust operation 命名空间 |
 |---|---|
-| Zotero 只读检查 | `zotero_local.inspect_item`、`zotero_local.catalog` |
+| 技能内配置 | `user_profile.preflight`、`user_profile.locate`、`user_profile.load`、`user_profile.save`、`user_profile.patch`（固定写入主技能 `user/profile.json`） |
+| Zotero 只读检查 | `zotero_local.search_items`、`zotero_local.inspect_item`、`zotero_local.catalog`（全库或大结果建议传入 `output_path` 落盘） |
 | 文件名 | `format_helpers.build_naming_plan`、`format_helpers.validate_naming_plan` |
 | 属性、来源绑定和回读 | `deterministic_stage_checks.*` |
 | 来源、草稿队列与图件 | `prepare_source_inventory.*`、`docx_source_inventory.*`、`pdf_image_objects.*`、`draft_queue.*` |
 | OCR、表格/公式识别与 MiniCPM/Jev | 见[OCR、表格/公式识别与 MiniCPM/Jev 指南](ocr-and-minicpm.md)（15 个 `prepare_source_inventory.*` 操作） |
 | 表格、图件与篇内锚 | `format_helpers.build_rich_table_block`、`format_helpers.new_figure_table_anchor`、`format_helpers.plan_supplement_figure_caption` |
-| 库内链接身份 | `vault_library.index`、`vault_library.match_reference` |
-| 写库与恢复 | `vault_publish.plan`、`vault_publish.commit_markdown`、`vault_publish.rollback` |
+| 库内链接身份 | `vault_library.index`（建议传入 `output_path` 落盘）、`vault_library.match_reference` |
+| 写库与恢复 | `vault_publish.plan_standalone`（独立候选一次性预检+同图复用+冲突消歧+生成 `commit_request`）、`vault_publish.plan`（legacy）、`vault_publish.commit_markdown`、`vault_publish.rollback` |
 
 表中的 `*` 仅表示命名空间，不可作为实际 operation。只调用 `describe` 中的精确名称。库内操作需明确本地库和真实文件，写入需明确授权、完整实际写前条件、备份及回读。不得用独立 Markdown 模式绕开完整文献门禁。

@@ -2,17 +2,31 @@
 //! Report accessors always run the underlying file-bound validator again.
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
-use std::{collections::{BTreeMap,BTreeSet},io::{self,Write},path::Path,fs};
+use std::{collections::{BTreeMap,BTreeSet},io::{self,IsTerminal,Write},path::Path,fs};
 use crate::files;
 
 pub fn progress_line(done:usize,total:usize,label:&str){
-    let width=20;
-    let filled=if total==0{width}else{((done.min(total) as u128*width as u128)/total as u128) as usize};
     // stderr preserves stdout's JSON protocol; strip terminal control input.
     let label:String=label.chars().map(|c|if c.is_control(){' '}else{c}).take(512).collect();
-    let stderr=io::stderr();let mut out=stderr.lock();
-    let _=write!(out,"\r[{}{}] {done}/{total} {label}{}","#".repeat(filled),".".repeat(width-filled),if done>=total{"\n"}else{""});
+    let stderr=io::stderr();
+    let is_tty=stderr.is_terminal();
+    if !is_tty && total>0 && done<total {return;}
+    let mut out=stderr.lock();
+    if is_tty {
+        let width=20;
+        let filled=if total==0{width}else{((done.min(total) as u128*width as u128)/total as u128) as usize};
+        let _=write!(out,"\r[{}{}] {done}/{total} {label}{}","#".repeat(filled),".".repeat(width-filled),if done>=total{"\n"}else{""});
+    } else {
+        let _=writeln!(out,"[{done}/{total}] {label}");
+    }
     let _=out.flush();
+}
+pub fn throttled_progress(done:usize,total:usize,label:&str){
+    if total==0 || done>=total {
+        progress_line(done,total,label);
+    } else if io::stderr().is_terminal() && (done==1 || done%64==0) {
+        progress_line(done,total,label);
+    }
 }
 
 pub fn project_report(r:&Value,method:&str,finding_index:Option<usize>)->Result<Value>{

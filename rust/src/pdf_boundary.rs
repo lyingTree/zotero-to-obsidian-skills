@@ -87,14 +87,14 @@ fn inspect_data(text:&Value,structure:&Value,checked:Rect,page:Rect,margin:f64)-
         "structure_status":structure["status"],"suggested_bbox":proposal,"suggestion_applied":false,"figure_membership":"not_assessed",
         "visual_review":{"status":"pending","figure_completeness":"not_assessed"},"full_page_review_required":true}),proposal,context))
 }
-fn inspect(pdf:&mut Backend,page:u64,checked:Rect,bounds:Rect,context_path:&Path,margin:f64,dpi:u64)->Result<Value>{
+fn inspect(pdf:&mut Backend,page:u64,checked:Rect,bounds:Rect,context_path:&Path,margin:f64,dpi:u64,overwrite:bool)->Result<Value>{
     let (_,geometry,_,_)=pdf.geometry(page)?;
     let text=pdf.text(page)?;let structure=pdf.structure(page)?;
     let (mut v,proposal,context)=inspect_data(&text,&structure,checked,bounds,margin)?;
     let context_path=output(context_path)?;let marked=sibling(&context_path,"boundaries")?;
     let source=path(&pdf.source_binding()["path"])?;
     ensure!(context_path!=marked&&source!=context_path&&source!=marked,"Context must not replace original PDF");
-    let r=pdf.render(page,Some(context),dpi,&context_path)?;
+    let r=pdf.render_with_overwrite(page,Some(context),dpi,&context_path,overwrite)?;
     let (raw,asset)=files::read_bound(&context_path)?;ensure!(asset==r["asset"],"Context changed");
     let mut img=image::load_from_memory_with_format(&raw,image::ImageFormat::Png)?.into_rgba8();
     ensure!(img.width()>0&&img.height()>0,"Empty context");
@@ -103,7 +103,8 @@ fn inspect(pdf:&mut Backend,page:u64,checked:Rect,bounds:Rect,context_path:&Path
     if let Some(b)=proposal{paint(&mut img,b,m,[26,145,70,255]);}paint(&mut img,checked,m,[220,45,55,255]);
     let mut bytes=Vec::new();PngEncoder::new(&mut bytes).write_image(img.as_raw(),img.width(),img.height(),ExtendedColorType::Rgba8)?;
     pdf.verify()?;ensure!(check_ledger::bind_file(&context_path)?==asset,"Context changed during annotation");
-    pipeline::publish(&marked,&bytes)?;let annotated=check_ledger::bind_file(&marked)?;
+    if overwrite{pipeline::publish_replace(&marked,&bytes)?;}else{pipeline::publish(&marked,&bytes)?;}
+    let annotated=check_ledger::bind_file(&marked)?;
     ensure!(annotated["sha256"]==files::digest(&bytes),"Annotated context changed");pdf.verify()?;
     v["schema_version"]=json!(1);v["source_file"]=pdf.source_binding().clone();v["page"]=json!(page);v["coordinate_system"]=coordinates();
     v["checked_bbox"]=json!(checked);v["page_geometry"]=geometry;
@@ -115,14 +116,18 @@ fn inspect(pdf:&mut Backend,page:u64,checked:Rect,bounds:Rect,context_path:&Path
 }
 pub struct RegionOptions<'a>{
     pub page:u64,pub bbox:&'a Value,pub coordinate_system:&'a Value,pub destination:&'a Path,pub margin:f64,pub dpi:u64,
-    pub expected:Option<&'a str>,pub context:Option<&'a Path>,pub context_margin:f64,pub context_dpi:u64,
+    pub expected:Option<&'a str>,pub context:Option<&'a Path>,pub context_margin:f64,pub context_dpi:u64,pub overwrite:bool,pub transparent:bool,
 }
 #[allow(clippy::too_many_arguments)]
 pub fn inspect_crop_boundaries(source:&Path,page:u64,bbox:&Value,coords:&Value,dest:&Path,margin:f64,dpi:u64,expected:Option<&str>)->Result<Value>{
+    inspect_crop_boundaries_with_overwrite(source,page,bbox,coords,dest,margin,dpi,expected,false)
+}
+#[allow(clippy::too_many_arguments)]
+pub fn inspect_crop_boundaries_with_overwrite(source:&Path,page:u64,bbox:&Value,coords:&Value,dest:&Path,margin:f64,dpi:u64,expected:Option<&str>,overwrite:bool)->Result<Value>{
     ensure!(*coords==coordinates()&&(72..=1200).contains(&dpi)&&margin.is_finite()&&margin>0.,"Invalid coordinates, context dpi or margin");
     let mut pdf=Backend::open(source,expected)?;let (_,_,bounds,_)=pdf.geometry(page)?;
     let b=rect(bbox)?;ensure!(inside(bounds,b),"bbox must be inside actual unrotated page");
-    inspect(&mut pdf,page,b,bounds,dest,margin,dpi)
+    inspect(&mut pdf,page,b,bounds,dest,margin,dpi,overwrite)
 }
 pub fn render_page_region(source:&Path,opt:RegionOptions<'_>)->Result<Value>{
     ensure!(*opt.coordinate_system==coordinates()&&(72..=1200).contains(&opt.dpi)&&(72..=1200).contains(&opt.context_dpi),"Invalid coordinate system or dpi");
@@ -133,11 +138,12 @@ pub fn render_page_region(source:&Path,opt:RegionOptions<'_>)->Result<Value>{
     let context=match opt.context{Some(p)=>output(p)?,None=>sibling(&dest,"context")?};let marked=sibling(&context,"boundaries")?;
     let original=path(&pdf.source_binding()["path"])?;
     ensure!(dest!=context&&dest!=marked&&context!=marked&&dest!=original&&context!=original&&marked!=original,"Crop, context and source destinations must differ");
-    let boundary=inspect(&mut pdf,opt.page,actual,bounds,&context,opt.context_margin,opt.context_dpi)?;
-    let render=pdf.render(opt.page,Some(actual),opt.dpi,&dest)?;pdf.verify()?;
+    let boundary=inspect(&mut pdf,opt.page,actual,bounds,&context,opt.context_margin,opt.context_dpi,opt.overwrite)?;
+    let render=pdf.render_with_options(opt.page,Some(actual),opt.dpi,&dest,opt.overwrite,opt.transparent)?;pdf.verify()?;
     Ok(json!({"schema_version":1,"source_file":pdf.source_binding(),"page":opt.page,"requested_bbox":b,"rendered_bbox":actual,
         "coordinate_system":coordinates(),"requested_margin_pt":opt.margin,"actual_margin_pt":sides(extent(b,actual)),"dpi":opt.dpi,
         "asset":render["asset"],"method":"page_region_render","page_geometry":geometry,"orientation":"source_page_display",
+        "transparent_background":opt.transparent,"pixel_format":render["pixel_format"],
         "boundary_check":boundary,"edge_reviews":EDGES.iter().map(|e|json!({"edge":e,"status":"pending","reason":"","evidence":[]})).collect::<Vec<_>>(),
         "visual_review":{"status":"pending","figure_completeness":"not_assessed"},"source_fidelity":"not_assessed","backend_render":render,
         "evidence_boundary":"Actual crop, not evidence that nothing is missing. Review all four edges independently."}))

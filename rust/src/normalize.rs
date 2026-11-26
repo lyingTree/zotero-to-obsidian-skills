@@ -42,13 +42,156 @@ fn math(n:&str,u:&str)->String{
     let cmd=if u.chars().any(|c|('\u{3400}'..='\u{9fff}').contains(&c)){"text"}else{"mathrm"};
     format!("{}{n}\\,\\{cmd}{{{u}}}$",'$')
 }
+fn is_cjk(c:char)->bool{('\u{3400}'..='\u{9fff}').contains(&c)}
+fn is_latin_math(c:char)->bool{c.is_ascii_alphanumeric()||c=='$'}
+fn is_transparent_tag(s:&str)->bool{rx!(r"(?i)^</?(?:sup|sub)(?:[\s>][^>]*)?>$").is_match(s)}
+fn strip_edge_tags_start(mut s:&str)->&str{
+    while let Some(m)=rx!(r"(?i)^</?(?:sup|sub)(?:[\s>][^>]*)?>").find(s){s=&s[m.end()..];}
+    s
+}
+fn strip_edge_tags_end(mut s:&str)->&str{
+    while let Some(m)=rx!(r"(?i)</?(?:sup|sub)(?:[\s>][^>]*)?>$").find(s){s=&s[..m.start()];}
+    s
+}
+fn link_visible_label(text:&str,links:&HashMap<usize,syntax::Link>,span:&Span)->Option<(usize,usize)>{
+    if span.kind!="link"||text[span.a..].starts_with("!["){return None;}
+    if let Some(l)=links.get(&span.a){
+        if !l.image{return Some((l.label_start,l.label_end));}
+        return None;
+    }
+    if text[span.a..span.b].starts_with("[[")&&text[span.a..span.b].ends_with("]]"){
+        let x=span.a+2;let y=span.b-2;
+        if let Some(i)=text[x..y].find('|'){return Some((x+i+1,y));}
+        return Some((x,y));
+    }
+    None
+}
+fn visible_left_char(text:&str,spans:&[Span],links:&HashMap<usize,syntax::Link>,mut idx:usize)->Option<(char,bool)>{
+    let mut crossed=false;
+    loop{
+        if let Ok(i)=spans.binary_search_by_key(&idx,|s|s.b){
+            let s=&spans[i];
+            if s.kind=="literal"&&is_transparent_tag(&text[s.a..s.b]){crossed=true;idx=s.a;continue;}
+            if let Some((la,lb))=link_visible_label(text,links,s){
+                let ch=strip_edge_tags_end(&text[la..lb]).chars().next_back();
+                return ch.map(|c|(c,true));
+            }
+            if s.kind=="math"&&crossed{return text[..idx].chars().next_back().map(|c|(c,true));}
+            return None;
+        }
+        let ch=text[..idx].chars().next_back()?;
+        if matches!(ch,'\r'|'\n'){return None;}
+        return Some((ch,crossed));
+    }
+}
+fn visible_right_char(text:&str,spans:&[Span],links:&HashMap<usize,syntax::Link>,mut idx:usize)->Option<(char,bool)>{
+    let mut crossed=false;
+    loop{
+        if let Ok(i)=spans.binary_search_by_key(&idx,|s|s.a){
+            let s=&spans[i];
+            if s.kind=="literal"&&is_transparent_tag(&text[s.a..s.b]){crossed=true;idx=s.b;continue;}
+            if let Some((la,lb))=link_visible_label(text,links,s){
+                let ch=strip_edge_tags_start(&text[la..lb]).chars().next();
+                return ch.map(|c|(c,true));
+            }
+            if s.kind=="math"&&crossed{return text[idx..].chars().next().map(|c|(c,true));}
+            return None;
+        }
+        let ch=text[idx..].chars().next()?;
+        if matches!(ch,'\r'|'\n'){return None;}
+        return Some((ch,crossed));
+    }
+}
+
+#[derive(Clone,Copy,Debug,Default)]
+pub struct Options{pub strip_display_trailing_punctuation:bool}
 #[derive(Clone,Debug)]
 struct Span{a:usize,b:usize,kind:&'static str}
 #[derive(Clone,Debug)]
 struct Edit{a:usize,b:usize,rule:&'static str,after:String}
-struct Pass<'a>{text:&'a str,rows:Vec<Line>,offsets:Offsets,spans:Vec<Span>,edits:Vec<Edit>,issues:Vec<Value>}
+struct Pass<'a>{text:&'a str,rows:Vec<Line>,offsets:Offsets,options:Options,display_whole_rows:HashSet<usize>,display_end_rows:HashSet<usize>,spans:Vec<Span>,edits:Vec<Edit>,issues:Vec<Value>}
 impl<'a> Pass<'a>{
-    fn new(text:&'a str)->Self{Self{text,rows:syntax::lines(text),offsets:Offsets::new(text),spans:vec![],edits:vec![],issues:vec![]}}
+    fn new(text:&'a str,options:Options)->Self{Self{text,rows:syntax::lines(text),offsets:Offsets::new(text),options,display_whole_rows:HashSet::new(),display_end_rows:HashSet::new(),spans:vec![],edits:vec![],issues:vec![]}}
+    fn heading_cjk_space(&mut self,a:usize,b:usize)->Result<()>{
+        let line=&self.text[a..b];
+        let body_start=if let Some(m)=rx!(r"^ {0,3}#{1,6} +(?:[0-9]+(?:\.[0-9]+)* +)?").find(line){
+            a+m.end()
+        }else{
+            return Ok(());
+        };
+        if body_start>=b{return Ok(());}
+        let sub=&self.text[body_start..b];
+        let mut mask_ranges:Vec<(usize,usize)>=Vec::new();
+        let mut i=0usize;
+        while i<sub.len(){
+            let rest=&sub[i..];
+            if rest.starts_with('`'){
+                let width=rest.bytes().take_while(|c|*c==b'`').count();
+                let mut cur=i+width;
+                while let Some(pos)=sub[cur..].find(&"`".repeat(width)){
+                    let cand=cur+pos;
+                    if sub[cand..].bytes().take_while(|c|*c==b'`').count()==width{
+                        mask_ranges.push((body_start+i,body_start+cand+width));
+                        cur=cand+width;break;
+                    }
+                    cur=cand+1;
+                }
+                i=cur;continue;
+            }
+            if rest.starts_with('$')&&!rest.starts_with("$$")&&!syntax::escaped(sub,i){
+                let mut cur=i+1;
+                while let Some(pos)=sub[cur..].find('$'){
+                    let cand=cur+pos;
+                    if !syntax::escaped(sub,cand){
+                        mask_ranges.push((body_start+i,body_start+cand+1));
+                        cur=cand+1;break;
+                    }
+                    cur=cand+1;
+                }
+                i=cur;continue;
+            }
+            i+=rest.chars().next().map_or(1,char::len_utf8);
+        }
+        let links=syntax::scan_links(sub);
+        for l in links{
+            if l.label_end+1<l.end{mask_ranges.push((body_start+l.label_end+1,body_start+l.end));}
+            let la=body_start+l.start;let lb=body_start+l.end;
+            if !l.image{
+                let inner=strip_edge_tags_end(strip_edge_tags_start(&self.text[body_start+l.label_start..body_start+l.label_end]));
+                if let Some(rc)=inner.chars().next(){
+                    let before_len=self.text[body_start..la].trim_end_matches(' ').len();
+                    let space_a=body_start+before_len;
+                    if space_a<la{
+                        if let Some(lc)=self.text[body_start..space_a].chars().next_back(){
+                            if (is_cjk(lc)&&is_latin_math(rc))||(is_latin_math(lc)&&is_cjk(rc)){
+                                self.edit(space_a,la,"cjk_space","");
+                            }
+                        }
+                    }
+                }
+                if let Some(lc)=inner.chars().next_back(){
+                    let after_spaces=self.text[lb..b].bytes().take_while(|c|*c==b' ').count();
+                    if after_spaces>0{
+                        let space_b=lb+after_spaces;
+                        if let Some(rc)=self.text[space_b..b].chars().next(){
+                            if (is_cjk(lc)&&is_latin_math(rc))||(is_latin_math(lc)&&is_cjk(rc)){
+                                self.edit(lb,space_b,"cjk_space","");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        mask_ranges.sort_by_key(|r|r.0);
+        let spaces=fx!(r"(?<=[\u{3400}-\u{9fff}]) +(?=[0-9A-Za-z$])|(?<=[0-9A-Za-z$]) +(?=[\u{3400}-\u{9fff}])");
+        let mut pos=body_start;
+        while let Some(m)=spaces.find_from_pos(&self.text[..b],pos)?{
+            let s=m.start();let e=m.end();pos=e;
+            if mask_ranges.iter().any(|&(ma,mb)|s>=ma&&e<=mb){continue;}
+            self.edit(s,e,"cjk_space","");
+        }
+        Ok(())
+    }
     fn issue(&mut self,code:&str,at:usize,message:&str,severity:&str){
         let line=if self.rows.is_empty(){1}else if at==self.text.len(){self.rows.len()+1}else{syntax::row_at(&self.rows,at)+1};
         self.issues.push(json!({"code":code,"line":line,"start":self.offsets.index(at),"message":message,"severity":severity}));
@@ -118,8 +261,12 @@ impl<'a> Pass<'a>{
                     if n==width{close=Some(start+n);break;}i=start+n;
                 }end=close;kind="code";
             }else if matches!(raw,r"\("|r"\["){
-                let closer=if raw==r"\("{r"\)"}else{r"\]"};end=text[b..].find(closer).map(|i|b+i+closer.len());
-                kind=if raw==r"\("{"math"}else{"display"};
+                if raw==r"\["&&(text[b..].starts_with('[')||text[..a].ends_with("<sup>")){
+                    end=Some(b);kind="literal";
+                }else{
+                    let closer=if raw==r"\("{r"\)"}else{r"\]"};end=text[b..].find(closer).map(|i|b+i+closer.len());
+                    kind=if raw==r"\("{"math"}else{"display"};
+                }
             }else if matches!(raw,"<!--"|"%%"|"$$"|"$"){
                 if raw=="$"{
                     let start=self.offsets.previous(a,128);
@@ -169,11 +316,74 @@ impl<'a> Pass<'a>{
                 }
             }
             if end.is_none(){self.issue(&format!("UNCLOSED_{}",kind.to_uppercase()),a,"未找到可确认的闭合边界，保留余下原文。","review");end=Some(text.len());}
-            pos=self.protect(a,end.unwrap(),kind);
+            let mut end_val=end.unwrap();
+            if kind=="display" && raw=="$$"{
+                let first_row=syntax::row_at(&self.rows,a);
+                let last_row=syntax::row_at(&self.rows,end_val.saturating_sub(1));
+                let row_end=self.rows[last_row].body_end;
+                let before_open=self.text[self.rows[first_row].start..a].trim().is_empty();
+                let after_close=&self.text[end_val..row_end];
+                let close_dollar_end=end_val;
+                if before_open && !after_close.is_empty() && rx!(r"^[ \t]*[.,;，。；]+[ \t]*$").is_match(after_close){
+                    self.edit(end_val,row_end,"display_closing_punctuation","");
+                    if first_row==last_row{self.display_whole_rows.insert(last_row);}
+                    self.display_end_rows.insert(last_row);
+                    end_val=row_end;
+                }
+                if self.options.strip_display_trailing_punctuation && end.is_some() && close_dollar_end>=a+4{
+                    let inner_start=a+2;
+                    let inner_end=close_dollar_end-2;
+                    if inner_end>inner_start{
+                        let inner=&self.text[inner_start..inner_end];
+                        let mut cut=inner.trim_end().len();
+                        for _ in 0..2{
+                            if let Some(m)=rx!(r"\s*\\tag\*?\{[^{}]*\}\s*$").find(&inner[..cut]){cut=m.start();}
+                            if let Some(m)=rx!(r"(?:\\end\{(?:aligned|align\*?|gathered|gather\*?|split|equation\*?)\}\s*)+$").find(&inner[..cut]){cut=m.start();}
+                            cut=inner[..cut].trim_end().len();
+                        }
+                        if let Some(m)=rx!(r"\\\\\s*$").find(&inner[..cut]){cut=inner[..m.start()].trim_end().len();}
+                        let body=&inner[..cut];
+                        if let Some(ch)=body.chars().next_back(){
+                            if matches!(ch,','|';'|'，'|'；'|'。'|'.'){
+                                let p_start=cut-ch.len_utf8();
+                                let escaped=syntax::escaped(body,p_start);
+                                let keep_dot=ch=='.'&&(body.ends_with("..")||rx!(r"\\(?:left|right|middle)\s*\.$").is_match(body));
+                                if !escaped && !keep_dot{
+                                    self.edit(inner_start+p_start,inner_start+cut,"display_trailing_punctuation","");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            pos=self.protect(a,end_val,kind);
         }
         let spans=self.spans.clone();let mut cursor=0;
-        for s in &spans{if cursor<s.a{self.prose(cursor,s.a)?;}cursor=s.b;}
-        if cursor<text.len(){self.prose(cursor,text.len())?;}
+        let check_wrapper_spaces=|edits:&mut Vec<Edit>,ga:usize,gb:usize|{
+            if ga>=gb{return;}
+            for m in rx!(r" +").find_iter(&text[ga..gb]){
+                let sa=ga+m.start();let sb=ga+m.end();
+                let Some((lc,lw))=visible_left_char(text,&spans,&links,sa)else{continue;};
+                let Some((rc,rw))=visible_right_char(text,&spans,&links,sb)else{continue;};
+                if (lw!=rw)&&!matches!(lc,' '|'\t')&&!matches!(rc,' '|'\t')&&((is_cjk(lc)&&is_latin_math(rc))||(is_latin_math(lc)&&is_cjk(rc))){
+                    edits.push(Edit{a:sa,b:sb,rule:"cjk_space",after:String::new()});
+                }
+            }
+        };
+        for s in &spans{
+            if cursor<s.a{
+                self.prose(cursor,s.a)?;
+                check_wrapper_spaces(&mut self.edits,cursor,s.a);
+            }
+            if s.kind=="literal" && rx!(r"^ {0,3}#{1,6}[ \t]+\S").is_match(&self.text[s.a..s.b]){
+                self.heading_cjk_space(s.a,s.b)?;
+            }
+            cursor=s.b;
+        }
+        if cursor<text.len(){
+            self.prose(cursor,text.len())?;
+            check_wrapper_spaces(&mut self.edits,cursor,text.len());
+        }
         for(a,b)in labels{
             let s=&text[a..b];
             if !rx!(r"[\x60$\[\]<>\\/|]").is_match(s)&&!rx!(r"(?i)(?:https?://|www\.)[^\s<>]+").is_match(s)&&!rx!(r"(?i)\b10\.\d{4,9}/[^\s<>]+").is_match(s){self.prose(a,b)?;}
@@ -189,8 +399,10 @@ impl<'a> Pass<'a>{
                 protected.extend(first..=last);
                 roles.insert(first,format!("{}_start",s.kind));roles.insert(last,format!("{}_end",s.kind));
                 if first==last&&s.kind=="display"{
-                    let whole=syntax::whole(text,self.rows[first]).trim()==&text[s.a..s.b];
+                    let whole=self.display_whole_rows.contains(&first)||syntax::whole(text,self.rows[first]).trim()==&text[s.a..s.b];
                     roles.insert(first,if whole{"display_whole"}else{"protected"}.into());
+                }else if self.display_end_rows.contains(&last){
+                    roles.insert(last,"display_end".into());
                 }
             }
         }
@@ -244,7 +456,7 @@ impl<'a> Pass<'a>{
             let untouched=&self.text[cursor..e.a];advance(&mut line,&mut column,untouched);
             output.push_str(untouched);output.push_str(&e.after);
             let a=self.offsets.index(e.a);let b=self.offsets.index(e.b);
-            let stage=if matches!(e.rule,"split_percent"|"split_quantity"|"quantity"){"math_formatting"}
+            let stage=if matches!(e.rule,"split_percent"|"split_quantity"|"quantity"|"display_closing_punctuation"|"display_trailing_punctuation"){"math_formatting"}
                 else if matches!(e.rule,"block_spacing"|"cjk_space"|"image_hard_break"){"whitespace_formatting"}else{"punctuation_formatting"};
             changes.push(json!({"start":a as isize+shift,"end":b as isize+shift,"before":&self.text[e.a..e.b],"after":e.after,
                 "line":line,"column":column,"stage":stage,"rule":e.rule}));
@@ -259,11 +471,11 @@ fn advance(line:&mut usize,column:&mut usize,s:&str){
     for m in rx!(r"\r\n|\r|\n").find_iter(s){*line+=1;last=Some(m.end());}
     if let Some(end)=last{*column=1+s[end..].chars().count();}else{*column+=s.chars().count();}
 }
-fn pass(text:&str)->Result<(String,Vec<Value>,Vec<Value>)>{let mut pass=Pass::new(text);pass.scan()?;Ok(pass.finish())}
-fn stable(text:&str)->Result<(String,Vec<Value>,Vec<Value>)>{
-    let(mut candidate,mut changes,mut issues)=pass(text)?;
+fn pass(text:&str,options:Options)->Result<(String,Vec<Value>,Vec<Value>)>{let mut pass=Pass::new(text,options);pass.scan()?;Ok(pass.finish())}
+fn stable(text:&str,options:Options)->Result<(String,Vec<Value>,Vec<Value>)>{
+    let(mut candidate,mut changes,mut issues)=pass(text,options)?;
     for _ in 0..3{
-        let(verified,more,_)=pass(&candidate)?;
+        let(verified,more,_)=pass(&candidate,options)?;
         if verified==candidate{return Ok((candidate,changes,issues));}
         changes.extend(more);candidate=verified;
     }
@@ -271,8 +483,11 @@ fn stable(text:&str)->Result<(String,Vec<Value>,Vec<Value>)>{
     Ok((text.into(),vec![],issues))
 }
 pub fn normalize(text:&str)->Result<Value>{
-    let(candidate,changes,unresolved)=stable(text)?;
-    let(verified,_,_)=stable(&candidate)?;
+    normalize_with_options(text,Options::default())
+}
+pub fn normalize_with_options(text:&str,options:Options)->Result<Value>{
+    let(candidate,changes,unresolved)=stable(text,options)?;
+    let(verified,_,_)=stable(&candidate,options)?;
     Ok(json!({"schema_version":1,"engine":"normalize_note","text":candidate,"changes":changes,"unresolved":unresolved,
         "input_sha256":files::digest(text.as_bytes()),"output_sha256":files::digest(candidate.as_bytes()),
         "idempotent":candidate==verified,"source_fidelity":"not_assessed"}))
@@ -290,4 +505,59 @@ pub fn normalize_file(source:&Path,destination:&Path)->Result<Value>{
     temporary.persist_noclobber(destination)?;
     ensure!(fs::read(destination)?==payload,"normalization readback mismatch");
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn citation_brackets_heading_cjk_wrapper_spaces_and_display_punct(){
+        let input=concat!(
+            "### 2.1 Mayer 路径同调与 A 操作\n",
+            "结果参见 <sup>\\[[22](<#^ref-22>)\\]</sup> 之后，另有 **粗体**。\n",
+            "采用 [BERT](#ref-1) 模型与 <sup>[22](#ref-22)</sup> 方法，且 <sup>[$2$](#eq-1)</sup> 成立。\n\n",
+            "> > 引用 [BERT](#ref-1) 模型\n",
+            "> 其长度为 5 m。\n\n",
+            "$$\nx = 1,\n$$.\n"
+        );
+        let res=normalize(input).unwrap();
+        let out=res["text"].as_str().unwrap();
+        assert!(out.contains("### 2.1 Mayer路径同调与A操作\n"),"{out}");
+        assert!(out.contains("采用[BERT](#ref-1)模型与<sup>[22](#ref-22)</sup>方法，且<sup>[$2$](#eq-1)</sup>成立。"),"{out}");
+        assert!(out.contains("> 其长度为 5 m。"),"{out}");
+        assert!(out.contains("$$\nx = 1,\n$$\n"),"{out}");
+        assert!(!out.contains("$$."),"{out}");
+        assert!(res["unresolved"].as_array().unwrap().is_empty(),"{res}");
+
+        let opted=normalize_with_options("$$\nx = 1,\n$$.\n",Options{strip_display_trailing_punctuation:true}).unwrap();
+        assert_eq!(opted["text"].as_str().unwrap(),"$$\nx = 1\n$$\n");
+        assert_eq!(normalize("[持续60 min](https://x/a(b)—c) [[图—1|值25%]]").unwrap()["text"],r"[持续$60\,\mathrm{min}$](https://x/a(b)—c) [[图—1|值$25\%$]]");
+    }
+
+    #[test]
+    fn pipeline_write_normalized_to_and_vault_guard(){
+        use crate::pipeline::{process_with_options,ProcessOptions};
+        let dir=tempdir().unwrap();
+        let src=dir.path().join("source.txt");fs::write(&src,b"src").unwrap();
+        let cand=dir.path().join("note.md");
+        fs::write(&cand,"---\ntype: note\n---\n\n# Title\n\n### 1.2 Foo 条目\n每60 min观测。\n").unwrap();
+        let out_root=dir.path().join("out");
+        let direct=dir.path().join("direct.md");
+        let contract=json!({"schema_version":1,"sources":{"main":{"path":src,"sha256":files::digest(b"src")}},
+            "counts":{"figures":0,"equations":0,"tables":0,"bibliography":0}});
+        let r=process_with_options(Some(&cand),&Value::Null,&Value::Null,&out_root,&contract,Some(dir.path()),
+            ProcessOptions{write_normalized_to:Some(&direct),strip_display_trailing_punctuation:true},|_,_,_|{}).unwrap();
+        assert_eq!(r["status"],"mechanical_pass");
+        assert_eq!(r["published_candidate"]["written"],true);
+        assert!(r["summary"].is_object());
+        assert!(fs::read_to_string(&direct).unwrap().contains("### 1.2 Foo条目"));
+
+        let vault=dir.path().join("vault");
+        fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        let blocked_target=vault.join("03_Literature/note.md");
+        assert!(process_with_options(Some(&cand),&Value::Null,&Value::Null,&out_root,&contract,Some(dir.path()),
+            ProcessOptions{write_normalized_to:Some(&blocked_target),strip_display_trailing_punctuation:false},|_,_,_|{}).is_err());
+    }
 }

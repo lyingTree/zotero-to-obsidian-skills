@@ -10,7 +10,7 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 每条规则的 ID 用于定位对应证据。
 
-验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，不审查应用界面，不要求点击交互、阅读视图、插件显示或客户端缓存检查。
+验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，以 Rust 回写与 SHA-256 回读为准；不审查应用界面，不要求在写入后调用 `obsidian` CLI 检查阅读视图、反向链接或客户端缓存。
 
 新建全文任务先读 [Rust 组装、规范化与验收](references/rust-entrypoints.md)。调用 `prepare_source_inventory.prepare_sources` 提取 PDF / DOCX 结构，建立经来源核对的单元计划，再由 `prepare_content_job()` 固定计划、合同与译文模板。模型按单元 ID 填译文，`process_content()` 负责格式组装、规范化、机械验收和版本保存。已有 Markdown 使用 `process_markdown()`。程序已执行的检查直接采用程序证据，不让模型重复手拼格式或自填机械通过结论。具体内容规则仍以对应子技能为准。
 
@@ -43,7 +43,7 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 - [PIPE-C02] 明确本次采用的文献版本。
 - [PIPE-C03] 明确本次目标库。
 - [PIPE-C04] 明确本次执行的步骤范围。
-- [PIPE-C05] 读取[项目配置](references/project-profile.md)。
+- [PIPE-C05] 读取[项目配置](references/project-profile.md)，优先单次调用 `user_profile.preflight`（或 `user_profile.load`）复用技能内已记录路径、探测 Zotero 并规划库外工作目录；仅首次、字段失效或用户要求变更时发现并 `user_profile.patch`。
 - [PIPE-C06] 读取[交接约定](references/pipeline-contract.md)。
 - [PIPE-C07] 按实际路径定位模板。
 - [PIPE-C08] 按实际路径定位术语表。
@@ -90,8 +90,8 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 - [PIPE-C49] 完整生成任务在结束前逐页核对来源覆盖。
 - [PIPE-C50] 完整生成任务在结束前逐对象核对来源内容。
 - [PIPE-C51] 只生成离线候选时按[离线候选模式](references/project-profile.md#离线候选模式)规划路径。
-- [PIPE-C52] 完整 PDF/DOCX 生成任务使用[完整流程入口](references/complete-workflow.md)初始化工作记录。
-- [PIPE-C53] 完整 PDF/DOCX 候选交付前运行 `inspect_workflow()`。
+- [PIPE-C52] 新建 PDF/DOCX 全文任务优先使用精简 Rust 流水线（`prepare_source_inventory.fetch_arxiv_tex` / `prepare_pdf_layout` → 撰写候选 → `note_pipeline.process_markdown` 或 `process_content` → `vault_publish.plan_standalone`）；仅在恢复既有 `complete_pdf_candidate_v1` 工作目录时沿用[完整流程入口](references/complete-workflow.md)。
+- [PIPE-C53] 仅当恢复既有 `complete_pdf_candidate_v1` 工作目录时在交付前运行 `inspect_workflow()`；常规精简流程以 `note_pipeline.process_markdown`（或 `process_content`）和 `vault_publish.plan_standalone` / `commit_markdown` 的回执与回读为准。
 
 ## 十一个子 skill
 
@@ -113,16 +113,12 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 
 ## 执行步骤
 
-1. 先确认任务范围、身份线索、读写授权和项目配置，完成[运行预检](references/project-profile.md#运行预检)：核对实际文件处理能力、路径边界、库外工作根及本次所需模板、术语表与解析器。预检先于提取、翻译和正文修改；缺失能力按影响范围记录阻断或待验，不伪装已执行。
-2. 第 1 步读取条目一次。第 5 步命名与第 4 步 plan 复用同一份 item.json，先确定目标目录、既有映射和写前条件；尚未提取的资源只登记规划，不编造文件或哈希。
-3. 第 2 步提取主全文，第 3 步翻译或选择中文原稿。
-4. 有补充材料时，第 11 步按来源命名空间将 SI 并入所选主稿。没有 SI 时记录不适用。
-5. 提取完成后补齐第 4 步 plan 的资源清单、稳定路径和冲突处理，再依次执行第 6、7、8、9、10 步；各步接收上一步完整候选。
-6. 单项任务完成预检后从指定稿进入对应步骤，只补实际依赖。先登记修改范围与输入基线，例如书目脚注迁移只重连受影响调用；既有范围外问题单独报告，不静默重写。
-7. 从本次最后候选生成 final.md，仅移除已登记的工作标记，并将本地资源引用固定为从库根起算的附件三级目录路径。比较其他内容并计算待提交哈希。
-8. 按本次范围执行[静态校验](references/automated-validation.md)、[来源交付索引检查](references/delivery-checks.md)与[逐篇验收](references/acceptance.md)，分别记录源码、内容证据和未决项目。语法检查通过后继续对照原文核验内容。
-9. 需要写库时交第 4 步 commit，提交后回读实际 Markdown 文件和引用资源，核对文件内容及哈希。
-10. 将证据写入各条目的 run.json，结论写入 report.md；以这些记录及实际产物恢复进度，不依赖对话记忆或假定文献库使用 Git。批次持续报告已完成、运行中、阻断与剩余条目数，单篇异常不阻塞其他独立条目。
+1. 先确认任务范围、读写授权和项目配置，单次调用 `user_profile.preflight` 完成[运行预检](references/project-profile.md#运行预检)（核对档案路径、Zotero API 探测、模板列表、条目搜索及库外工作目录）；大结果统一使用 `z2o invoke ... --output <file>` 落盘。
+2. 预印本或带 arXiv 标识的条目优先调用 `prepare_source_inventory.fetch_arxiv_tex`；常规 PDF 调用 `prepare_source_inventory.prepare_pdf_layout`（默认 `render_pages: "selective"`），DOCX 调用 `prepare_sources`，仅按视觉核对需要渲染页图/裁图，并按[透明图规则](../literature-fulltext-extract/SKILL.md#透明背景图)保留原图透明通道。
+3. 撰写规范全文候选稿（或按 `plan` 填 `content`），调用 `note_pipeline.process_markdown`（配合 `write_normalized_to` 与按需 `strip_display_trailing_punctuation`）或 `process_content`，先核对返回中的 `summary` 与未决位置。
+4. 按本次范围完成[静态校验](references/automated-validation.md)与原文对照核验；需要写库时调用 `vault_publish.plan_standalone` 规划目标、自动复用同哈希资源并对冲突文件名按哈希后缀消歧。
+5. 获用户明确写库授权后，执行 `vault_publish.commit_markdown`（`authorized: true`），依赖其内置原笔记备份、原子替换与 SHA-256 / `WRITE-A04` / `WRITE-A05` 回读；写库完成后直接基于真实回执报告，不再调用 `obsidian` CLI 轮询界面或缓存。
+6. 若仅恢复旧版 `complete_pdf_candidate_v1` 工作目录，则按该目录已有台账继续步骤（第 1–11 步子 skill、逐段 `run.json` 与 `complete_workflow` 入口）。
 
 ## 验收标准
 

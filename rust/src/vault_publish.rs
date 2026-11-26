@@ -3,7 +3,7 @@
 //! is not user authorization, source fidelity or a completed vault write.
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
-use std::{collections::{BTreeMap,BTreeSet},path::{Path,PathBuf},fs};
+use std::{collections::{BTreeMap,BTreeSet},path::{Path,PathBuf},fs,sync::OnceLock};
 use crate::{check_ledger,files,inventory,path,path_text,properties,workflow};
 const BOUNDARY:&str="Read-only placement and actual file precondition plan. No vault write or note sync was performed; resource ownership, independently observed source checks and final authorization remain separate.";
 fn key(s:&str)->String{
@@ -99,7 +99,11 @@ pub fn plan(opt:Options<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<V
     match (&existing,opt.expected_existing_sha){
         (None,None)=>{},
         (Some(r),Some(h)) if r["sha256"]==h=>{},
-        _=>findings.push(reason("TARGET_PRECONDITION_MISMATCH",&note,"Preserve the current target; explicit expected prior hash or absence differs.")),
+        (actual,expected)=>findings.push(reason("TARGET_PRECONDITION_MISMATCH",&note,&format!(
+            "Preserve the current target; expected {}, actual {}.",
+            expected.unwrap_or("absent"),
+            actual.as_ref().and_then(|v|v["sha256"].as_str()).unwrap_or("absent")
+        ))),
     }
     let mut inputs=vec![candidate.clone(),run_binding.clone()];
     let mut sources=Vec::new();let mut identities=BTreeSet::new();
@@ -170,7 +174,8 @@ fn hash(v:&Value)->Result<&str>{v.as_str().filter(|s|sha(s)).context("Actual SHA
 fn prior(v:&Value)->Result<Option<&str>>{if v.is_null(){Ok(None)}else{Ok(Some(hash(v)?))}}
 fn verify_prior(p:&Path,h:Option<&str>)->Result<Option<Value>>{
     let current=record(p)?;
-    ensure!(current.as_ref().and_then(|b|b["sha256"].as_str())==h,"TARGET_PRECONDITION_MISMATCH: {}",p.display());Ok(current)
+    let actual=current.as_ref().and_then(|b|b["sha256"].as_str());
+    ensure!(actual==h,"TARGET_PRECONDITION_MISMATCH: {} (expected {}, actual {})",p.display(),h.unwrap_or("absent"),actual.unwrap_or("absent"));Ok(current)
 }
 fn bounded(p:&Path,h:&str)->Result<(Vec<u8>,Value)>{
     crate::check_write::no_link(p)?;
@@ -377,4 +382,428 @@ pub fn rollback(p:&Path,h:&str,authorized:bool)->Result<Value>{
     let mut raw=serde_json::to_vec_pretty(&r)?;raw.push(b'\n');log.write_all(&raw)?;log.as_file().sync_all()?;
     let(_,p)=log.keep().map_err(|e|anyhow::anyhow!("Cannot retain rollback receipt: {}",e.error))?;
     r["receipt"]=check_ledger::bind_file(&p)?;Ok(r)
+}
+
+pub struct StandalonePlanOptions<'a>{
+    pub vault:&'a Path,
+    pub literature_relative:&'a str,
+    pub assets_relative:&'a str,
+    pub note_relative:&'a str,
+    pub candidate:&'a Path,
+    pub resource_root:&'a Path,
+    pub backup_root:Option<&'a Path>,
+    pub expected_existing_sha:Option<&'a str>,
+    pub reuse_identical_assets:bool,
+    pub disambiguate_conflicts:bool,
+    pub commit_request_output:Option<&'a Path>,
+}
+
+fn split_rel_asset(rel:&str)->(&str,&str,&str){
+    let(dir_prefix,file)=match rel.rsplit_once('/'){
+        Some((dir,f))=>( &rel[..dir.len()+1], f ),
+        None=>("",rel),
+    };
+    let(stem,ext)=match file.rsplit_once('.'){
+        Some((s,_)) if !s.is_empty()=>(s,&file[s.len()..]),
+        _=> (file,""),
+    };
+    (dir_prefix,stem,ext)
+}
+
+fn choose_disambiguated_rel(
+    root:&Path,assets:&Path,rr:&Path,old_rel:&str,src_sha:&str,used:&BTreeSet<String>
+)->Result<(String,PathBuf,PathBuf)>{
+    let(dir_prefix,stem,ext)=split_rel_asset(old_rel);
+    let mut attempts=vec![
+        format!("{dir_prefix}{stem}-{}{ext}",&src_sha[..8.min(src_sha.len())]),
+        format!("{dir_prefix}{stem}-{}{ext}",&src_sha[..12.min(src_sha.len())]),
+    ];
+    for idx in 2..=99{
+        attempts.push(format!("{dir_prefix}{stem}-{}-{idx}{ext}",&src_sha[..8.min(src_sha.len())]));
+    }
+    for cand in attempts{
+        if used.contains(&cand){continue;}
+        let Ok(dst)=target(root,&cand,false) else {continue;};
+        if !dst.starts_with(assets){continue;}
+        let dst_ok=match record(&dst)?{
+            None=>true,
+            Some(b)=>b["sha256"].as_str()==Some(src_sha),
+        };
+        if !dst_ok{continue;}
+        let Ok(src_dst)=target(rr,&cand,false) else {continue;};
+        let src_ok=match record(&src_dst)?{
+            None=>true,
+            Some(b)=>b["sha256"].as_str()==Some(src_sha),
+        };
+        if src_ok{return Ok((cand,dst,src_dst));}
+    }
+    anyhow::bail!("Unable to find a non-conflicting asset path for {old_rel}")
+}
+
+fn rewrite_embed_links(text:&str,rewrites:&BTreeMap<String,String>)->Result<String>{
+    static WIKI_IMG:OnceLock<regex::Regex>=OnceLock::new();
+    let wiki_img=WIKI_IMG.get_or_init(||regex::Regex::new(r"!\[\[([^\]\n|]+)(?:\|[^\]\n]*)?\]\]").expect("wiki image regex"));
+    let mut out_lines=Vec::new();
+    let mut fenced:Option<(u8,usize,String)>=None;
+    let mut comment=None;
+    let mut front=text.split('\n').next().is_some_and(|s|s.trim()=="---");
+    for(index,orig_line)in text.split('\n').enumerate(){
+        if front{
+            out_lines.push(orig_line.to_owned());
+            if index>0&&matches!(orig_line.trim(),"---"|"..."){front=false;}
+            continue;
+        }
+        if let Some((mark,width,lang))=&fenced{
+            let closing=crate::validate::closing(orig_line,*mark,*width);
+            let keep_rich=lang=="rich-table";
+            if closing{fenced=None;}
+            if !keep_rich{out_lines.push(orig_line.to_owned());continue;}
+        }else{
+            let(masked,next)=crate::validate::mask_comments(orig_line,comment);
+            if let Some((mark,width,lang))=crate::validate::fence(&masked){
+                fenced=Some((mark,width,lang.into()));comment=next;
+                out_lines.push(orig_line.to_owned());continue;
+            }
+            if crate::validate::indentation(&masked)>=4{
+                comment=next;out_lines.push(orig_line.to_owned());continue;
+            }
+        }
+        let(masked,next)=crate::validate::mask_comments(orig_line,comment);
+        comment=next;
+        let vis=crate::validate::mask_delimited(&crate::validate::mask_delimited(&masked,'\x60'),'$');
+        let orig_off=crate::syntax::Offsets::new(orig_line);
+        let vis_off=crate::syntax::Offsets::new(&vis);
+        let mut edits:Vec<(usize,usize,String)>=Vec::new();
+        for link in crate::syntax::scan_links(&vis){
+            if !link.image{continue;}
+            let decoded=percent_encoding::percent_decode_str(&link.href).decode_utf8()?.into_owned();
+            if let Some(new_rel)=rewrites.get(&decoded){
+                if let Some((ds,de,angle))=crate::syntax::image_destination_span(&vis,&link){
+                    let oa=orig_off.remap(&vis_off,ds);
+                    let ob=orig_off.remap(&vis_off,de);
+                    let encoded=if !angle&&new_rel.contains(char::is_whitespace){new_rel.replace(' ',"%20")}else{new_rel.clone()};
+                    edits.push((oa,ob,encoded));
+                }
+            }
+        }
+        for cap in wiki_img.captures_iter(&vis){
+            if crate::syntax::escaped(&vis,cap.get(0).unwrap().start()){continue;}
+            let m=cap.get(1).unwrap();
+            let decoded=percent_encoding::percent_decode_str(m.as_str()).decode_utf8()?.into_owned();
+            if let Some(new_rel)=rewrites.get(&decoded){
+                let oa=orig_off.remap(&vis_off,m.start());
+                let ob=orig_off.remap(&vis_off,m.end());
+                edits.push((oa,ob,new_rel.clone()));
+            }
+        }
+        if edits.is_empty(){
+            out_lines.push(orig_line.to_owned());
+        }else{
+            edits.sort_by_key(|e|e.0);
+            let mut rebuilt=String::with_capacity(orig_line.len()+64);
+            let mut cursor=0usize;
+            for(a,b,rep)in edits{
+                if a<cursor{continue;}
+                rebuilt.push_str(&orig_line[cursor..a]);
+                rebuilt.push_str(&rep);
+                cursor=b;
+            }
+            rebuilt.push_str(&orig_line[cursor..]);
+            out_lines.push(rebuilt);
+        }
+    }
+    Ok(out_lines.join("\n"))
+}
+
+pub fn plan_standalone(opt:StandalonePlanOptions<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    if let Some(h)=opt.expected_existing_sha{ensure!(sha(h),"Expected target SHA-256 must be an actual digest");}
+    let root=actual_root(opt.vault)?;
+    ensure!(actual_root(&root.join(".obsidian"))?.starts_with(&root),"Confirm an actual vault root");
+    let lit=target(&root,opt.literature_relative,true)?;
+    ensure!(lit.is_dir(),"Confirmed literature directory must exist");
+    let assets=target(&root,opt.assets_relative,true)?;
+    ensure!(assets.starts_with(&lit)&&assets!=lit,"Confirm separate asset directory within literature root");
+    let note=target(&root,opt.note_relative,false)?;
+    ensure!(note.starts_with(&lit)&&!note.starts_with(&assets)&&note.extension().is_some_and(|v|v=="md"),
+        "Note target must be a Markdown file within the literature root, outside assets");
+    let backup=opt.backup_root.map(|b|->Result<PathBuf>{
+        let b=actual_root(b)?;
+        ensure!(!b.starts_with(&root)&&!root.starts_with(&b),"Backup root must lie outside vault");
+        Ok(b)
+    }).transpose()?;
+    crate::check_write::no_link(opt.candidate)?;
+    let cp=files::canonical(opt.candidate)?;
+    ensure!(!cp.starts_with(&root)&&cp!=note,"Candidate must be an independent vault-external file");
+    let rr=actual_root(opt.resource_root)?;
+    ensure!(!rr.starts_with(&root),"Resource root must remain outside vault");
+    if let Some(out)=opt.commit_request_output{
+        crate::pipeline::ensure_outside_vault(out)?;
+        ensure!(!out.starts_with(&root),"Commit request output must remain outside vault");
+    }
+    ensure!(fs::metadata(&cp)?.len()<=NOTE_LIMIT,"Candidate exceeds byte budget");
+    let(raw,mut candidate)=files::read_bound(&cp)?;
+    ensure!(raw.len() as u64<=NOTE_LIMIT,"Candidate exceeded budget while reading");
+    let text=std::str::from_utf8(&raw)?.to_owned();
+    let mut findings=Vec::new();
+    let has_crlf=raw.contains(&b'\r');
+    if has_crlf{findings.push(reason("CANDIDATE_NOT_LF",&cp,"Final note must preserve UTF-8 LF bytes."));}
+    let props=properties::split(&raw)?;
+    if let Some(payload)=props.payload{
+        let yaml=properties::parse_yaml(payload)?;
+        if !yaml.is_object()||yaml.get("库内参考文献").is_some(){
+            findings.push(reason("CANDIDATE_PROPERTIES",&cp,"Resolve deprecated or malformed YAML before publication."));
+        }
+    }else{
+        findings.push(reason("CANDIDATE_PROPERTIES",&cp,"Final candidate has no top-level property mapping."));
+    }
+    let val_findings=crate::validate::validate_note(&text);
+    for f in val_findings.iter().filter(|f|f.level=="error"){
+        findings.push(reason("CANDIDATE_VALIDATION_ERROR",&cp,&format!("line {}: {} ({})",f.line,f.code,f.message)));
+    }
+    let existing=record(&note)?;
+    match (&existing,opt.expected_existing_sha){
+        (None,None)=>{},
+        (Some(r),Some(h)) if r["sha256"]==h=>{},
+        (actual,expected)=>findings.push(reason("TARGET_PRECONDITION_MISMATCH",&note,&format!(
+            "Preserve the current target; expected {}, actual {}.",
+            expected.unwrap_or("absent"),
+            actual.as_ref().and_then(|v|v["sha256"].as_str()).unwrap_or("absent")
+        ))),
+    }
+    let inv=inventory::inspect(&text)?;
+    let mut embeds=BTreeMap::<String,Vec<usize>>::new();
+    for(href,line,_)in inv.resources{
+        let decoded=percent_encoding::percent_decode_str(&href).decode_utf8()?.into_owned();
+        ensure!(!decoded.contains(['#','?']),"Use actual vault-relative embed resource paths, not fragments or query parameters");
+        relative(&decoded)?;
+        embeds.entry(decoded).or_default().push(line);
+    }
+    let can_rewrite=!has_crlf&&findings.iter().all(|f|f["code"]!="CANDIDATE_PROPERTIES"&&f["code"]!="CANDIDATE_VALIDATION_ERROR");
+    let mut used_rels:BTreeSet<String>=embeds.keys().cloned().collect();
+    let mut rewrites=BTreeMap::<String,String>::new();
+    let mut rewritten_assets=Vec::new();
+    let mut resource_rows=Vec::with_capacity(embeds.len());
+    let mut commit_resources=Vec::with_capacity(embeds.len());
+    let n=embeds.len();
+    for(i,(href,lines))in embeds.into_iter().enumerate(){
+        let dst=target(&root,&href,false)?;
+        ensure!(dst.starts_with(&assets),"Embed outside declared vault asset directory");
+        let src=target(&rr,&href,false)?;
+        let source=record(&src)?.context("Actual candidate embed bytes missing")?;
+        ensure!(fs::metadata(&src)?.len()>0,"Candidate embed is empty");
+        let src_sha=source["sha256"].as_str().context("source sha256")?.to_owned();
+        let prior=record(&dst)?;
+        let mut final_rel=href.clone();
+        let mut final_dst=dst.clone();
+        let mut final_src=source.clone();
+        let mut final_prior=prior.clone();
+        let mut reuse_existing=false;
+        let mut ownership_confirmed=false;
+        let disposition=if prior.is_none(){
+            "create_if_absent"
+        }else if prior.as_ref().is_some_and(|p|p["sha256"]==src_sha){
+            if opt.reuse_identical_assets{
+                reuse_existing=true;ownership_confirmed=true;"reuse_identical"
+            }else{
+                findings.push(reason("ASSET_OWNERSHIP_PENDING",&dst,"Equal bytes alone do not establish resource ownership; verify the existing owner."));
+                "same_bytes_ownership_pending"
+            }
+        }else if opt.disambiguate_conflicts&&can_rewrite{
+            let(new_rel,new_dst,new_rr_dst)=choose_disambiguated_rel(&root,&assets,&rr,&href,&src_sha,&used_rels)?;
+            used_rels.insert(new_rel.clone());
+            let src_file_path=path(&source["path"])?;
+            let new_src_binding=if let Some(existing_rr)=record(&new_rr_dst)?{
+                existing_rr
+            }else{
+                let created_rr=parents(&rr,&new_rel)?;
+                copy_resource(&src_file_path,&src_sha,&created_rr)?
+            };
+            let new_dst_prior=record(&new_dst)?;
+            if new_dst_prior.is_some(){
+                if opt.reuse_identical_assets{
+                    reuse_existing=true;ownership_confirmed=true;
+                }else{
+                    findings.push(reason("ASSET_OWNERSHIP_PENDING",&new_dst,"Disambiguated destination exists with identical bytes; verify ownership."));
+                }
+            }
+            rewrites.insert(href.clone(),new_rel.clone());
+            rewritten_assets.push(json!({"from":href,"to":new_rel,"sha256":src_sha}));
+            final_rel=new_rel;
+            final_dst=new_dst;
+            final_src=new_src_binding;
+            final_prior=new_dst_prior;
+            "disambiguated_conflict"
+        }else{
+            findings.push(reason("ASSET_CONFLICT",&dst,"Different existing asset bytes; never overwrite. Choose a new planned path."));
+            "conflict"
+        };
+        resource_rows.push(json!({
+            "relative_path":final_rel,
+            "original_relative_path":if final_rel!=href{json!(href)}else{Value::Null},
+            "source":final_src,
+            "destination":path_text(&final_dst)?,
+            "existing":final_prior,
+            "disposition":disposition,
+            "candidate_lines":lines
+        }));
+        commit_resources.push(json!({
+            "relative_path":final_rel,
+            "source_path":final_src["path"],
+            "expected_source_sha256":src_sha,
+            "expected_existing_sha256":final_prior.as_ref().map(|p|p["sha256"].clone()).unwrap_or(Value::Null),
+            "reuse_existing":reuse_existing,
+            "ownership_confirmed":ownership_confirmed
+        }));
+        progress(i+1,n,"plan standalone vault publication resources");
+    }
+    if !rewrites.is_empty(){
+        let rewritten_text=rewrite_embed_links(&text,&rewrites)?;
+        let post_inv=inventory::inspect(&rewritten_text)?;
+        for(rem_href,_,_)in &post_inv.resources{
+            let decoded=percent_encoding::percent_decode_str(rem_href).decode_utf8()?.into_owned();
+            ensure!(!rewrites.contains_key(&decoded),"Failed to rewrite all instances of conflicting asset {decoded}");
+        }
+        crate::pipeline::publish_replace(&cp,rewritten_text.as_bytes())?;
+        candidate=check_ledger::bind_file(&cp)?;
+    }
+    ensure!(record(&note)?==existing,"Note target changed during read-only planning");
+    let mut commit_kwargs=serde_json::Map::new();
+    if let Some(b)=&backup{commit_kwargs.insert("backup_root".into(),json!(path_text(b)?));}
+    commit_kwargs.insert("literature_relative".into(),json!(opt.literature_relative));
+    commit_kwargs.insert("assets_relative".into(),json!(opt.assets_relative));
+    commit_kwargs.insert("note_relative".into(),json!(opt.note_relative));
+    commit_kwargs.insert("candidate_path".into(),candidate["path"].clone());
+    commit_kwargs.insert("expected_candidate_sha256".into(),candidate["sha256"].clone());
+    commit_kwargs.insert("expected_existing_sha256".into(),existing.as_ref().map(|v|v["sha256"].clone()).unwrap_or(Value::Null));
+    commit_kwargs.insert("resources".into(),Value::Array(commit_resources));
+    commit_kwargs.insert("scope".into(),json!("standalone_markdown"));
+    commit_kwargs.insert("authorized".into(),json!(false));
+    let commit_request=json!({
+        "schema_version":1,
+        "operation":"vault_publish.commit_markdown",
+        "args":[path_text(&root)?],
+        "kwargs":Value::Object(commit_kwargs),
+    });
+    let mut commit_request_file=Value::Null;
+    if let Some(out)=opt.commit_request_output{
+        if let Some(parent)=out.parent().filter(|p|!p.as_os_str().is_empty()){fs::create_dir_all(parent)?;}
+        let mut raw_req=serde_json::to_vec_pretty(&commit_request)?;
+        raw_req.push(b'\n');
+        crate::pipeline::publish_replace(out,&raw_req)?;
+        commit_request_file=json!(path_text(&files::canonical(out)?)?);
+    }
+    let ready=findings.is_empty();
+    Ok(json!({
+        "schema_version":1,
+        "scope":"standalone_markdown",
+        "candidate":candidate,
+        "candidate_rewritten":!rewrites.is_empty(),
+        "rewritten_assets":rewritten_assets,
+        "vault_root":path_text(&root)?,
+        "literature_root":path_text(&lit)?,
+        "assets_root":path_text(&assets)?,
+        "note_relative_path":opt.note_relative,
+        "target_path":path_text(&note)?,
+        "expected_existing_sha256":opt.expected_existing_sha,
+        "existing":existing,
+        "resources":resource_rows,
+        "findings":findings,
+        "preconditions_ready":ready,
+        "vault_modified":false,
+        "source_fidelity":"not_assessed",
+        "backup_required":existing.is_some(),
+        "commit_request":commit_request,
+        "commit_request_file":commit_request_file,
+        "boundary":BOUNDARY
+    }))
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn standalone_planner_reuses_identical_disambiguates_conflicts_and_commits(){
+        let dir=tempdir().unwrap();
+        let vault=dir.path().join("vault");
+        let backup=dir.path().join("backup");
+        let work=dir.path().join("work");
+        fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        fs::create_dir_all(vault.join("03_Literature/Assets/Paper")).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        fs::create_dir_all(work.join("03_Literature/Assets/Paper")).unwrap();
+
+        let same_bytes=b"same-image-bytes";
+        let conflict_old=b"old-existing-asset";
+        let conflict_new=b"new-replacement-asset";
+        let fresh_bytes=b"fresh-asset-bytes";
+
+        fs::write(vault.join("03_Literature/Assets/Paper/same.png"),same_bytes).unwrap();
+        fs::write(vault.join("03_Literature/Assets/Paper/diff.png"),conflict_old).unwrap();
+
+        fs::write(work.join("03_Literature/Assets/Paper/same.png"),same_bytes).unwrap();
+        fs::write(work.join("03_Literature/Assets/Paper/diff.png"),conflict_new).unwrap();
+        fs::write(work.join("03_Literature/Assets/Paper/fresh.png"),fresh_bytes).unwrap();
+
+        let cand=work.join("note.md");
+        let md=concat!(
+            "---\ntype: literature-note\n---\n\n# Title\n\n",
+            "![s](03_Literature/Assets/Paper/same.png)\n\n",
+            "![d](03_Literature/Assets/Paper/diff.png)\n\n",
+            "![f](03_Literature/Assets/Paper/fresh.png)\n"
+        );
+        fs::write(&cand,md).unwrap();
+        let req_out=work.join("commit-request.json");
+
+        let plan=plan_standalone(StandalonePlanOptions{
+            vault:&vault,
+            literature_relative:"03_Literature",
+            assets_relative:"03_Literature/Assets",
+            note_relative:"03_Literature/Paper.md",
+            candidate:&cand,
+            resource_root:&work,
+            backup_root:Some(&backup),
+            expected_existing_sha:None,
+            reuse_identical_assets:true,
+            disambiguate_conflicts:true,
+            commit_request_output:Some(&req_out),
+        },|_,_,_|{}).unwrap();
+
+        assert_eq!(plan["preconditions_ready"],true,"{plan}");
+        assert_eq!(plan["vault_modified"],false);
+        assert_eq!(plan["candidate_rewritten"],true);
+        assert_eq!(plan["commit_request"]["kwargs"]["authorized"],false);
+        assert!(req_out.exists());
+
+        // Vault remains unmodified after planning
+        assert_eq!(fs::read(vault.join("03_Literature/Assets/Paper/diff.png")).unwrap(),conflict_old);
+        assert!(!vault.join("03_Literature/Paper.md").exists());
+
+        let new_rel=plan["rewritten_assets"][0]["to"].as_str().unwrap();
+        assert!(new_rel.starts_with("03_Literature/Assets/Paper/diff-"));
+        assert!(fs::read_to_string(&cand).unwrap().contains(new_rel));
+
+        // Commit using the planned resources
+        let kwargs=&plan["commit_request"]["kwargs"];
+        let commit_res=commit(CommitOptions{
+            vault:&vault,
+            backup_root:&backup,
+            literature_relative:"03_Literature",
+            assets_relative:"03_Literature/Assets",
+            note_relative:"03_Literature/Paper.md",
+            candidate:&cand,
+            candidate_sha:kwargs["expected_candidate_sha256"].as_str().unwrap(),
+            expected_existing_sha:None,
+            resources:&kwargs["resources"],
+            authorized:true,
+            scope:"standalone_markdown",
+            workflow_run:None,
+        },|_,_,_|{}).unwrap();
+
+        assert_eq!(commit_res["status"],"verified_file_write");
+        assert!(vault.join("03_Literature/Paper.md").exists());
+        assert_eq!(fs::read(vault.join(new_rel)).unwrap(),conflict_new);
+        assert_eq!(fs::read(vault.join("03_Literature/Assets/Paper/diff.png")).unwrap(),conflict_old);
+    }
 }

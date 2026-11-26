@@ -5,7 +5,7 @@ use anyhow::{ensure,Context,Result,bail};
 use base64::{engine::general_purpose::STANDARD,Engine as _};
 use serde_json::{json,Value};
 use std::{collections::{BTreeMap,BTreeSet},fs,io::{BufReader,Read,Seek,SeekFrom,Write},net::{Ipv4Addr,SocketAddr,TcpListener,TcpStream},
-    path::{Path,PathBuf},process::{Child,Command,ExitStatus,Stdio},time::{Duration,Instant},thread};
+    path::{Path,PathBuf},process::{Child,Command,ExitStatus,Stdio},sync::OnceLock,time::{Duration,Instant},thread};
 use crate::{check_write,files,path,parse_json};
 pub const UPSTREAM:&str="c21a3ca524263ef8166cb6d350864b10c3056b61";
 pub const LLAMA_RELEASE:&str="b11901";
@@ -186,7 +186,8 @@ fn command(e:&EngineFiles)->Command{
 fn log_offload(p:&Path)->Result<Option<(u64,u64)>>{
     ensure!(fs::metadata(p)?.len()<=8*1024*1024,"Runtime startup log exceeds budget");
     let s=fs::read_to_string(p)?;
-    let re=regex::Regex::new(r"offloaded ([0-9]+)/([0-9]+) layers to GPU")?;
+    static OFFLOAD_RE:OnceLock<regex::Regex>=OnceLock::new();
+    let re=OFFLOAD_RE.get_or_init(||regex::Regex::new(r"offloaded ([0-9]+)/([0-9]+) layers to GPU").expect("static regex"));
     let r=re.captures_iter(&s).last().and_then(|c|Some((c[1].parse().ok()?,c[2].parse().ok()?)));
     Ok(r)
 }

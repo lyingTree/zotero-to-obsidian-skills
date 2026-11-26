@@ -60,6 +60,23 @@ fn pdfcraft_headless_pixels_glyphs_and_rotated_crop(){
     assert_eq!(fs::read(dir.join("full.png")).unwrap(),b"keep existing");
 }
 
+#[test]
+fn transparent_region_preserves_alpha_without_white_matte(){
+    let tmp=tempfile::tempdir().unwrap();let dir=tmp.path();let pdf=dir.join("fixture.pdf");fixture(&pdf);
+    let coords=json!({"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"});
+    let result=backend::render_region_with_options(&pdf,1,&json!([0,0,60,100]),&coords,72,&dir.join("alpha"),None,false,true).unwrap();
+    assert_eq!(result["pixel_format"],"rgba8");
+    assert_eq!(result["transparent_background"],true);
+    assert_eq!(result["alpha_preserved"],true);
+    assert_eq!(result["alpha_min"],0);
+    let img=image::open(dir.join("alpha.png")).unwrap().into_rgba8();
+    assert_eq!(img.get_pixel(20,60).0,[255,0,0,255]);
+    assert_eq!(img.get_pixel(59,10).0[3],0);
+    let opaque=backend::render_region_with_options(&pdf,1,&json!([0,0,60,100]),&coords,72,&dir.join("opaque"),None,false,false).unwrap();
+    assert_eq!(opaque["pixel_format"],"rgb8");
+    assert_eq!(image::open(dir.join("opaque.png")).unwrap().into_rgba8().get_pixel(59,10).0,[255,255,255,255]);
+}
+
 
 #[test]
 fn strict_native_image_extraction_preserves_bytes_and_alpha(){
@@ -110,7 +127,7 @@ fn native_crop_with_context_keeps_four_pending_edges(){
     let coords=json!({"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"});
     let bbox=json!([5,5,45,25]);
     let result=pdf_boundary::render_page_region(&pdf,RegionOptions{page:1,bbox:&bbox,coordinate_system:&coords,destination:&dest,margin:0.,
-        dpi:72,expected:None,context:None,context_margin:20.,context_dpi:72}).unwrap();
+        dpi:72,expected:None,context:None,context_margin:20.,context_dpi:72,overwrite:false,transparent:false}).unwrap();
     assert_eq!(result["rendered_bbox"],json!([5.,5.,45.,25.]));
     assert_eq!(result["boundary_check"]["suggestion_applied"],false);
     assert_eq!(result["boundary_check"]["full_page_review_required"],true);
@@ -120,6 +137,30 @@ fn native_crop_with_context_keeps_four_pending_edges(){
     }
     assert_eq!(image::open(&dest).unwrap().width(),40);assert_eq!(fs::read(&pdf).unwrap(),original);
     assert!(pdf_boundary::inspect_crop_boundaries(&pdf,1,&json!([0,0,201,100]),&coords,&root.join("bad.png"),20.,72,None).is_err());
+
+    let prior_crop=fs::read(&dest).unwrap();
+    let ctx_path=root.join("crop-context.png");
+    let bnd_path=root.join("crop-context-boundaries.png");
+    let prior_ctx=fs::read(&ctx_path).unwrap();
+    let prior_bnd=fs::read(&bnd_path).unwrap();
+    let revised_bbox=json!([8,8,56,38]);
+    assert!(pdf_boundary::render_page_region(&pdf,RegionOptions{page:1,bbox:&revised_bbox,coordinate_system:&coords,destination:&dest,margin:0.,
+        dpi:72,expected:None,context:None,context_margin:20.,context_dpi:72,overwrite:false,transparent:false}).is_err());
+    assert_eq!(fs::read(&dest).unwrap(),prior_crop);
+    assert_eq!(fs::read(&ctx_path).unwrap(),prior_ctx);
+    assert_eq!(fs::read(&bnd_path).unwrap(),prior_bnd);
+
+    let updated=pdf_boundary::render_page_region(&pdf,RegionOptions{page:1,bbox:&revised_bbox,coordinate_system:&coords,destination:&dest,margin:0.,
+        dpi:72,expected:None,context:None,context_margin:20.,context_dpi:72,overwrite:true,transparent:false}).unwrap();
+    assert_eq!(updated["rendered_bbox"],json!([8.,8.,56.,38.]));
+    assert_eq!(image::open(&dest).unwrap().width(),48);
+    assert_ne!(fs::read(&dest).unwrap(),prior_crop);
+    assert_ne!(fs::read(&ctx_path).unwrap(),prior_ctx);
+    assert_ne!(fs::read(&bnd_path).unwrap(),prior_bnd);
+    for b in [&updated["asset"],&updated["boundary_check"]["context"]["asset"],&updated["boundary_check"]["context"]["annotated_asset"]]{
+        assert_eq!(files::snapshot(Path::new(b["path"].as_str().unwrap())).unwrap()["sha256"],b["sha256"]);
+    }
+    assert_eq!(fs::read(&pdf).unwrap(),original);
 }
 
 

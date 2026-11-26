@@ -2,7 +2,7 @@ use crate::{decision, parse_json, path, path_text};
 use anyhow::{anyhow, ensure, Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, fs::{self,File}, io::{Read,BufReader}, path::{Path,PathBuf}};
+use std::{collections::HashMap, fs::{self,File}, io::Read, path::{Path,PathBuf}};
 
 pub fn digest(data:&[u8])->String { format!("{:x}",Sha256::digest(data)) }
 pub fn canonical(p:&Path)->Result<PathBuf> {
@@ -25,7 +25,7 @@ fn hint_uncached(file:&File){
 fn snapshot_impl(p:&Path,model_limit:Option<u64>)->Result<Value> {
     let p=canonical(p)?;
     ensure!(fs::metadata(&p)?.is_file(),"not a regular file");
-    let file=File::open(&p)?;
+    let mut file=File::open(&p)?;
     let before=file.metadata()?;
     ensure!(before.is_file(),"not a regular file");
     if let Some(limit)=model_limit{
@@ -33,18 +33,18 @@ fn snapshot_impl(p:&Path,model_limit:Option<u64>)->Result<Value> {
         #[cfg(target_os="macos")]
         hint_uncached(&file);
     }
-    let mut stream=BufReader::with_capacity(1024*1024,file);
-    let mut buffer=vec![0u8;1024*1024];
+    let cap=before.len().clamp(4096,1024*1024) as usize;
+    let mut buffer=vec![0u8;cap];
     let mut hasher=Sha256::new();
     let mut size=0u64;
     loop {
-        let n=stream.read(&mut buffer)?;
+        let n=file.read(&mut buffer)?;
         if n==0 {break;}
         size+=n as u64;
         ensure!(model_limit.is_none_or(|limit|size<=limit),"Model asset exceeds size budget");
         hasher.update(&buffer[..n]);
     }
-    let after=stream.get_ref().metadata()?;
+    let after=file.metadata()?;
     ensure!(size==before.len() && size==after.len() && before.modified().ok()==after.modified().ok(),
         "file changed while reading");
     Ok(json!({"path":path_text(&p)?,"sha256":format!("{:x}",hasher.finalize()),"size":size}))

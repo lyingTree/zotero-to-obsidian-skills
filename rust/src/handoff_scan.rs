@@ -3,8 +3,10 @@
 use anyhow::{ensure,Context,Result};
 use regex::Regex;
 use serde_json::{json,Value};
-use std::collections::{BTreeMap,BTreeSet};
+use std::{collections::{BTreeMap,BTreeSet},sync::OnceLock};
 use crate::{files,syntax,validate,yaml_nodes};
+
+macro_rules! rx{($pat:expr)=>{{static RE:OnceLock<Regex>=OnceLock::new();RE.get_or_init(||Regex::new($pat).expect("static handoff_scan regex"))}}}
 
 const MAX_LINKS:usize=100_000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -127,7 +129,7 @@ fn hits(raw:&str,mask:&str,defs:&BTreeMap<String,String>,excluded:&[Span])->Resu
         let label=raw.get(l.label_start..l.label_end).context("Invalid inline link span")?;
         add(&mut out,&mut used,Hit{span:Span{start:l.start,end:l.end},href:l.href,label:label.to_owned(),image:l.image,syntax:"markdown"})?;
     }
-    let wiki=Regex::new(r"!?\[\[([^\]\n|]+)(?:\|([^\]\n]*))?\]\]")?;
+    let wiki=rx!(r"!?\[\[([^\]\n|]+)(?:\|([^\]\n]*))?\]\]");
     for c in wiki.captures_iter(mask){
         let m=c.get(0).unwrap();if syntax::escaped(mask,m.start()){continue;}
         add(&mut out,&mut used,Hit{span:Span{start:m.start(),end:m.end()},href:c[1].to_owned(),
@@ -146,24 +148,25 @@ fn hits(raw:&str,mask:&str,defs:&BTreeMap<String,String>,excluded:&[Span])->Resu
         let image=a>0&&mask.as_bytes()[a-1]==b'!'&&!syntax::escaped(mask,a-1);
         add(&mut out,&mut used,Hit{span:Span{start:a-usize::from(image),end},href:href.clone(),label:display.to_owned(),image,syntax:"reference_markdown"})?;
     }
-    let html=Regex::new(r#"(?is)<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>(.*?)</a\s*>"#)?;
+    let html=rx!(r#"(?is)<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>(.*?)</a\s*>"#);
     for c in html.captures_iter(mask){
         let m=c.get(0).unwrap();add(&mut out,&mut used,Hit{span:Span{start:m.start(),end:m.end()},href:c.get(1).or_else(||c.get(2)).unwrap().as_str().to_owned(),
             label:c[3].to_owned(),image:false,syntax:"html"})?;
     }
-    let auto=Regex::new(r"<((?:[A-Za-z][A-Za-z0-9+.-]*:[^<>\s]+)|(?:[^<>\s@]+@[^<>\s@]+\.[^<>\s@]+))>")?;
+    let auto=rx!(r"<((?:[A-Za-z][A-Za-z0-9+.-]*:[^<>\s]+)|(?:[^<>\s@]+@[^<>\s@]+\.[^<>\s@]+))>");
     for c in auto.captures_iter(mask){
         let m=c.get(0).unwrap();let s=&c[1];let href=if s.contains(':'){s.to_owned()}else{format!("mailto:{s}")};
         add(&mut out,&mut used,Hit{span:Span{start:m.start(),end:m.end()},href,label:s.to_owned(),image:false,syntax:"autolink"})?;
     }
-    let url=Regex::new(r"(?:https?|ftp)://[^\s<>\[\]\x60]+")?;
+    let url=rx!(r"(?:https?|ftp)://[^\s<>\[\]\x60]+");
     for m in url.find_iter(mask){
         if used[m.start()]!=0{continue;}
         let mut s=m.as_str().trim_end_matches(['.',',',';',':','!','?']);
         while s.ends_with(')')&&s.bytes().filter(|b|*b==b')').count()>s.bytes().filter(|b|*b==b'(').count(){s=&s[..s.len()-1];}
         if !s.is_empty(){add(&mut out,&mut used,Hit{span:Span{start:m.start(),end:m.start()+s.len()},href:s.to_owned(),label:s.to_owned(),image:false,syntax:"bare_url"})?;}
     }
-    for m in Regex::new(r"(?i)<(?:a|img|audio|video|source)\b")?.find_iter(mask){
+    for c in rx!(r"(?i)(<(?:a|img|audio|video|source))(?:[\s/>])").captures_iter(mask){
+        let m=c.get(1).unwrap();
         ensure!(used[m.start()]!=0,"MAP_LINK_SYNTAX_UNSUPPORTED: {}",m.as_str());
     }
     out.sort_by_key(|h|(h.span.start,h.span.end));Ok(out)
@@ -202,12 +205,12 @@ impl Candidate{
         while i<raw.len(){let b=raw.as_bytes()[i];if b==b'\r'{i+=1;if raw.as_bytes().get(i)==Some(&b'\n'){i+=1;}lf.push(b'\n');}
             else{lf.push(b);i+=1;}map.push(i);}
         let visible=visible(&raw)?;let offsets=syntax::Offsets::new(&raw);
-        let mut anchors=BTreeMap::new();let mut headings=BTreeMap::<String,Vec<Span>>::new();
-        let a=Regex::new(r"(?m)(?:^|[ \t])(\^([A-Za-z0-9-]+)[ \t]*)(?:\r?$)")?;
+        let a=rx!(r"(?m)(?:^|[ \t])(\^([A-Za-z0-9-]+)[ \t]*)(?:\r?$)");
+        let mut anchors=BTreeMap::new();
         for c in a.captures_iter(&visible.prose){
             let m=c.get(1).unwrap();ensure!(anchors.insert(c[2].to_owned(),Span{start:m.start(),end:m.end()}).is_none(),"MAP_CANDIDATE_ANCHOR_DUPLICATE: {}",&c[2]);
         }
-        let heading=Regex::new(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*$")?;let mut stack=Vec::<(usize,String)>::new();
+        let heading=rx!(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*$");let mut headings=BTreeMap::<String,Vec<Span>>::new();let mut stack=Vec::<(usize,String)>::new();
         for r in syntax::lines(&visible.prose){
             if let Some(c)=heading.captures(syntax::body(&visible.prose,r)){
                 let level=c[1].len();let title=c[2].trim_end_matches('#').trim().to_owned();
@@ -315,7 +318,7 @@ impl Candidate{
             }Span{start,end}
         };
         ensure!(s.start<s.end&&self.visible.target.get(s.start..s.end).is_some_and(|t|!t.trim().is_empty()),"MAP_TARGET_HIDDEN");
-        ensure!(!Regex::new(r"\^[A-Za-z0-9-]+")?.replace_all(&self.visible.target[s.start..s.end],"").trim().is_empty(),"MAP_TARGET_EMPTY");
+        ensure!(!rx!(r"\^[A-Za-z0-9-]+").replace_all(&self.visible.target[s.start..s.end],"").trim().is_empty(),"MAP_TARGET_EMPTY");
         Ok(s)
     }
 }
@@ -401,5 +404,14 @@ mod tests{
         assert_eq!(c.links[1].locator["json_pointer"],"/rows/0/cells/a");
         let s=c.resolve(&json!({"anchor":"tbl-a"}),"table").unwrap();
         assert!(c.links.iter().all(|l|s.contains(l.span)));
+    }
+    #[test]
+    fn prose_math_comparison_not_rejected_while_raw_html_tags_remain_blocked(){
+        let ok="已知 B,C<A，后续可得结论，且 $x<a$ 与 y<a, z<video, 不构成标签。\n";
+        assert!(Candidate::new(ok.as_bytes()).is_ok());
+        for bad in ["<a id=\"x\"></a>\n","<img src=\"x.png\"/>\n","<video controls></video>\n","<a>x</a>\n"]{
+            let err=Candidate::new(bad.as_bytes()).err().unwrap();
+            assert!(format!("{err:#}").contains("MAP_LINK_SYNTAX_UNSUPPORTED"),"{bad}: {err:#}");
+        }
     }
 }

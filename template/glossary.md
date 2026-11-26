@@ -1,25 +1,18 @@
 ---
 类型: 中英术语表
-版本: 2.0
-更新日期: 2026-11-22
+版本: 2
+更新日期: 2026-11-26
 用途: 科研文献英译中、概念辨析与证据定位
-重点: 中高层大气、重力波与观测
 ---
 
 # 中英术语表
-
 用于科研文献英译中与概念辨析；同一文献内保持译名一致，人名、原题名及公式变量不做机械替换，有歧义时保留英文。
 
 ## 1. 使用与核验说明
-
 **依据层级标记**：`标`（标准原文核对）、`对`（标准条目整理）、`中`（中文权威文献）、`参`（教材/论文概念参照，中文为建议译法）、`原`（用户既有约定）；来源编号可点击跳转至第 5 节核验范围说明。
 
 ## 2. 术语条目
-
-<a id="sec-01"></a>
-
 ### 2.1 中高层大气：分层与热力结构
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0001 | stable stratification | 稳定层结 | 不与静态稳定性、稳定流动等不同概念机械互换。 补充：气块受小幅垂直位移时具有恢复性浮力；稳定层结仍允许波动、输运和湍流。 | 原 [U01](#src-u01) / 参 [A01](#src-a01)；第1章试读；相关后续章节仅目录核验 |
@@ -73,10 +66,7 @@
 | T0049 | thermal wind balance | 热成风平衡 | 联系地转风垂直切变与水平温度梯度；热成风通常指风差关系而非独立气流。 | 参 [A01](#src-a01)；第1章试读；相关后续章节仅目录核验 |
 | T0050 | thermal expansion | 热膨胀 | 物质温度升高所引起的体积或密度变化；大气中的实际响应还受压力约束。 | 参 [A01](#src-a01)；第1章试读；相关后续章节仅目录核验 |
 
-<a id="sec-02"></a>
-
 ### 2.2 中高层大气：动力变量与基本平衡
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0051 | zonal wind | 纬向风 | 沿纬圈方向的风分量，通常东向为正；它与“西风”按来向命名的习惯须区分。 | 参 [A01](#src-a01)；第3章（目录核验）；通行动力学概念参照 |
@@ -120,10 +110,7 @@
 | T0089 | absolute angular momentum | 绝对角动量 | 相对于惯性参考系、通常绕地轴定义的角动量；包含地球自转的贡献。 | 参 [A01](#src-a01)；第3章（目录核验）；通行动力学概念参照 |
 | T0090 | available potential energy；别名/缩写：APE | 有效位能 | 相对于规定参考状态可转化为动能的位能部分；不等同于全部重力势能。 | 参 [A01](#src-a01)；第3章（目录核验）；通行动力学概念参照 |
 
-<a id="sec-03"></a>
-
 ### 2.3 中高层大气：重力波类型与波源
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0091 | atmospheric gravity wave | 大气重力波 | 指大气中的重力波，不译为天体物理的“引力波”。 补充：大气中由浮力恢复作用参与维持的波动；与广义相对论中的引力波严格区分。 | 原 [U01](#src-u01) / 参 [A02](#src-a02)；第2—3节概念参照 |
@@ -165,10 +152,7 @@
 | T0127 | body-force excitation | 体力激发 | 局地加速度或动量沉积作为体力再次激发波动；与边界推动的机制区分。 | 参 [A08](#src-a08)；摘要与局地体力模型 |
 | T0128 | spontaneous wave emission | 自发波辐射 | 近似平衡流演变时辐射波动的过程；不能将所有与急流相邻的波直接归类。 | 参 [A17](#src-a17)；平衡流与波辐射讨论 |
 
-<a id="sec-04"></a>
-
 ### 2.4 中高层大气：波动量、传播与谱结构
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0129 | buoyancy | 浮力 | buoyancy force、buoyancy acceleration 等量须分别保留“力”“加速度”等限定。 补充：气块与环境密度差相关的作用；浮力加速度与浮力本身的量纲应分别保留。 | 原 [U01](#src-u01) / 参 [A02](#src-a02)；第2节与第4节概念参照 |
@@ -222,10 +206,7 @@
 | T0177 | vertical-wavenumber spectrum | 垂直波数谱 | 按垂直波数分配波动方差或能量的谱；去背景方式和分辨率会影响谱形。 | 参 [A02](#src-a02)；第2节与第4节概念参照 |
 | T0178 | frequency-wavenumber spectrum | 频率—波数谱 | 同时描述时间频率和空间波数分布；识别传播方向需保留变换符号约定。 | 参 [A02](#src-a02)；第2节与第4节概念参照 |
 
-<a id="sec-05"></a>
-
 ### 2.5 中高层大气：波流作用、耗散与不稳定
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0179 | wave-mean flow interaction | 波—平均流相互作用 | 波动可输运动量并改变平均流，平均流又调制波的传播；不是单向外加强迫。 | 参 [A02](#src-a02)；第6—8节概念参照 |
@@ -276,10 +257,7 @@
 | T0224 | wave intermittency | 波动间歇性 | 波活动在时空中呈现不均匀突发的特征；长期平均较弱不排除短时强输运。 | 参 [A02](#src-a02)；第6—8节概念参照 |
 | T0225 | wave filtering | 波筛选；波滤波 | 背景风、层结或耗散使部分波谱能传播而其他部分受限；与数据滤波操作区分。 | 参 [A02](#src-a02)；第6—8节概念参照 |
 
-<a id="sec-06"></a>
-
 ### 2.6 中高层大气：大气潮汐与潮汐理论
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0226 | atmospheric tide | 大气潮汐 | 大气中与日或月周期相关的全球尺度振荡；与海洋潮汐的介质和主要驱动需区分。 | 参 [A04](#src-a04)、[A05](#src-a05)；教材目录及综述Atmospheric tides in the MLT节概念参照 |
@@ -316,10 +294,7 @@
 | T0257 | trapped tidal mode | 俘获潮汐模态 | 垂直结构使能量受限的潮汐模态；不是因为观测范围短而看似缺少传播。 | 参 [A04](#src-a04)、[A05](#src-a05)；教材目录及综述Atmospheric tides in the MLT节概念参照 |
 | T0258 | nonlinear tidal generation | 潮汐的非线性激发 | 不同波动相互作用产生潮汐频率分量的过程；不同于外部太阳加热直接驱动。 | 参 [A04](#src-a04)、[A05](#src-a05)；教材目录及综述Atmospheric tides in the MLT节概念参照 |
 
-<a id="sec-07"></a>
-
 ### 2.7 中高层大气：行星波与赤道波
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0259 | planetary wave | 行星波 | 水平尺度与行星尺度可比的波动；在中层大气中常涉及罗斯贝波但并非绝对同义。 | 参 [A01](#src-a01)、[A05](#src-a05)；第4章目录；Matsuno原论文摘要和分类概念参照 |
@@ -357,10 +332,7 @@
 | T0291 | wave-1 pattern | 纬向一波结构 | 沿完整纬圈有一个主要周期的空间结构；不直接说明该结构是否行进或定常。 | 参 [A01](#src-a01)、[A05](#src-a05)；第4章目录；Matsuno原论文摘要和分类概念参照 |
 | T0292 | wave-2 pattern | 纬向二波结构 | 沿完整纬圈有两个主要周期的空间结构；与时间上的半日周期没有必然对应。 | 参 [A01](#src-a01)、[A05](#src-a05)；第4章目录；Matsuno原论文摘要和分类概念参照 |
 
-<a id="sec-08"></a>
-
 ### 2.8 中高层大气：平均环流、平流层增温与层间耦合
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0293 | Brewer-Dobson circulation；别名/缩写：Brewer–Dobson circulation；BDC | 布鲁尔—多布森环流 | 平流层中包含热带上升和向中高纬输运的环流体系；广义输运概念还涉及混合。 | 参 [A21](#src-a21)；QBO、SSW及Brewer–Dobson环流文献概念参照 |
@@ -399,10 +371,7 @@
 | T0326 | downward propagation of annular-mode anomalies | 环状模态异常下传 | 异常结构随时间出现在更低高度的现象；不能直接认定是同一波包向下传播。 | 参 [A07](#src-a07)；QBO、SSW及Brewer–Dobson环流文献概念参照 |
 | T0327 | Holton-Tan relationship；别名/缩写：Holton–Tan relationship | 霍尔顿—谭关系 | 热带准两年振荡位相与冬季极区平流层状态的统计联系；存在季节和背景依赖。 | 参 [A06](#src-a06)；QBO、SSW及Brewer–Dobson环流文献概念参照 |
 
-<a id="sec-09"></a>
-
 ### 2.9 中高层大气：湍流、输运与中间层结构
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0328 | mesospheric bore | 中间层涌潮 | 大气波动中的 bore；不要与海岸或河口的潮汐涌潮混为同一过程。 补充：中间层波导中具有锋状跃变并可伴随后续波列的波动；不是海岸或河口潮汐涌潮。 | 原 [U01](#src-u01) / 参 [A09](#src-a09)、[A11](#src-a11)；bore理论及中间层逆温综述 |
@@ -444,10 +413,7 @@
 | T0364 | undular bore | 波状涌潮 | 跃变后伴有振荡波列的涌潮结构；用于大气时应注明介质与波导背景。 | 参 [A09](#src-a09)；Mesospheric bores摘要与模型 |
 | T0365 | hydraulic jump | 水跃；水力跃变 | 超临界向亚临界流转变时的跃变结构；大气类比须注明采用的浅水或分层流水力模型及临界条件，不要求流动为层流。 | 参 [A09](#src-a09)；中间层涌潮模型的水力类比 |
 
-<a id="sec-10"></a>
-
 ### 2.10 电离层结构与标准术语
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0366 | ionosphere | 电离层 | 按电离程度及其对电波的作用划分的区域；与按温度廓线划分的热层并非同一分层体系。 | 标 [B01](#src-b01)；2.1 |
@@ -481,10 +447,7 @@
 | T0394 | ionospheric absorption | 电离层吸收 | 电波传播能量因电离层碰撞过程而损失；不能将所有回波减弱都归因为该吸收。 | 标 [B01](#src-b01)；2.29 |
 | T0395 | radio occultation technology；别名/缩写：radio occultation；RO | 无线电掩星技术 | 利用穿越大气的卫星信号折射反演大气参数；其切点采样几何与天底观测不同。 | 标 [B01](#src-b01)；2.30 |
 
-<a id="sec-11"></a>
-
 ### 2.11 热层、电离层与中性大气耦合
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0396 | electron number density；别名/缩写：electron density | 电子数密度 | 单位体积中自由电子的数量；与沿路径积分的电子总含量不同，常用每立方米表示。 | 参 [B04](#src-b04)；详细目录所列第4、5、8—12章；概念级参照 |
@@ -551,10 +514,7 @@
 | T0457 | Farley–Buneman instability | 法利—布内曼不稳定性 | 碰撞磁化等离子体中相对漂移驱动的不稳定性；常用于E区不规则体解释。 | 参 [B04](#src-b04)；详细目录所列第4、5、8—12章；概念级参照 |
 | T0458 | plasma Rayleigh–Taylor instability | 等离子体瑞利—泰勒不稳定性 | 磁化等离子体中与重力、密度梯度及漂移有关的不稳定性；条件不等同于普通液体界面。 | 参 [B04](#src-b04)；详细目录所列第4、5、8—12章；概念级参照 |
 
-<a id="sec-12"></a>
-
 ### 2.12 中高层大气化学与成分
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0459 | atmospheric constituent | 大气组分 | 大气中可辨识的气体或颗粒物成分；描述含量时须明确是质量、摩尔数还是数密度。 | 参 [B05](#src-b05)、[B18](#src-b18) |
@@ -636,10 +596,7 @@
 | T0535 | nitric acid trihydrate；别名/缩写：NAT | 三水合硝酸 | 化学式HNO3·3H2O，是极地平流层云的重要凝结相；不要与液态硝酸水溶液混同。 | 参 [B19](#src-b19)；第10章10.3 |
 | T0536 | supercooled ternary solution；别名/缩写：STS | 过冷三元溶液 | 极地平流层云语境常为硫酸—硝酸—水溶液；三元的具体组分须按原文确认。 | 参 [B05](#src-b05)、[B18](#src-b18) |
 
-<a id="sec-13"></a>
-
 ### 2.13 高层大气辐射与能量交换
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0537 | local thermodynamic equilibrium；别名/缩写：LTE | 局地热力学平衡 | 局地粒子能级布居可由热力学温度描述的近似；不要求整层大气处于同一温度。 | 参 [B05](#src-b05)、[B07](#src-b07) |
@@ -683,10 +640,7 @@
 | T0575 | far ultraviolet radiation；别名/缩写：FUV | 远紫外辐射 | 较短波长紫外波段，常用于气辉与成分探测；不可将其范围与极紫外固定地混用。 | 参 [B05](#src-b05)、[B07](#src-b07) |
 | T0576 | Lyman-alpha radiation；别名/缩写：Lyman-α | 莱曼α辐射 | 氢原子特定共振跃迁对应的紫外辐射；在大气光解、电离和吸收问题中须保留谱线身份。 | 参 [B05](#src-b05)、[B07](#src-b07) |
 
-<a id="sec-14"></a>
-
 ### 2.14 气辉、流星金属层与中间层云
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0577 | airglow | 气辉 | 大气发光现象，不译作极光。 补充：由高层大气中的光化学、化学或复合等过程产生的微弱发光；应与能量粒子沉降主导的极光区分。 | 原 [U01](#src-u01) / 参 [B04](#src-b04)；第8章8.7目录 |
@@ -742,10 +696,7 @@
 | T0627 | particle sedimentation；别名/缩写：sedimentation | 粒子沉降；重力沉降 | 大气粒子在重力作用下相对于周围气体向下迁移的过程，适用于水成物、流星烟尘等；速度取决于尺寸、密度与气动条件，不与地质沉积机械等同。 | 参 [B06](#src-b06)；流星烟尘输运 / 参 [C04](#src-c04)；第7章 Precipitation Processes；第20章参数化，概念参照 |
 | T0628 | aerosol surface area density；别名/缩写：SAD | 气溶胶表面积密度 | 单位空气体积中颗粒总表面积；用于表面反应估算，不等于颗粒质量浓度。 | 参 [B06](#src-b06)；金属摄取与颗粒反应 |
 
-<a id="sec-15"></a>
-
 ### 2.15 气象卫星、轨道与载荷标准术语
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0629 | meteorological satellite | 气象卫星 | 用于大气、地表及空间环境等观测的人造卫星；卫星平台名称与其所携仪器名称应分开。 | 标 [B02](#src-b02)；2.1 |
@@ -790,10 +741,7 @@
 | T0668 | ionospheric photometer；别名/缩写：IPM | 电离层光度计 | 风云IPM载荷通过相关极紫外发光观测电离层状态；反演量与直接电子密度测量区分。 | 标 [B02](#src-b02)；4.20 |
 | T0669 | full disc image | 全圆盘图 | 静止卫星扫描可见地球圆盘形成的图像；边缘像元的观测路径和空间尺度不同于星下点。 | 标 [B02](#src-b02)；5.1.4 |
 
-<a id="sec-16"></a>
-
 ### 2.16 中高层大气观测与反演
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0670 | lidar；别名/缩写：light detection and ranging | 激光雷达 | 主动发射激光并测量大气回波的遥感系统；散射机制决定可观测量及适用高度。 | 参 [B13](#src-b13) |
@@ -864,10 +812,7 @@
 | T0735 | specular meteor echo | 镜面流星回波 | 满足近镜面散射几何的流星余迹回波；所测径向漂移受雷达—余迹方位约束。 | 参 [B17](#src-b17) |
 | T0736 | direction of arrival；别名/缩写：DOA | 波达方向 | 雷达接收信号到来的方向，可由阵列相位差估计；存在几何与噪声导致的多解风险。 | 参 [B17](#src-b17) |
 
-<a id="sec-17"></a>
-
 ### 2.17 太阳活动与高层大气外部强迫
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0737 | radiation belts of the Earth；别名/缩写：Van Allen radiation belts | 地球辐射带 | 地磁场约束的高能带电粒子聚集区；与以低能冷等离子体为主的等离子体层不同。 | 标 [B03](#src-b03)；2.1 |
@@ -885,10 +830,7 @@
 | T0749 | magnetosphere-ionosphere coupling；别名/缩写：M-I coupling | 磁层—电离层耦合 | 两区域通过电流、电场、粒子和能量交换相联系；不能简化为单向的上层驱动。 | 参 [B04](#src-b04)；第12章目录 |
 | T0750 | plasmasphere | 等离子体层 | 地球周围相对冷而密的磁化等离子体区域；与全部磁层或高能辐射带区分。 | 参 [B04](#src-b04)；第2章目录 |
 
-<a id="sec-18"></a>
-
 ### 2.18 地面气象与水汽
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0751 | air temperature | 空气温度；气温 | 指空气冷热状态；标准地面观测具有规定高度和防辐射条件，不能直接等同地表温度。 | 标 [C01](#src-c01)；第3章，3.1–3.5（释义为简述） |
@@ -912,10 +854,7 @@
 | T0769 | moisture flux convergence | 水汽通量辐合 | 表征输送使水汽在区域内积聚的通量散度负值；不能单凭它确定降水量。 | 参 [C02](#src-c02)；第4章；湿度变量及水汽过程，选读 |
 | T0770 | Clausius–Clapeyron equation；别名/缩写：Clausius-Clapeyron equation | 克劳修斯—克拉珀龙方程 | 描述相平衡蒸气压随温度的变化关系；不同近似形式的潜热假设需保留。 | 参 [C02](#src-c02)；第4章；湿度变量及水汽过程，选读 |
 
-<a id="sec-19"></a>
-
 ### 2.19 云与降水微物理
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0771 | cirrus；别名/缩写：Ci | 卷云 | 以纤维、羽毛或丝缕状外观为特征的高云云属；与卷层云的幕状覆盖区分。 | 中 [C03](#src-c03)；2.2.2.1 云属；中文与英文页面对照 |
@@ -952,10 +891,7 @@
 | T0802 | single-moment scheme | 单矩方案 | 每种水成物通常预报一个谱矩的云微物理方案；不意味着只存在一种水成物。 | 参 [C04](#src-c04)；第7章 Precipitation Processes；第20章参数化，概念参照 |
 | T0803 | double-moment scheme | 双矩方案 | 每种水成物通常预报质量和数浓度等两个谱矩；与两种水成物类别无关。 | 参 [C04](#src-c04)；第7章 Precipitation Processes；第20章参数化，概念参照 |
 
-<a id="sec-20"></a>
-
 ### 2.20 降水、对流与天气系统
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0804 | precipitation | 降水 | 由大气落向地面的液态或固态水成物过程；与云内凝结和地表凝露区分。 | 参 [C04](#src-c04)；天气系统、降水和雷暴相关章；选题与概念参照 |
@@ -1004,10 +940,7 @@
 | T0847 | warm conveyor belt | 暖输送带 | 温带气旋内输送暖湿空气并显著上升的气流带；属于气流结构而非固定边界。 | 参 [C04](#src-c04)；天气系统、降水和雷暴相关章；选题与概念参照 |
 | T0848 | atmospheric river | 大气河 | 集中输送水汽的狭长区域；其识别需结合水汽输送而非只看高湿条带。 | 参 [C04](#src-c04)；天气系统、降水和雷暴相关章；选题与概念参照 |
 
-<a id="sec-21"></a>
-
 ### 2.21 气候与预报
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0849 | climate | 气候 | 气象状态的长期统计特征及其变化；统计时段、区域和变量应明确说明。 | 参 [C06](#src-c06)；官方词汇表相关词条，概念参照 |
@@ -1031,10 +964,7 @@
 | T0867 | extreme event | 极端事件 | 相对于给定地点、时段和概率分布较罕见的事件；阈值需要明确。 | 参 [C06](#src-c06)；官方词汇表相关词条，概念参照 |
 | T0868 | teleconnection | 遥相关 | 空间相隔较远区域之间的统计或动力联系；相关本身不直接证明单向因果。 | 参 [C06](#src-c06)；官方词汇表相关词条，概念参照 |
 
-<a id="sec-22"></a>
-
 ### 2.22 数值模式、网格与边界
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0869 | hydrodynamic model | 水动力模型 | model 可因研究语境译作“模型”或“模式”，同篇保持一致。 | 原 [U01](#src-u01) |
@@ -1099,10 +1029,7 @@
 | T0928 | model tendency | 模式倾向项 | 模式给出的变量时间变化率或其分项；与变量本身及有限时段变化量区分。 | 参 [C05](#src-c05)、[C07](#src-c07)、[C08](#src-c08)；C05第20章；C07第3–4章目录；C08第2–3章，概念参照 |
 | T0929 | mass fixer | 质量修正算法 | 为弥补输送或离散造成的质量偏差而施加修正的算法；不等同天然局地守恒。 | 参 [C05](#src-c05)、[C07](#src-c07)、[C08](#src-c08)；C05第20章；C07第3–4章目录；C08第2–3章，概念参照 |
 
-<a id="sec-23"></a>
-
 ### 2.23 数值算法与误差
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0930 | Courant number | 库朗数 | 传播或平流距离与网格距的无量纲比；所用速度及多维组合方式须明确。 | 参 [C08](#src-c08)、[C09](#src-c09)；数值方法主题；具体性质以相应格式和方程为条件 |
@@ -1135,10 +1062,7 @@
 | T0957 | condition number | 条件数 | 反映问题解对输入扰动相对敏感程度的指标；应说明矩阵范数与问题定义。 | 参 [C10](#src-c10)；KSP及Preconditioners相关章节，概念参照 |
 | T0958 | ill-conditioning | 病态性 | 输入的小扰动可引起解较大相对变化的性质；与求解器代码错误不是同一概念。 | 参 [C10](#src-c10)；KSP及Preconditioners相关章节，概念参照 |
 
-<a id="sec-24"></a>
-
 ### 2.24 资料同化与集合预报
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T0959 | data assimilation；别名/缩写：DA | 资料同化 | 气象领域常用“资料同化”；遵循研究领域与同篇用词，不等同于数据插值。 补充：结合观测、先验与动力约束估计系统状态；不等同插值、数据拼接或参数拟合。 | 原 [U01](#src-u01) / 参 [C07](#src-c07)、[C11](#src-c11)、[C29](#src-c29)、[C30](#src-c30)；C07第5章目录与变量表；C11正文，概念参照 |
@@ -1186,10 +1110,7 @@
 | T1001 | ensemble collapse | 集合坍缩 | 集合成员变得过度接近并丧失足够离散度；不必表现为平均状态数值发散。 | 参 [C12](#src-c12)、[C13](#src-c13)；Inflation及Assimilation in a complex model，概念参照 |
 | T1002 | outlier rejection | 异常观测剔除 | 按质量或失配准则拒绝观测；阈值设置可能误拒真实极端信号。 | 参 [C12](#src-c12)、[C13](#src-c13)；Inflation及Assimilation in a complex model，概念参照 |
 
-<a id="sec-25"></a>
-
 ### 2.25 信号处理与时频分析
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1003 | sampling interval | 采样间隔 | 相邻采样时刻的时间差；不规则采样时不能只用一个固定值代表全部间隔。 | 参 [C15](#src-c15)；DFT定义、Caveats及谱解释，概念参照 |
@@ -1241,10 +1162,7 @@
 | T1049 | white noise | 白噪声 | 在所讨论频带内具有平坦功率谱密度的随机过程；有限样本谱不会完全平坦。 | 参 [C16](#src-c16)；作者页面第3–6节结构及摘要，概念参照 |
 | T1050 | S transform；别名/缩写：Stockwell transform | S变换 | 采用频率相关局地窗并保留傅里叶相位联系的时频变换；不同改进版本需具体注明。 | 参 [C17](#src-c17)；原始方法论文；概念参照 |
 
-<a id="sec-26"></a>
-
 ### 2.26 统计、不确定性与预报检验
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1051 | standard deviation | 标准差 | 描述变量离散程度的尺度；样本与总体公式以及加权形式应分别说明。 | 参 [C18](#src-c18)、[C32](#src-c32)；置信区间与假设检验相关概念；简述 |
@@ -1276,10 +1194,7 @@
 | T1077 | area under the ROC curve；别名/缩写：ROC AUC | ROC曲线下面积 | 概括ROC区分能力的指标；不能替代概率可靠性或特定阈值的实际效益。仅在上下文明示ROC时将AUC按此义展开。 | 参 [C20](#src-c20)；ROC预报检验说明 |
 | T1078 | false positive rate；别名/缩写：FPR；false alarm rate | 虚警率 | 实况非事件中被误报为事件的比例；应核对分母，避免与空报率混淆。 | 参 [C20](#src-c20)；ROC预报检验说明 |
 
-<a id="sec-27"></a>
-
 ### 2.27 拓扑数据分析与图模型
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1079 | topological data analysis；别名/缩写：TDA | 拓扑数据分析 | 利用连通性、环洞等结构分析数据的方法集合；不等同一般的网络结构绘图。 | 参 [C21](#src-c21)、[C28](#src-c28)；复形模块及Representations，概念参照 |
@@ -1320,10 +1235,7 @@
 | T1114 | permutation equivariance | 置换等变性 | 节点编号置换时输出按同样方式置换的性质；不同于输出数值完全不变。 | 参 [C23](#src-c23)；消息传递教程及算子列表，概念参照 |
 | T1115 | k-nearest-neighbor graph；别名/缩写：kNN graph | k近邻图 | 按选定距离为每个节点连接若干最近邻构造的图；是否对称化会改变连接。 | 参 [C23](#src-c23)；消息传递教程及算子列表，概念参照 |
 
-<a id="sec-28"></a>
-
 ### 2.28 向量场拓扑与输运
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1116 | topology | 拓扑 | 指研究对象的拓扑结构；graph topology 可译为“图拓扑”，不要把所有 topology 都译成“网络”。 | 原 [U01](#src-u01) |
@@ -1345,10 +1257,7 @@
 | T1132 | material surface | 物质面 | 由随流运动的同一组质点构成的面；不同于固定空间位置的等值面。 | 参 [C24](#src-c24)；LCS综述中物质输运和流映射相关内容 |
 | T1133 | Cauchy–Green strain tensor | 柯西—格林应变张量 | 由流映射梯度构造以描述有限变形的张量；左右张量与参考构形需区分。 | 参 [C24](#src-c24)；LCS综述中物质输运和流映射相关内容 |
 
-<a id="sec-29"></a>
-
 ### 2.29 海水性质、层结与混合
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1134 | sea surface temperature | 表层水温；海表温度 | 本标准指海面下3 m以内的水温；遥感皮肤温度和不同深度的体温定义有别，比较资料需核对采样层。 | 标 [O01](#src-o01)；2.1.1 |
@@ -1427,10 +1336,7 @@
 | T1207 | water colour | 水色 | 水体颜色的观测指标；现场色级与卫星水色辐射产品采用的量并不相同。 | 标 [O01](#src-o01)；2.2.1 |
 | T1208 | seawater transparency | 海水透明度 | 表征光在海水中传播可见程度的指标；塞氏盘深度与光束衰减系数并非同一量。 | 标 [O01](#src-o01)；2.2.2 |
 
-<a id="sec-30"></a>
-
 ### 2.30 海洋环流与近岸流动
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1209 | ocean current | 海流 | 海水的宏观运动，需同时描述流速和流向；与波动中质点的往复运动区分。 | 标 [O01](#src-o01)；2.3.1 |
@@ -1489,10 +1395,7 @@
 | T1262 | rip current | 裂流；离岸急流 | 碎波带内集中向外海排水的狭窄强流；不宜把全部离岸海流都称裂流。 | 标 [O01](#src-o01)；2.3.73 |
 | T1263 | alongshore current | 顺岸流 | 此标准着重波浪破碎形成的平行海岸水流；一般alongshore分量需按原文限定。 | 标 [O01](#src-o01)；2.3.74 |
 
-<a id="sec-31"></a>
-
 ### 2.31 海浪与海岸波动
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1264 | ocean wave | 海浪 | 通常指海面风浪和涌浪；原文若泛指全部海洋波动，应保留相应范围。 | 标 [O01](#src-o01)；2.4.1 |
@@ -1551,10 +1454,7 @@
 | T1317 | wave observation | 海浪观测 | 测量波高、周期、波向等海浪特征；需区分仪器测量与目测估计。 | 标 [O01](#src-o01)；2.4.72 |
 | T1318 | ocean wave forecast | 海浪预报 | 对未来海浪统计状态或波谱的预测；通常并不预测每个波峰的精确位置。 | 标 [O01](#src-o01)；2.4.74 |
 
-<a id="sec-32"></a>
-
 ### 2.32 海洋潮汐、潮流与水位
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1319 | ocean tide；别名/缩写：tide (oceanography) | 海洋潮汐 | 天体引潮力引起的海面周期变化；与大气热力潮汐及风暴增水区分。 | 对 [O01](#src-o01)；2.5.1 |
@@ -1613,10 +1513,7 @@
 | T1372 | tide table | 潮汐表 | 给定地点和时段的潮汐预报表；高程基准、时区和地点需同时核对。 | 标 [O01](#src-o01)；2.5.69 |
 | T1373 | bay oscillation；别名/缩写：bay harmonic vibration | 副振动；海湾振荡 | 海湾地形控制的较短周期水位振荡；与外海天文分潮和风暴增水区分。 | 对 [O01](#src-o01)；2.5.70 |
 
-<a id="sec-33"></a>
-
 ### 2.33 海冰与极地海洋
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1374 | sea ice | 海冰 | 海水冻结形成的冰；漂浮在海上的冰山可能来自陆地冰川，不能全部算作海冰。 | 标 [O01](#src-o01)；2.6.1 |
@@ -1640,10 +1537,7 @@
 | T1392 | sea-ice concentration；别名/缩写：ice concentration | 海冰密集度 | 给定海面区域内海冰覆盖面积的比例；不是海冰的材料密度。 | 对 [O01](#src-o01)；2.6.46 |
 | T1393 | ice edge | 冰缘线 | 给定时刻开阔水与海冰覆盖区之间的边界；提取结果依密集度阈值而变。 | 标 [O01](#src-o01)；2.6.47 |
 
-<a id="sec-34"></a>
-
 ### 2.34 海岸地理、海气界面与基准
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1394 | geoid | 大地水准面 | 地球重力场中与平均海面近似吻合的等位面；不等同参考椭球面或每处实测平均海面。 | 标 [O02](#src-o02)、[O06](#src-o06)；GB/T 15918—2010 2.5.1；VDatum Geoid段 |
@@ -1681,10 +1575,7 @@
 | T1426 | sea surface microlayer；别名/缩写：sea tiny surface layer | 海洋微表层 | 海气界面附近具有特殊物理化学性质的很薄水层；不等同整个上混合层。 | 对 [O02](#src-o02)；2.5.4 |
 | T1427 | chart datum | 海图基准面；深度基准面 | 海图水深的垂直起算面；与陆地高程基准之间需使用实际转换关系。 | 标 [O02](#src-o02)；2.5.6 |
 
-<a id="sec-35"></a>
-
 ### 2.35 风暴潮与海洋水位
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1428 | storm surge | 风暴增水；风暴潮 | 表示风暴引起的水位增量时优先用“风暴增水”；描述现象或灾害类型时可用“风暴潮”。不要与包含天文潮的总水位混同。 | 原 [U01](#src-u01)、[O04](#src-o04) |
@@ -1700,10 +1591,7 @@
 | T1438 | bottom stress | 底应力 | 与 bottom friction“底摩擦”相关，但不将二者的量纲或定义混用。 | 原 [U01](#src-u01) |
 | T1439 | inverse barometer effect | 逆气压效应 | 指气压变化引起的近似静力水位响应；不替代完整的风暴潮动力过程。 | 原 [U01](#src-u01) |
 
-<a id="sec-36"></a>
-
 ### 2.36 沿海洪涝与风险
-
 | 编号 | English（含别名或缩写） | 建议中文 | 语境与辨析 | 依据与核验 |
 | --- | --- | --- | --- | --- |
 | T1440 | coastal flooding | 沿海洪涝；沿海淹没 | 强调灾害过程可用“沿海洪涝”；强调海水覆盖陆地的空间状态可用“沿海淹没”。 | 原 [U01](#src-u01) |
@@ -1720,7 +1608,6 @@
 | T1451 | risk | 风险 | 不与危险性直接等同；暴露度、脆弱性及计算方式以论文定义为准。 | 原 [U01](#src-u01) |
 
 ## 3. 跨领域与缩写辨析速查
-
 以下为使用规则，不作为额外术语计数。
 
 | 易混项 | 使用规则 |
@@ -1745,791 +1632,13 @@
 | significance / effect size / physical mechanism | 统计显著性不等于效应大，也不能单独证明物理机制或因果关系。 |
 | graph topology / topological invariant | 图的连接结构与拓扑不变量不是同一层次概念；GNN也不自动等同拓扑数据分析。 |
 
-### 多义缩写
-
-缩写本身不作为合并或自动翻译依据。以下缩写在本表中关联多个含义：
-
-| 缩写 | 对应英文 |
-| --- | --- |
-| TID | traveling ionospheric disturbance；total ionizing dose |
-
 ## 4. 数学与编号引用规则
-
 | English | 建议中文 | 语境与辨析 |
 | --- | --- | --- |
 | Equation 3b / Eq. (3b) | 公式3b | 指向有编号的数学表达式时统一用「公式＋原编号」，不插空格，保留字母、附录前缀与范围。 |
 | equation / system of equations | 方程／方程组 | 描述方程本身或方程组时按数学含义翻译，如「控制方程」「状态方程」「线性化方程组」。 |
 
-## 5. 来源与实际核验范围
-
-以下仅列本表实际引用的来源。书目、目录、摘要和全文属于不同核验范围；以各条说明为准。来源中的定义可能依版本、观测方法或学科不同而变化。本表列出的条款支持词头对照，扩展的辨析由编者综合整理。
-
-<a id="src-a01"></a>
-
-### A01 Andrews, Holton & Leovy, Middle Atmosphere Dynamics (1987)
-
-- 类型：教材
-- 实际核验：授权试读的书名页、目录及第1章部分正文
-- 入口：[原始来源或官方记录](https://api.pageplace.de/preview/DT0400.9780080511672_A34371967/preview-9780080511672_A34371967.pdf)
-- 使用边界：第3—9章仅核验目录主题，未逐条获得这些章节全文；本表为通行概念整理，非教材中文逐词对照。Elsevier商品页存在其他书目内容混入，未用其错误目录。
-
-<a id="src-a02"></a>
-
-### A02 Fritts & Alexander (2003), Gravity wave dynamics and effects in the middle atmosphere
-
-- 类型：学术综述
-- 实际核验：出版方全文，重点第2—4及6—8节
-- 入口：[原始来源或官方记录](https://doi.org/10.1029/2001RG000106)
-- 使用边界：用于重力波理论、波源、传播、耗散和平均流作用的概念框架；中文译名为编写建议，定义以自述方式整理。
-
-<a id="src-a04"></a>
-
-### A04 Chapman & Lindzen (1970), Atmospheric Tides: Thermal and Gravitational
-
-- 类型：教材专著
-- 实际核验：出版方书目和4章目录
-- 入口：[原始来源或官方记录](https://link.springer.com/book/10.1007/978-94-010-3399-2)
-- 使用边界：核验太阳潮汐、太阴潮汐和潮汐理论的主题覆盖，未声称逐词核对正文或中文译名。
-
-<a id="src-a05"></a>
-
-### A05 Vincent (2015), The dynamics of the mesosphere and lower thermosphere: a brief review
-
-- 类型：学术综述
-- 实际核验：出版方开放全文，Review及潮汐、准两日波等小节
-- 入口：[原始来源或官方记录](https://doi.org/10.1186/s40645-015-0035-8)
-- 使用边界：用于MLT、潮汐、平均环流和行星波的概念核查；不据此将层界固定为统一高度。
-
-<a id="src-a06"></a>
-
-### A06 Baldwin et al. (2001), The quasi-biennial oscillation
-
-- 类型：学术综述
-- 实际核验：出版方摘要、文章页面及参考文献
-- 入口：[原始来源或官方记录](https://doi.org/10.1029/1999RG000073)
-- 使用边界：核实QBO基本含义和相关波流作用背景；对各细分术语作概念参照，非逐词审定译名。
-
-<a id="src-a07"></a>
-
-### A07 Baldwin et al. (2021), Sudden Stratospheric Warmings
-
-- 类型：学术综述
-- 实际核验：出版方全文，事件定义和层间耦合讨论
-- 入口：[原始来源或官方记录](https://doi.org/10.1029/2020RG000708)
-- 使用边界：用于SSW、极涡形态与下传概念辨析；不同资料集的事件阈值仍须回到其方法定义。
-
-<a id="src-a08"></a>
-
-### A08 Vadas et al. (2018), The Excitation of Secondary Gravity Waves From Local Body Forces: Theory and Observation
-
-- 类型：原始研究
-- 实际核验：出版方摘要及NOAA机构论文记录
-- 入口：[原始来源或官方记录](https://doi.org/10.1029/2017JD027970)
-- 使用边界：直接核查初级波耗散、局地体力和次级重力波的生成链条。
-
-<a id="src-a09"></a>
-
-### A09 Dewan & Picard (1998), Mesospheric bores
-
-- 类型：原始研究
-- 实际核验：出版方摘要与模型概述
-- 入口：[原始来源或官方记录](https://doi.org/10.1029/97JD02498)
-- 使用边界：核查中间层波状涌潮的概念；中文采用用户已确定的中间层涌潮。
-
-<a id="src-a10"></a>
-
-### A10 Haynes et al. (1991), On the “Downward Control” of Extratropical Diabatic Circulations by Eddy-Induced Mean Zonal Forces
-
-- 类型：原始研究与作者机构说明
-- 实际核验：作者所在大学页面的书目和原论文主题
-- 入口：[原始来源或官方记录](https://www.damtp.cam.ac.uk/user/mem2/down-ct-index.html)
-- 使用边界：用于向下控制概念的来源定位；不将其解释为波能必然向下传输。
-
-<a id="src-a11"></a>
-
-### A11 Meriwether & Gerrard (2004), Mesosphere inversion layers and stratosphere temperature enhancements
-
-- 类型：学术综述
-- 实际核验：出版方全文及中间层涌潮相关讨论
-- 入口：[原始来源或官方记录](https://doi.org/10.1029/2003RG000133)
-- 使用边界：用于中间层逆温及相关结构的概念参照；中文仍按译法建议处理。
-
-<a id="src-a13"></a>
-
-### A13 Matsuno (1966), Quasi-Geostrophic Motions in the Equatorial Area
-
-- 类型：原始研究
-- 实际核验：期刊官方摘要与书目
-- 入口：[原始来源或官方记录](https://www.jstage.jst.go.jp/article/jmsj1965/44/1/44_1_25/_article)
-- 使用边界：用于赤道波分类框架；没有把原论文中的所有模态逐条复制为词典。
-
-<a id="src-a14"></a>
-
-### A14 Kasahara (1976), Normal Modes of Ultralong Waves in the Atmosphere
-
-- 类型：原始研究
-- 实际核验：期刊官方摘要中的Hough harmonics与模态说明
-- 入口：[原始来源或官方记录](https://journals.ametsoc.org/view/journals/mwre/104/6/1520-0493_1976_104_0669_nmouwi_2_0_co_2.xml)
-- 使用边界：用于霍夫函数、水平正常模态和编号区别。
-
-<a id="src-a16"></a>
-
-### A16 Beres, Alexander & Holton (2004), A Method of Specifying the Gravity Wave Spectrum above Convection Based on Latent Heating Properties and Background Wind
-
-- 类型：原始研究
-- 实际核验：出版方摘要及引言的热力、机械振子波源讨论
-- 入口：[原始来源或官方记录](https://journals.ametsoc.org/view/journals/atsc/61/3/1520-0469_2004_061_0324_amostg_2.0.co_2.xml)
-- 使用边界：沿用前一轮已查证的原文；对流重力波为用户确定译名。
-
-<a id="src-a17"></a>
-
-### A17 Plougonven & Zhang (2014), Internal gravity waves from atmospheric jets and fronts
-
-- 类型：学术综述
-- 实际核验：出版方全文及作者机构记录
-- 入口：[原始来源或官方记录](https://doi.org/10.1002/2012RG000419)
-- 使用边界：用于急流、锋面、自发失衡与波辐射的概念辨析。
-
-<a id="src-a18"></a>
-
-### A18 Waugh & Hall (2002), Age of stratospheric air: Theory, observations, and models
-
-- 类型：学术综述
-- 实际核验：出版方摘要与空气龄谱、输运历时相关内容
-- 入口：[原始来源或官方记录](https://doi.org/10.1029/2000RG000101)
-- 使用边界：用于空气龄、混合和输运诊断概念；不把空气龄等同于停留时间或化学寿命。
-
-<a id="src-a19"></a>
-
-### A19 Lewin & Caulfield (2024), Evidence for layered anisotropic stratified turbulence in a freely evolving horizontal shear flow
-
-- 类型：原始研究
-- 实际核验：出版方全文的层结、无量纲量和湍流尺度讨论
-- 入口：[原始来源或官方记录](https://www.cambridge.org/core/journals/journal-of-fluid-mechanics/article/evidence-for-layered-anisotropic-stratified-turbulence-in-a-freely-evolving-horizontal-shear-flow/5875DECA06B38C2A431D59AD7E290202)
-- 使用边界：分层湍流背景参照；湍流基本术语按通行定义独立编写。
-
-<a id="src-a20"></a>
-
-### A20 Vadas & Becker (2019), Numerical Modeling of the Generation of Tertiary Gravity Waves in the Mesosphere and Thermosphere During Strong Mountain Wave Events Over the Southern Andes
-
-- 类型：原始研究
-- 实际核验：出版方全文的摘要、生成链条及结论
-- 入口：[原始来源或官方记录](https://doi.org/10.1029/2019JA026694)
-- 使用边界：专用于核实tertiary gravity waves不是人为新造术语；中文建议“三级重力波”。
-
-<a id="src-a21"></a>
-
-### A21 Butchart (2014), The Brewer-Dobson circulation
-
-- 类型：学术综述
-- 实际核验：出版方环流和平均空气龄相关内容
-- 入口：[原始来源或官方记录](https://doi.org/10.1002/2013RG000448)
-- 使用边界：用于平流层输运环流及残余环流、混合的区别。
-
-<a id="src-a22"></a>
-
-### A22 Tulich, Randall & Mapes (2007), Vertical-Mode and Cloud Decomposition of Large-Scale Convectively Coupled Gravity Waves in a Two-Dimensional Cloud-Resolving Model
-
-- 类型：原始研究
-- 实际核验：出版方摘要和对流反馈讨论
-- 入口：[原始来源或官方记录](https://doi.org/10.1175/JAS3884.1)
-- 使用边界：用于对流耦合重力波与仅由对流激发重力波的概念区分。
-
-<a id="src-a23"></a>
-
-### A23 Age of Stratospheric Air: Progress on Processes, Observations, and Long-Term Trends (2024)
-
-- 类型：学术综述
-- 实际核验：出版方全文，输运框架与热带管道相关讨论
-- 入口：[原始来源或官方记录](https://doi.org/10.1029/2023RG000832)
-- 使用边界：补充核验空气龄、平流层上部等熵区和最下部平流层等用语。
-
-<a id="src-a24"></a>
-
-### A24 Osprey et al. (2016), An unexpected disruption of the atmospheric quasi-biennial oscillation
-
-- 类型：原始研究
-- 实际核验：牛津大学机构论文记录与摘要
-- 入口：[原始来源或官方记录](https://doi.org/10.1126/science.aah4156)
-- 使用边界：专用于QBO disruption；不以2001年综述支持2016年以后首次明确报告的异常事件。
-
-<a id="src-a25"></a>
-
-### A25 MIT OpenCourseWare, Dynamics of the Atmosphere, Chapter 13: The generation of eddies by instability
-
-- 类型：大学课程讲义
-- 实际核验：第13章PDF正文，重点核对13.3.1必要失稳条件
-- 入口：[原始来源或官方记录](https://ocw.mit.edu/courses/12-810-dynamics-of-the-atmosphere-spring-2008/cadd481e5c076b54745ada3386bc0e98_chapter_13.pdf)
-- 使用边界：用于Rayleigh–Kuo判据方向及适用范围的概念核对，不作为中文标准词头证据。
-
-<a id="src-b01"></a>
-
-### B01 QX/T 252—2014《电离层术语》
-
-- 类型：中国气象行业标准
-- 实际核验：已读取国家卫星气象中心发布的标准正文第2章
-- 入口：[原始来源或官方记录](https://img.nsmc.org.cn/PORTAL/NSMC/ATTACHMENT/Files/standards/QXT%20252-2014%20电离层术语.pdf)
-- 使用边界：核对中英文词头和条款号；本表语境说明为重新组织的说明，不逐字复制标准定义。
-
-<a id="src-b02"></a>
-
-### B02 GB/T 39094—2020《中国气象卫星名词术语》
-
-- 类型：中国国家标准
-- 实际核验：已读取国家卫星气象中心提供的正文第2、4、5章
-- 入口：[原始来源或官方记录](https://img.nsmc.org.cn/PORTAL/NSMC/ATTACHMENT/Files/standards/GBT_39094-2020.pdf)
-- 使用边界：用于标准中的通用观测和仪器名称；特定风云载荷名称不自动扩展为所有同类仪器通名。
-
-<a id="src-b03"></a>
-
-### B03 QX/T 546—2020《空间高能粒子辐射效应术语》
-
-- 类型：中国气象行业标准
-- 实际核验：已读取正文第2—6章
-- 入口：[原始来源或官方记录](https://img.nsmc.org.cn/PORTAL/NSMC/ATTACHMENT/Files/standards/QXT_546-2020.pdf)
-- 使用边界：本表仅选取与空间环境及观测设备相关的术语；TID缩写存在不同学科含义。
-
-<a id="src-b04"></a>
-
-### B04 Schunk, R. W.; Nagy, A. F. (2009). Ionospheres: Physics, Plasma Physics, and Chemistry, 2nd ed.
-
-- 类型：教材目录参照
-- 实际核验：已核对出版社书目和详细目录；未读取全书
-- 入口：[原始来源或官方记录](https://assets.cambridge.org/97805218/77060/toc/9780521877060_toc.pdf)
-- 使用边界：用于组织电离层物理、碰撞、化学、能量与探测概念。标为概念参照的行是学科用语整理，不能据此声称中文译名或每条释义已逐词经教材核对。
-
-<a id="src-b05"></a>
-
-### B05 Brasseur, G. P.; Solomon, S. (2005). Aeronomy of the Middle Atmosphere, 3rd ed.
-
-- 类型：教材目录参照
-- 实际核验：已核对出版社书目、目录和介绍；未读取全书
-- 入口：[原始来源或官方记录](https://link.springer.com/book/10.1007/1-4020-3824-0)
-- 使用边界：为中层大气化学与辐射的主题参考；涉及具体反应与仪器的条目另列实际可读资料。
-
-<a id="src-b06"></a>
-
-### B06 Plane, J. M. C.; Feng, W.; Dawkins, E. C. M. (2015). The Mesosphere and Metals: Chemistry and Changes. Chemical Reviews.
-
-- 类型：研究综述
-- 实际核验：读取开放全文中金属层、化学与流星烟尘的相关段落
-- 入口：[原始来源或官方记录](https://pmc.ncbi.nlm.nih.gov/articles/PMC4448204/)
-- 使用边界：DOI:10.1021/cr500501m；主要用于界定流星金属及储库物种、烟尘和观测语境。中文为建议译法。
-
-<a id="src-b07"></a>
-
-### B07 SABER Level 2A Software Design Document
-
-- 类型：仪器官方技术文档
-- 实际核验：已读取参数表和处理设计说明
-- 入口：[原始来源或官方记录](https://saber.gats-inc.com/Software/Science/Level2A/design.htm)
-- 使用边界：使用参数含义，未将该早期设计文档当作当前产品版本或精度声明。
-
-<a id="src-b08"></a>
-
-### B08 NASA/JPL AIRS: CLIMCAPS Science User Guide, Instrument configurations and hyperspectral sounders
-
-- 类型：仪器官方技术文档
-- 实际核验：已读取仪器、FOV/FOR及云清除说明
-- 入口：[原始来源或官方记录](https://airs.jpl.nasa.gov/data/guides-docs/climcaps-science/climcaps-science-guide/instrument-configs)
-- 使用边界：用于AIRS及相关红外探测概念；不把特定载荷分辨率推广至其他仪器。
-
-<a id="src-b09"></a>
-
-### B09 NASA/JPL Aura MLS Version 6.0x Level-2 and Level-3 Data Quality and Description Document
-
-- 类型：仪器官方技术文档
-- 实际核验：读取产品目录及质量、平均核和廓线资料的相关段落
-- 入口：[原始来源或官方记录](https://mls.jpl.nasa.gov/data/v6-x_data_quality_document.pdf)
-- 使用边界：词条只解释产品概念；实际筛选阈值须按所用版本与具体组分核对。
-
-<a id="src-b10"></a>
-
-### B10 Rodgers, C. D.; Connor, B. J. (2003). Intercomparison of remote sounding instruments.
-
-- 类型：方法原始论文
-- 实际核验：已读取第2节平均核与误差及仪器比较部分
-- 入口：[原始来源或官方记录](https://eodg.atm.ox.ac.uk/eodg/papers/2003Rodgers1.pdf)
-- 使用边界：DOI:10.1029/2002JD002299；用于区分平均核、平滑误差、干扰误差和反演误差。
-
-<a id="src-b11"></a>
-
-### B11 Schmidt et al. (2023). OH airglow observations with two identical spectrometers: benefits of increased data homogeneity in the identification of variations induced by the 11-year solar cycle, the QBO, and other factors. Atmospheric Measurement Techniques. DOI:10.5194/amt-16-4331-2023.
-
-- 类型：观测方法原始论文
-- 实际核验：读取检索可见的OH转动振动跃迁、温度和仪器方法段落
-- 入口：[原始来源或官方记录](https://amt.copernicus.org/articles/16/4331/2023/)
-- 使用边界：用于OH气辉与转动温度观测语境；非LTE情形另作限制说明。
-
-<a id="src-b12"></a>
-
-### B12 Improved method of estimating temperatures at meteor peak heights (2021). Atmospheric Measurement Techniques. DOI:10.5194/amt-14-4157-2021.
-
-- 类型：观测方法原始论文
-- 实际核验：已读取流星余迹、电子线密度及双极扩散的相关段落
-- 入口：[原始来源或官方记录](https://amt.copernicus.org/articles/14/4157/2021/)
-- 使用边界：用于流星雷达反演温度的物理前提，不把余迹衰减一律解释为单一扩散。
-
-<a id="src-b13"></a>
-
-### B13 The ALOMAR Rayleigh/Mie/Raman lidar: status after 30 years of operation (2024). Atmospheric Measurement Techniques. DOI:10.5194/amt-17-5841-2024.
-
-- 类型：仪器原始论文
-- 实际核验：读取主动遥感、散射、退偏、温度与测风的相关段落
-- 入口：[原始来源或官方记录](https://amt.copernicus.org/articles/17/5841/2024/)
-- 使用边界：用于激光雷达及散射概念；不提供未经逐项核对的仪器性能数值。
-
-<a id="src-b14"></a>
-
-### B14 CLIMCAPS observing capability for temperature, moisture, and trace gases from AIRS/AMSU and CrIS/ATMS (2020). Atmospheric Measurement Techniques. DOI:10.5194/amt-13-4437-2020.
-
-- 类型：反演方法原始论文
-- 实际核验：读取平均核、雅可比矩阵、先验约束与信息量说明
-- 入口：[原始来源或官方记录](https://amt.copernicus.org/articles/13/4437/2020/amt-13-4437-2020.html)
-- 使用边界：用于卫星反演概念；不将反演廓线格点间距等同于独立信息的垂直分辨率。
-
-<a id="src-b15"></a>
-
-### B15 QX/T 295—2015《空间天气短期预报检验方法》
-
-- 类型：中国气象行业标准
-- 实际核验：已读取第2章有关Kp、Ap、地磁暴及软X射线强度的定义
-- 入口：[原始来源或官方记录](https://img.nsmc.org.cn/PORTAL/NSMC/ATTACHMENT/Files/standards/QXT%20295-2015%20空间天气短期预报检验方法.pdf)
-- 使用边界：只为已核对的词头提供标准依据，指数的具体计算与使用须另查相应专门标准。
-
-<a id="src-b16"></a>
-
-### B16 NOAA Space Weather Prediction Center: Coronal Mass Ejections
-
-- 类型：官方科普与业务概念资料
-- 实际核验：已读取CME与太阳风及地磁响应的官方介绍
-- 入口：[原始来源或官方记录](https://www.swpc.noaa.gov/phenomena/coronal-mass-ejections)
-- 使用边界：用于太阳风暴驱动和相关概念，不是官方中文译名来源。
-
-<a id="src-b17"></a>
-
-### B17 Probabilistic analysis of ambiguities in radar echo direction of arrival from meteors (2020). Atmospheric Measurement Techniques. DOI:10.5194/amt-13-6813-2020.
-
-- 类型：观测方法原始论文
-- 实际核验：读取流星头回波、余迹回波、干涉定位及雷达目标介绍
-- 入口：[原始来源或官方记录](https://amt.copernicus.org/articles/13/6813/2020/)
-- 使用边界：用于流星雷达几何和散射语境。
-
-<a id="src-b18"></a>
-
-### B18 NASA/JPL Chemical Kinetics and Photochemical Data for Use in Atmospheric Studies, Evaluation No. 20 (2025)
-
-- 类型：官方化学数据评估与主题参照
-- 实际核验：已读取官方说明、评估范围及书目信息；大体积全文未完整取得
-- 入口：[原始来源或官方记录](https://science.jpl.nasa.gov/projects/data-evaluation/)
-- 使用边界：用于化学动力学、光化学、异相反应的术语分类参照；未据此引用具体反应速率或声称所有词条释义经全文核验。
-
-<a id="src-b19"></a>
-
-### B19 Jacob, D. J. (1999). Introduction to Atmospheric Chemistry, Chapter 10: Stratospheric Ozone.
-
-- 类型：教材原文
-- 实际核验：已读取作者所在大学提供的原章，包括Chapman机理、催化损耗与极地臭氧化学
-- 入口：[原始来源或官方记录](https://projects.iq.harvard.edu/files/acmg/files/intro_atmo_chem_bookchap10.pdf)
-- 使用边界：属于教材历史版本；仅使用稳定的概念与机理，不采用其中旧年际状态作为当前事实。
-
-<a id="src-b20"></a>
-
-### B20 扩展量子阱中负离子的光剥离动力学（2025），《物理学报》74，023201
-
-- 类型：中文原始研究论文
-- 实际核验：核对中英文题名中photodetachment与光剥离的对应
-- 入口：[原始来源或官方记录](https://wulixb.iphy.ac.cn/article/doi/10.7498/aps.74.20240618)
-- 使用边界：用于中文术语用法；不将其量子阱结论迁移至高层大气。
-
-<a id="src-b21"></a>
-
-### B21 2015年3月磁暴期间海南地区等离子体泡观测分析（2026），《空间科学学报》
-
-- 类型：中文原始研究论文
-- 实际核验：核对摘要中的翻转前增强与Pre-Reversal Enhancement对应
-- 入口：[原始来源或官方记录](https://www.cjss.ac.cn/cn/article/doi/10.11728/cjss2026.01.2025-0004)
-- 使用边界：仅为译名及电离层语境参考，不将个例结果写为普遍机制。
-
-<a id="src-b22"></a>
-
-### B22 Maute (2021), The Middle- and Low-Latitude Neutral Wind Dynamo, Upper Atmosphere Dynamics and Energetics, Chapter 5
-
-- 类型：学术专著章节
-- 实际核验：出版方摘要及章节书目信息
-- 入口：[原始来源或官方记录](https://agupubs.onlinelibrary.wiley.com/doi/10.1002/9781119815631.ch5)
-- 使用边界：摘要用于确认中性风驱动的电离层发电机机制；未将章节全文视作已逐条核验。
-
-<a id="src-c01"></a>
-
-### C01 GB/T 35226—2017《地面气象观测规范 空气温度和湿度》
-
-- 类型：国家标准
-- 实际核验：中国气象局PDF正文，第3章；国家标准平台书目信息
-- 入口：[原始来源或官方记录](https://www.cma.gov.cn/zfxxgk/gknr/flfgbz/bz/202209/P020220921690227925675.pdf)
-- 使用边界：用于已核对的中英词头；释义为编写者简述，不逐字转录标准。
-
-<a id="src-c02"></a>
-
-### C02 Stull: Practical Meteorology, 第4章 Water Vapor, v1.02
-
-- 类型：开放教材
-- 实际核验：作者所在大学公开章节，核对湿度变量表及水汽相关章节
-- 入口：[原始来源或官方记录](https://www.eoas.ubc.ca/books/Practical_Meteorology/prmet102/Ch04-watervapor-v102.pdf)
-- 使用边界：英文概念参照；中文为本表建议，不属于中国标准译名认证。
-
-<a id="src-c03"></a>
-
-### C03 WMO《国际云图集》：云属，中英文版
-
-- 类型：权威双语术语资料
-- 实际核验：中文及英文云属页面均已读取
-- 入口：[原始来源或官方记录](https://cloudatlas.wmo.int/zh-hans/clouds-genera.html)
-- 使用边界：云属中文名与缩写核对；各云属释义为独立简述。
-
-<a id="src-c04"></a>
-
-### C04 Stull: Practical Meteorology, v1.00b（2015/2016），天气与降水各章
-
-- 类型：开放教材
-- 实际核验：公开全文目录、索引及相关章节选读
-- 入口：[原始来源或官方记录](https://www.eoas.ubc.ca/books/Practical_Meteorology/prmet/PracticalMet_WholeBook-v1_00b.pdf)
-- 使用边界：用于主题组织和概念参照，未逐条审定中文；不据此宣称所有释义均为教材原句。
-
-<a id="src-c05"></a>
-
-### C05 Stull: Practical Meteorology, 第20章 Numerical Weather Prediction
-
-- 类型：开放教材
-- 实际核验：数值模式、参数化、网格、预报检验相关章节选读
-- 入口：[原始来源或官方记录](https://www.eoas.ubc.ca/books/Practical_Meteorology/prmet102/Ch20-nwp-v102.pdf)
-- 使用边界：中文建议；保留预报时效和概率检验的适用范围。
-
-<a id="src-c06"></a>
-
-### C06 IPCC AR6 WGII Annex II: Glossary
-
-- 类型：科学评估报告术语表
-- 实际核验：官方词汇表相关词条
-- 入口：[原始来源或官方记录](https://www.ipcc.ch/report/ar6/wg2/chapter/annex-ii/)
-- 使用边界：概念参照，未将本表中文冒称为IPCC官方中文版用词。
-
-<a id="src-c07"></a>
-
-### C07 Kalnay: Atmospheric Modeling, Data Assimilation and Predictability（2003）
-
-- 类型：教材
-- 实际核验：出版社公开前置页、目录、缩写和变量表
-- 入口：[原始来源或官方记录](https://assets.cambridge.org/97805217/96293/frontmatter/9780521796293_frontmatter.pdf)
-- 使用边界：用于章节与学习索引，非全书逐词释义核查；数值和同化细节另结合C08–C13。
-
-<a id="src-c08"></a>
-
-### C08 ECMWF IFS Documentation CY49R1, Part III: Dynamics and Numerical Procedures
-
-- 类型：官方技术文档
-- 实际核验：正文第2–3章、目录及离散方法相关段落
-- 入口：[原始来源或官方记录](https://www.ecmwf.int/sites/default/files/elibrary/112024/81625-ifs-documentation-cy49r1-part-iii-dynamics-and-numerical-procedures.pdf)
-- 使用边界：采用明确版本作为概念来源，不代表最新业务版本。
-
-<a id="src-c09"></a>
-
-### C09 LeVeque: Finite Volume Methods for Hyperbolic Problems（2002）及作者配套资料
-
-- 类型：教材与作者教学资料
-- 实际核验：作者资料页、出版社目录与简介
-- 入口：[原始来源或官方记录](https://www.clawpack.org/fvmhp_materials/)
-- 使用边界：用于方法名称与主题参照，非逐条中文审定；并参照作者开放教学材料。
-
-<a id="src-c10"></a>
-
-### C10 PETSc User Manual: KSP Linear System Solvers
-
-- 类型：官方技术文档
-- 实际核验：线性求解器及预条件章节
-- 入口：[原始来源或官方记录](https://petsc.org/release/manual/ksp/)
-- 使用边界：数值代数概念参照，不以软件默认配置代替数学定义。
-
-<a id="src-c11"></a>
-
-### C11 ECMWF Forecast User Guide, Section 2A.6 Model Data Assimilation, 4D-Var
-
-- 类型：官方技术文档
-- 实际核验：正文，增量变分、背景场、观测误差及集合同化说明
-- 入口：[原始来源或官方记录](https://confluence.ecmwf.int/spaces/FUG/pages/673550616/Section%2B2A.6%2BModel%2BData%2BAssimilation%2B4D-Var)
-- 使用边界：仅用稳定的概念含义；不固化业务成员数或分辨率。
-
-<a id="src-c12"></a>
-
-### C12 NCAR DART: Inflation
-
-- 类型：官方技术文档
-- 实际核验：正文，先验/后验膨胀及自适应膨胀
-- 入口：[原始来源或官方记录](https://docs.dart.ucar.edu/en/latest/guide/inflation.html)
-- 使用边界：集合膨胀概念参照；实施公式依原文保留。
-
-<a id="src-c13"></a>
-
-### C13 NCAR DART: Assimilation in a complex model
-
-- 类型：官方技术文档
-- 实际核验：正文，局地化、集合离散度、异常值与误差说明
-- 入口：[原始来源或官方记录](https://docs.dart.ucar.edu/en/latest/guide/assimilation-complex-model.html)
-- 使用边界：集合资料同化诊断概念参照。
-
-<a id="src-c14"></a>
-
-### C14 SciPy User Guide: Signal Processing
-
-- 类型：官方技术文档
-- 实际核验：公开信号处理教程与相关谱估计API
-- 入口：[原始来源或官方记录](https://docs.scipy.org/doc/scipy/tutorial/signal.html)
-- 使用边界：概念与命名参照；不同软件的归一化需另查。
-
-<a id="src-c15"></a>
-
-### C15 SciPy User Guide: Discrete Fourier Transforms
-
-- 类型：官方技术文档
-- 实际核验：DFT定义、归一化、周期性和频率相关章节
-- 入口：[原始来源或官方记录](https://docs.scipy.org/doc/scipy/tutorial/fft.html)
-- 使用边界：区别变换、算法和频谱估计。
-
-<a id="src-c16"></a>
-
-### C16 Torrence and Compo（1998）A Practical Guide to Wavelet Analysis
-
-- 类型：原始方法论文及作者资料
-- 实际核验：作者机构页面摘要、完整章节结构和软件入口
-- 入口：[原始来源或官方记录](https://paos.colorado.edu/research/wavelets/bams_abstract.html)
-- 使用边界：重点参照尺度、影响锥、红噪声、交叉小波；中文为建议。
-
-<a id="src-c17"></a>
-
-### C17 Stockwell, Mansinha and Lowe（1996）Localization of the Complex Spectrum: The S Transform
-
-- 类型：原始方法论文
-- 实际核验：原论文书目及公开全文（CiteSeerX托管副本），第II–III节
-- 入口：[原始来源或官方记录](https://doi.org/10.1109/78.492555)
-- 使用边界：S变换的频率相关窗和相位约定参照；不与STFT混用。
-
-<a id="src-c18"></a>
-
-### C18 NIST/SEMATECH e-Handbook, Confidence Limits for the Mean
-
-- 类型：官方统计手册
-- 实际核验：均值置信区间、假设检验、样本标准差与样本量段落
-- 入口：[原始来源或官方记录](https://www.itl.nist.gov/div898/handbook/eda/section3/eda352.htm)
-- 使用边界：用于统计含义及频率学派区间解释。
-
-<a id="src-c19"></a>
-
-### C19 scikit-learn: Metrics and scoring—quantifying the quality of predictions
-
-- 类型：官方技术文档
-- 实际核验：回归/分类指标、概率评分和决策说明
-- 入口：[原始来源或官方记录](https://scikit-learn.org/stable/modules/model_evaluation.html)
-- 使用边界：中文为建议；检验对象、权重和阈值须依据原研究。
-
-<a id="src-c20"></a>
-
-### C20 Met Office: Relative operating characteristic (ROC)
-
-- 类型：气象机构技术说明
-- 实际核验：官方预报检验说明页
-- 入口：[原始来源或官方记录](https://www.metoffice.gov.uk/research/climate/seasonal-to-decadal/gpc-outlooks/user-guide/interpret-roc)
-- 使用边界：ROC区分能力参照，不等同概率可靠性。
-
-<a id="src-c21"></a>
-
-### C21 GUDHI Library documentation
-
-- 类型：科研软件官方文档
-- 实际核验：单纯复形、Rips复形、持续同调及表示模块目录和说明
-- 入口：[原始来源或官方记录](https://gudhi.inria.fr/)
-- 使用边界：拓扑数据分析概念参照，中文术语为本表建议。
-
-<a id="src-c22"></a>
-
-### C22 NetworkX: Graph Laplacian and adjacency matrix
-
-- 类型：官方技术文档
-- 实际核验：图拉普拉斯定义和邻接矩阵相关页面
-- 入口：[原始来源或官方记录](https://networkx.org/documentation/stable/reference/generated/networkx.linalg.laplacianmatrix.laplacian_matrix.html)
-- 使用边界：无向/有向、有权/无权图约定应分别核对。
-
-<a id="src-c23"></a>
-
-### C23 PyTorch Geometric: Creating Message Passing Networks
-
-- 类型：官方技术文档
-- 实际核验：消息传递、邻域聚合、图卷积说明及算子列表
-- 入口：[原始来源或官方记录](https://pytorch-geometric.readthedocs.io/en/stable/tutorial/create_gnn.html)
-- 使用边界：GNN术语概念参照，不表示模型已具物理守恒。
-
-<a id="src-c24"></a>
-
-### C24 Haller（2015）Lagrangian Coherent Structures
-
-- 类型：学术综述
-- 实际核验：作者公开全文，定义、物质输运及几何诊断段落
-- 入口：[原始来源或官方记录](https://georgehaller.com/reprints/annurev-fluid-010313-141322.pdf)
-- 使用边界：用于LCS与流动拓扑主题参照；不将诊断指标直接等同结构。
-
-<a id="src-c25"></a>
-
-### C25 SciPy: signal.coherence
-
-- 类型：官方技术文档
-- 实际核验：模平方相干函数定义与相关谱估计链接
-- 入口：[原始来源或官方记录](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.coherence.html)
-- 使用边界：保留相干与模平方相干的区别。
-
-<a id="src-c26"></a>
-
-### C26 SciPy: signal.hilbert
-
-- 类型：官方技术文档
-- 实际核验：解析信号定义及瞬时相位、频率示例
-- 入口：[原始来源或官方记录](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.hilbert.html)
-- 使用边界：区分希尔伯特变换与程序返回的完整解析信号。
-
-<a id="src-c27"></a>
-
-### C27 SciPy: signal.lombscargle
-
-- 类型：官方技术文档
-- 实际核验：广义Lomb–Scargle周期图及非均匀采样说明
-- 入口：[原始来源或官方记录](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.lombscargle.html)
-- 使用边界：角频率、浮动均值和非均匀采样限制需核对。
-
-<a id="src-c28"></a>
-
-### C28 GUDHI: Representations manual
-
-- 类型：科研软件官方文档
-- 实际核验：持续图、向量化、距离、核及持续景观说明
-- 入口：[原始来源或官方记录](https://gudhi.inria.fr/doc/latest/)
-- 使用边界：中文为概念建议，非国家标准术语。
-
-<a id="src-c29"></a>
-
-### C29 ECMWF IFS Documentation CY49R1, Part II: Data Assimilation
-
-- 类型：官方技术文档
-- 实际核验：正文选读，代价函数、变分同化、背景误差和观测处理
-- 入口：[原始来源或官方记录](https://www.ecmwf.int/sites/default/files/elibrary/112024/81624-ifs-documentation-cy49r1.pdf)
-- 使用边界：采用明确版本核对通用概念，不声称是最新业务实现。
-
-<a id="src-c30"></a>
-
-### C30 Evensen（2003）The Ensemble Kalman Filter: theoretical formulation and practical implementation
-
-- 类型：原始方法论文
-- 实际核验：ECMWF托管正文，卡尔曼滤波、集合误差和分析步骤
-- 入口：[原始来源或官方记录](https://www.ecmwf.int/sites/default/files/elibrary/2003/74424-ensemble-kalman-filter-theoretical-formulation-and-practical-implementation_0.pdf)
-- 使用边界：用于滤波与集合误差的概念参照。
-
-<a id="src-c31"></a>
-
-### C31 ECMWF Seminar（2017）Ensemble Verification Metrics
-
-- 类型：官方培训资料
-- 实际核验：CRPS公式、量纲、概率可靠性和锐度相关说明
-- 入口：[原始来源或官方记录](https://www.ecmwf.int/sites/default/files/elibrary/2017/17626-ensemble-verification-metrics.pdf)
-- 使用边界：概率预报评分的概念参照。
-
-<a id="src-c32"></a>
-
-### C32 NIST/SEMATECH e-Handbook, Quantitative Techniques
-
-- 类型：官方统计手册
-- 实际核验：假设检验、显著性水平及统计功效的定义段落
-- 入口：[原始来源或官方记录](https://www.itl.nist.gov/div898/handbook/eda/section3/eda35.htm)
-- 使用边界：区分未拒绝零假设与证明其成立。
-
-<a id="src-c33"></a>
-
-### C33 NIST/SEMATECH e-Handbook, Critical values and p values
-
-- 类型：官方统计手册
-- 实际核验：p值、临界值与显著性水平正文
-- 入口：[原始来源或官方记录](https://www.itl.nist.gov/div898/handbook/prc/section1/prc131.htm)
-- 使用边界：用于p值的条件概率含义，不赋予零假设后验概率解释。
-
-<a id="src-c34"></a>
-
-### C34 Bubenik (2020), The Persistence Landscape and Some of Its Properties
-
-- 类型：作者公开的专著章节
-- 实际核验：章节PDF第2节及定理1，核对有限持续图与完整持续景观的可逆关系
-- 入口：[原始来源或官方记录](https://people.clas.ufl.edu/peterbubenik/files/bok_978-3-030-43408-3_bubenik.pdf)
-- 使用边界：完整景观、离散近似和汇总统计的保真性不同；用于概念参照，不认证中文译名。
-
-<a id="src-o01"></a>
-
-### O01 GB/T 15920—2010《海洋学术语 物理海洋学》
-
-- 类型：国家标准
-- 实际核验：用户提供的72页PDF正文及条款；部分页面渲染核对；官方目录核对编号与状态
-- 入口：[原始来源或官方记录](https://std.samr.gov.cn/gb/search/gbDetailedCNF?id=71F772D7FC65D3A7E05397BE0A0AB82A)
-- 使用边界：2011-01-14发布、2011-06-01实施。原文件无可靠Unicode映射，按字体恢复文本并结合页面图像核对。本表重新编写语境说明，未逐字转抄定义；少量英文采用现行常见词形并在条目说明。官方平台检索日2026-11-22显示现行。
-
-<a id="src-o02"></a>
-
-### O02 GB/T 15918—2010《海洋学综合术语》
-
-- 类型：国家标准
-- 实际核验：用户提供的43页PDF正文及条款；官方目录核对
-- 入口：[原始来源或官方记录](https://std.samr.gov.cn/gb/search/gbDetailed?id=71F772D82222D3A7E05397BE0A0AB82A)
-- 使用边界：2011-01-14发布、2011-06-01实施。官方平台检索日2026-11-22显示现行，并列有修订计划；修订计划不等同已实施替代版。海域及基准条目用于概念辨析，不据旧标准外推最新海域边界或基准转换参数。
-
-<a id="src-o03"></a>
-
-### O03 IOC, SCOR and IAPSO：TEOS-10 Manual / 官方说明
-
-- 类型：国际权威技术手册
-- 实际核验：官方首页、手册第2.3—2.4节的实用盐度与参考盐度说明
-- 入口：[原始来源或官方记录](https://www.teos-10.org/pubs/TEOS-10_Manual.pdf)
-- 使用边界：用于补充实用盐度、绝对盐度、参考盐度、状态方程的概念边界；不是中文译名国家标准。
-
-<a id="src-o04"></a>
-
-### O04 NOAA/NHC：Defining Storm Surge, Storm Tide and Inundation
-
-- 类型：官方概念说明
-- 实际核验：正文的三类水位定义
-- 入口：[原始来源或官方记录](https://www.nhc.noaa.gov/news/20130806_pa_defineSurge.pdf)
-- 使用边界：核对风暴增水、风暴潮位、淹没水深之间的区别；中文优先沿用用户既定译法。
-
-<a id="src-o05"></a>
-
-### O05 USGS：Regional Assessment of Compound-Flood Hazard from Combined Storm Surge, Rainfall, and Groundwater
-
-- 类型：官方研究说明
-- 实际核验：复合洪涝的多驱动定义与项目范围
-- 入口：[原始来源或官方记录](https://www.usgs.gov/centers/new-york-water-science-center/science/regional-assessment-compound-flood-hazard-combined)
-- 使用边界：参考多驱动洪涝概念，未将某一项目的评分公式外推为普适风险定义。
-
-<a id="src-o06"></a>
-
-### O06 NOAA/NOS VDatum：A tutorial on Datums
-
-- 类型：官方技术说明
-- 实际核验：Geoid、Vertical Datum、Tidal Datums及各平均潮位面的定义段落
-- 入口：[原始来源或官方记录](https://vdatum.noaa.gov/docs/datums.html)
-- 使用边界：用于高程和潮位基准的概念区分；页面中部分参考框架版本较旧，本表不援引其“最新版本”表述。中文为编写建议。
-
-<a id="src-u01"></a>
-
-### U01 用户上传《术语表.md》及已确认译名
-
-- 类型：用户术语约定
-- 实际核验：原文件全部条目及本轮之前明确确认的译法
-- 使用边界：保留既定中文与原有翻译规则。用户约定不是外部标准，也不构成原论文事实的证据。新增来源可补充概念核验。
-
-## 6. 后续维护规则
-
+## 5. 后续维护规则
 1. 新增条目记录英文全称、建议中文、具体语境、出处及核验层级；同义词、缩写和词形变体并入已有条目。
 2. 若同一英文在不同学科中确实指不同对象，保留明确的领域限定，不按字符串相似度强行合并。
 3. 遇到多种中文译法，先记录适用对象和来源，再决定当前论文用词；不覆盖已确认的用户选择。

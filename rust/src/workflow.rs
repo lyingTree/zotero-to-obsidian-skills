@@ -42,7 +42,7 @@ fn skill_input_paths(root:&Path)->Result<Vec<PathBuf>>{
     while let Some(dir)=stack.pop(){
         for entry in fs::read_dir(&dir)?{
             let entry=entry?;let name=entry.file_name();let name=name.to_string_lossy();
-            if name.starts_with('.')||name=="__pycache__"{continue;}
+            if name.starts_with('.')||matches!(name.as_ref(),"__pycache__"|"user"|"runtime"){continue;}
             let p=entry.path();let ty=entry.file_type()?;
             if ty.is_dir(){stack.push(p);continue;}
             if !p.is_file(){continue;}
@@ -140,7 +140,7 @@ pub fn initialize_with_ocr(opt:Initialize<'_>,ocr:Option<&crate::pdf_inventory::
     if opt.translation_required{records["translation_review"]=json!(path_text(&translation)?);}
     if let Some(p)=glossary_path.as_deref(){
         records["terminology"]=json!(path_text(&terminology)?);
-        glossary::prepare(&inventory,p,&leads,|n,total|progress(n,total,"source glossary search leads"))?;
+        glossary::prepare(&inventory,p,&leads,|n,total|if n==1||n==total||n%256==0{progress(n,total,"source glossary search leads");})?;
         records["glossary_candidates"]=json!(path_text(&leads)?);
         ensure!(Some(check_ledger::bind_file(p)?)==glossary_before,"Glossary changed during workflow initialization");
     }

@@ -36,6 +36,26 @@ pub fn balanced(text:&str,pos:usize,open:char,close:char)->Option<usize>{
 fn skip_space(text:&str,mut p:usize)->usize{while let Some(c)=ch_at(text,p){if !c.is_whitespace(){break;}p+=c.len_utf8();}p}
 fn skip_escape(text:&str,p:usize)->usize{let next=p+1;next+ch_at(text,next).map(char::len_utf8).unwrap_or(0)}
 pub struct Link{pub start:usize,pub end:usize,pub label_start:usize,pub label_end:usize,pub image:bool,pub href:String}
+pub(crate) fn image_destination_span(text:&str,link:&Link)->Option<(usize,usize,bool)>{
+    let close=link.label_end;
+    if ch_at(text,close+1)!=Some('('){return None;}
+    let mut cursor=skip_space(text,close+2);
+    let angle=ch_at(text,cursor)==Some('<');
+    cursor+=usize::from(angle);
+    let destination_start=cursor;
+    let mut depth=0usize;
+    while let Some(c)=ch_at(text,cursor){
+        if c=='\\'&&cursor+1<text.len(){cursor=skip_escape(text,cursor);continue;}
+        if angle{
+            if matches!(c,'>'|'\r'|'\n'){break;}
+        }else{
+            if c.is_whitespace()||(c==')'&&depth==0){break;}
+            if c=='('{depth+=1;}else if c==')'{depth-=1;}
+        }
+        cursor+=c.len_utf8();
+    }
+    Some((destination_start,cursor,angle))
+}
 pub fn scan_links(text:&str)->Vec<Link>{
     let mut stack=Vec::new();let mut pairs=BTreeMap::new();let mut p=0;
     while let Some(c)=ch_at(text,p){
@@ -134,6 +154,7 @@ impl Offsets{
     pub fn index(&self,byte:usize)->usize{self.points.binary_search(&byte).expect("UTF-8 boundary")}
     pub fn previous(&self,byte:usize,count:usize)->usize{self.points[self.index(byte).saturating_sub(count)]}
     pub fn next(&self,byte:usize,count:usize)->usize{self.points[(self.index(byte)+count).min(self.points.len()-1)]}
+    pub fn remap(&self,other:&Offsets,other_byte:usize)->usize{self.points[other.index(other_byte)]}
 }
 
 pub fn decode_destination(text:&str)->String{

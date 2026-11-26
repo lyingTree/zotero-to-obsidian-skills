@@ -50,8 +50,10 @@ impl Glossary{
             syntax::body(&text,line).trim_end_matches(['\u{b}','\u{c}','\u{1c}','\u{1d}','\u{1e}','\u{85}','\u{2028}','\u{2029}'])
         }).collect();
         let mut index=Self{binding,line_count:lines.len(),entries:BTreeMap::new(),order:vec![],postings:HashMap::new(),phrases:HashMap::new(),entry_phrases:HashMap::new()};
-        let identifier=Regex::new(r"^[A-Za-z][A-Za-z0-9_-]*$")?;
-        let alias=Regex::new(r"[;；]\s*别名(?:/缩写)?\s*[:：]\s*")?;
+        static ID_RE:OnceLock<Regex>=OnceLock::new();
+        static ALIAS_RE:OnceLock<Regex>=OnceLock::new();
+        let identifier=ID_RE.get_or_init(||Regex::new(r"^[A-Za-z][A-Za-z0-9_-]*$").expect("static regex"));
+        let alias=ALIAS_RE.get_or_init(||Regex::new(r"[;；]\s*别名(?:/缩写)?\s*[:：]\s*").expect("static regex"));
         let parsed:Vec<_>=lines.iter().map(|s|cells(s)).collect();
         for (i,c) in parsed.iter().enumerate(){
             if c.len()<3||separator(c)||parsed.get(i+1).is_some_and(|n|n.len()==c.len()&&separator(n))||!identifier.is_match(&c[0]){continue;}

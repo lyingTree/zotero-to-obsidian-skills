@@ -56,6 +56,10 @@ pub mod ocr_quality;
 pub mod translation_validate;
 pub mod translation_writer;
 pub mod translation_tasks;
+pub mod schema;
+pub mod pdf_layout;
+pub mod tex_source;
+pub mod user_profile;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -247,9 +251,20 @@ pub const OPERATIONS: &[&str] = &[
     "native_runtime.install",
     "zotero_local.inspect_item",
     "zotero_local.catalog",
+    "zotero_local.search_items",
+    "user_profile.locate",
+    "user_profile.load",
+    "user_profile.save",
+    "user_profile.patch",
+    "user_profile.preflight",
+    "prepare_source_inventory.inspect_tex_source",
+    "prepare_source_inventory.prepare_tex_source",
+    "prepare_source_inventory.fetch_arxiv_tex",
+    "prepare_source_inventory.prepare_pdf_layout",
     "vault_library.index",
     "vault_library.match_reference",
     "vault_publish.plan",
+    "vault_publish.plan_standalone",
     "vault_publish.commit_markdown",
     "vault_publish.rollback",
     "check_records.CheckFinding.to_dict",
@@ -353,7 +368,10 @@ pub fn path(v: &Value) -> Result<PathBuf> {
 }
 
 pub fn bytes(v: &Value) -> Result<Vec<u8>> {
-    let obj = v.as_object().ok_or_else(|| anyhow!("expected $bytes wrapper"))?;
+    if let Some(s) = v.as_str() {
+        return Ok(s.as_bytes().to_vec());
+    }
+    let obj = v.as_object().ok_or_else(|| anyhow!("expected UTF-8 string or $bytes wrapper"))?;
     ensure!(obj.len() == 1, "invalid $bytes wrapper");
     Ok(STANDARD.decode(obj.get("$bytes").and_then(Value::as_str)
         .ok_or_else(|| anyhow!("expected base64 $bytes string"))?)?)
@@ -384,12 +402,16 @@ pub fn describe() -> Value {
 }
 
 
-struct Call { args: VecDeque<Value>, kwargs: Map<String, Value> }
+pub fn describe_operation(op: &str) -> Result<Value> {
+    schema::describe_operation(op)
+}
+
+struct Call { op: String, args: VecDeque<Value>, kwargs: Map<String, Value> }
 impl Call {
-    fn new(args: Value, kwargs: Value) -> Result<Self> {
+    fn new(op: &str, args: Value, kwargs: Value) -> Result<Self> {
         let args = args.as_array().ok_or_else(|| anyhow!("args must be an array"))?.clone();
         let kwargs = kwargs.as_object().ok_or_else(|| anyhow!("kwargs must be an object"))?.clone();
-        Ok(Self { args: args.into(), kwargs })
+        Ok(Self { op: op.to_owned(), args: args.into(), kwargs })
     }
     fn positional(&mut self, name: &str) -> Result<Value> {
         match self.args.pop_front() {
@@ -398,7 +420,7 @@ impl Call {
         }
     }
     fn required(&mut self, name: &str) -> Result<Value> {
-        self.kwargs.remove(name).ok_or_else(|| anyhow!("missing argument: {name}"))
+        self.kwargs.remove(name).ok_or_else(|| anyhow!("missing argument '{name}' for {}; run `z2o describe {}` for accepted parameters", self.op, self.op))
     }
     fn optional_positional(&mut self, name: &str, default: Value) -> Result<Value> {
         match self.args.pop_front() {
@@ -408,8 +430,12 @@ impl Call {
     }
     fn option(&mut self, name: &str, default: Value) -> Value { self.kwargs.remove(name).unwrap_or(default) }
     fn finish(self) -> Result<()> {
-        ensure!(self.args.is_empty(), "too many positional arguments");
-        ensure!(self.kwargs.is_empty(), "unsupported keyword arguments: {:?}", self.kwargs.keys());
+        ensure!(self.args.is_empty(), "too many positional arguments for {}; run `z2o describe {}` for accepted parameters", self.op, self.op);
+        if !self.kwargs.is_empty() {
+            let mut keys: Vec<&str> = self.kwargs.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            bail!("unsupported keyword arguments for {}: [{}]; run `z2o describe {}` for accepted parameters", self.op, keys.join(", "), self.op);
+        }
         Ok(())
     }
 }
@@ -419,7 +445,7 @@ pub fn invoke(request: Value) -> Result<Value> {
     let mut r = request.as_object().ok_or_else(|| anyhow!("request must be an object"))?.clone();
     ensure!(r.remove("schema_version").and_then(|v| v.as_u64()) == Some(1), "schema_version must be 1");
     let op = string(&r.remove("operation").ok_or_else(|| anyhow!("operation required"))?, "operation")?;
-    let mut c = Call::new(r.remove("args").unwrap_or(json!([])), r.remove("kwargs").unwrap_or(json!({})))?;
+    let mut c = Call::new(&op, r.remove("args").unwrap_or(json!([])), r.remove("kwargs").unwrap_or(json!({})))?;
     ensure!(r.is_empty(), "unknown request fields");
     let result = match op.as_str() {
         "deterministic_stage_checks.snapshot" => {
@@ -619,7 +645,7 @@ pub fn invoke(request: Value) -> Result<Value> {
             let inv=path(&c.positional("inventory_path")?)?;
             let terms=path(&c.positional("glossary_path")?)?;
             let output=path(&c.positional("output_path")?)?;c.finish()?;
-            let dest=glossary::prepare(&inv,&terms,&output,|i,n|if i%128==0||i==n{eprintln!("[{i}/{n}] source glossary search leads");})?;
+            let dest=glossary::prepare(&inv,&terms,&output,|i,n|runtime_reports::throttled_progress(i,n,"source glossary search leads"))?;
             json!(path_text(&dest)?)
         }
         "note_pipeline.read_json" => {
@@ -646,8 +672,13 @@ pub fn invoke(request: Value) -> Result<Value> {
             let contract=c.option("contract",Value::Null);
             let root=c.option("resource_root",Value::Null);
             let root=if root.is_null(){None}else{Some(path(&root)?)};
+            let write_to=c.option("write_normalized_to",Value::Null);
+            let write_to=if write_to.is_null(){None}else{Some(path(&write_to)?)};
+            let strip_punct=c.option("strip_display_trailing_punctuation",json!(false)).as_bool().context("strip_display_trailing_punctuation must be boolean")?;
             c.finish()?;
-            pipeline::process(source.as_deref(),&plan,&content,&output,&contract,root.as_deref(),|done,total,label|eprintln!("[{done}/{total}] {label}"))?
+            pipeline::process_with_options(source.as_deref(),&plan,&content,&output,&contract,root.as_deref(),
+                pipeline::ProcessOptions{write_normalized_to:write_to.as_deref(),strip_display_trailing_punctuation:strip_punct},
+                runtime_reports::throttled_progress)?
         }
         "lint_presentation.lint_presentation" => {
             let text=c.positional("text")?;c.finish()?;
@@ -907,26 +938,26 @@ pub fn invoke(request: Value) -> Result<Value> {
             let opt=workflow::Initialize{skills_root:&skills,work_root:&work,sources:&sources,
                 source_roles:&roles,candidate_path:&candidate,resource_root:&resource,
                 glossary_path:g.as_deref(),translation_required:translation,run_id:&id};
-            json!(path_text(&workflow::initialize_with_ocr(opt,ocr.as_ref(),|i,n,label|eprintln!("[{i}/{n}] {label}"))?)?)
+            json!(path_text(&workflow::initialize_with_ocr(opt,ocr.as_ref(),runtime_reports::throttled_progress)?)?)
         }
         "complete_workflow.CompletionReport.as_dict" | "complete_workflow.CompletionReport.records_ready" |
         "complete_workflow.CompletionReport.summary" => {
             let p=path(&c.positional("run_path")?)?;
             let count=if op.ends_with(".summary"){c.option("examples_per_code",json!(2)).as_u64().context("examples_per_code must be a positive integer")?}else{2};
             ensure!(count>0,"examples_per_code must be positive");c.finish()?;
-            let r=workflow::inspect(&p,runtime_reports::progress_line)?;
+            let r=workflow::inspect(&p,runtime_reports::throttled_progress)?;
             if op.ends_with(".records_ready"){r["records_ready"].clone()}
             else if op.ends_with(".summary"){runtime_reports::completion_summary(&r,usize::try_from(count)?)?}
             else{r}
         }
         "complete_workflow.inspect_workflow" | "complete_workflow.require_completed_records" => {
             let p=path(&c.positional("run_path")?)?;c.finish()?;
-            if op.ends_with("require_completed_records"){workflow::require_completed(&p,|i,n,label|eprintln!("[{i}/{n}] {label}"))?}
-            else{workflow::inspect(&p,|i,n,label|eprintln!("[{i}/{n}] {label}"))?}
+            if op.ends_with("require_completed_records"){workflow::require_completed(&p,runtime_reports::throttled_progress)?}
+            else{workflow::inspect(&p,runtime_reports::throttled_progress)?}
         }
         "complete_workflow.write_maps" => {
             let p=path(&c.positional("run_path")?)?;let deliveries=c.positional("deliveries")?;c.finish()?;
-            workflow::write_maps(&p,&deliveries,|i,n,label|eprintln!("[{i}/{n}] {label}"))?
+            workflow::write_maps(&p,&deliveries,runtime_reports::throttled_progress)?
         }
         "complete_workflow.resume_workflow" => {
             let p=path(&c.positional("run_path")?)?;
@@ -1196,11 +1227,14 @@ pub fn invoke(request: Value) -> Result<Value> {
                 }else{
                     let dpi=c.option("dpi",json!(144)).as_u64().context("dpi must be an integer")?;
                     let dest=path(&c.required("destination")?)?;
+                    let overwrite=c.option("overwrite",json!(false)).as_bool().context("overwrite must be boolean")?;
+                    let transparent=c.option("transparent",json!(op=="pdf_image_objects.render_pdfcraft_region"))
+                        .as_bool().context("transparent must be boolean")?;
                     if op=="pdf_image_objects.render_pdfcraft_region"{
                         let bbox=c.required("bbox")?;let coordinate_system=c.required("coordinate_system")?;c.finish()?;
-                        pdfcraft_backend::render_region(&p,page,&bbox,&coordinate_system,dpi,&dest,expected.as_deref())?
+                        pdfcraft_backend::render_region_with_options(&p,page,&bbox,&coordinate_system,dpi,&dest,expected.as_deref(),overwrite,transparent)?
                     }else{
-                        c.finish()?;pdfcraft_backend::render_page(&p,page,dpi,&dest,expected.as_deref())?
+                        c.finish()?;pdfcraft_backend::render_page_with_options(&p,page,dpi,&dest,expected.as_deref(),overwrite,transparent)?
                     }
                 }
             }
@@ -1225,18 +1259,20 @@ pub fn invoke(request: Value) -> Result<Value> {
             let context_margin=c.option("context_margin_pt",json!(36.0)).as_f64().context("Invalid context margin")?;
             let e=c.option("expected_source_sha256",Value::Null);
             let e=if e.is_null(){None}else{Some(string(&e,"expected_source_sha256")?)};
+            let overwrite=c.option("overwrite",json!(false)).as_bool().context("overwrite must be boolean")?;
             if op.ends_with("inspect_crop_boundaries"){
                 let dest=path(&c.required("context_destination")?)?;let dpi=c.option("dpi",json!(144)).as_u64().context("Invalid dpi")?;
-                c.finish()?;pdf_boundary::inspect_crop_boundaries(&source,page,&bbox,&coords,&dest,context_margin,dpi,e.as_deref())?
+                c.finish()?;pdf_boundary::inspect_crop_boundaries_with_overwrite(&source,page,&bbox,&coords,&dest,context_margin,dpi,e.as_deref(),overwrite)?
             }else{
                 let dest=path(&c.required("destination")?)?;let dpi=c.option("dpi",json!(300)).as_u64().context("Invalid dpi")?;
                 let margin=c.option("margin_pt",json!(6.0)).as_f64().context("Invalid margin")?;
                 let context=c.option("context_destination",Value::Null);
                 let context=if context.is_null(){None}else{Some(path(&context)?)};
                 let context_dpi=c.option("context_dpi",json!(144)).as_u64().context("Invalid context dpi")?;
+                let transparent=c.option("transparent",json!(true)).as_bool().context("transparent must be boolean")?;
                 c.finish()?;
                 pdf_boundary::render_page_region(&source,pdf_boundary::RegionOptions{page,bbox:&bbox,coordinate_system:&coords,destination:&dest,
-                    margin,dpi,expected:e.as_deref(),context:context.as_deref(),context_margin,context_dpi})?
+                    margin,dpi,expected:e.as_deref(),context:context.as_deref(),context_margin,context_dpi,overwrite,transparent})?
             }
         }
         "prepare_source_inventory.pdf_page_rect" => {
@@ -1387,6 +1423,106 @@ pub fn invoke(request: Value) -> Result<Value> {
             if let Some(p)=output{let b=runtime_reports::save_new_report(&p,&report)?;report["saved_record"]=b;}
             report
         }
+        "zotero_local.search_items" => {
+            let kind=string(&c.positional("library_type")?,"library_type")?;
+            let id=c.positional("library_id")?.as_u64().context("library_id must be an integer")?;
+            let query=string(&c.positional("query")?,"query")?;
+            let qmode=string(&c.option("qmode",json!("titleCreatorYear")),"qmode")?;
+            let item_type=c.option("item_type",Value::Null);
+            let item_type=if item_type.is_null(){None}else{Some(string(&item_type,"item_type")?)};
+            let top_only=c.option("top_only",json!(true)).as_bool().context("top_only must be boolean")?;
+            let limit=usize::try_from(c.option("limit",json!(25)).as_u64().context("limit must be a positive integer")?)?;
+            let start=usize::try_from(c.option("start",json!(0)).as_u64().context("start must be a nonnegative integer")?)?;
+            let output=c.option("output_path",Value::Null);
+            let output=if output.is_null(){None}else{Some(path(&output)?)};
+            c.finish()?;
+            let mut report=zotero_local::search_items(&kind,id,zotero_local::SearchOptions{
+                query:&query,qmode:&qmode,item_type:item_type.as_deref(),top_only,limit,start
+            })?;
+            if let Some(p)=output{let b=runtime_reports::save_new_report(&p,&report)?;report["saved_record"]=b;}
+            report
+        }
+        "user_profile.locate" => {
+            let root=c.option("skill_root",Value::Null);
+            let root=if root.is_null(){None}else{Some(path(&root)?)};
+            c.finish()?;
+            user_profile::locate(root.as_deref())?
+        }
+        "user_profile.load" => {
+            let root=c.option("skill_root",Value::Null);
+            let root=if root.is_null(){None}else{Some(path(&root)?)};
+            let verify=c.option("verify_paths",json!(true)).as_bool().context("verify_paths must be boolean")?;
+            c.finish()?;
+            user_profile::load(root.as_deref(),verify)?
+        }
+        "user_profile.save" => {
+            let profile=c.positional("profile")?;
+            let root=c.option("skill_root",Value::Null);
+            let root=if root.is_null(){None}else{Some(path(&root)?)};
+            c.finish()?;
+            user_profile::save(profile,root.as_deref())?
+        }
+        "user_profile.patch" => {
+            let patch=c.positional("patch")?;
+            let root=c.option("skill_root",Value::Null);
+            let root=if root.is_null(){None}else{Some(path(&root)?)};
+            c.finish()?;
+            user_profile::patch(patch,root.as_deref())?
+        }
+        "user_profile.preflight" => {
+            let root=c.option("skill_root",Value::Null);
+            let root=if root.is_null(){None}else{Some(path(&root)?)};
+            let query=c.option("query",Value::Null);
+            let query=if query.is_null(){None}else{Some(string(&query,"query")?)};
+            let key=c.option("item_key",Value::Null);
+            let key=if key.is_null(){None}else{Some(string(&key,"item_key")?)};
+            let storage=c.option("zotero_storage_dir",Value::Null);
+            let storage=if storage.is_null(){None}else{Some(path(&storage)?)};
+            c.finish()?;
+            user_profile::preflight(root.as_deref(),query.as_deref(),key.as_deref(),storage.as_deref())?
+        }
+        "prepare_source_inventory.inspect_tex_source" => {
+            let source=path(&c.positional("source_path")?)?;
+            let id=string(&c.required("source_id")?,"source_id")?;
+            let expected=c.option("expected_source_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
+            c.finish()?;
+            tex_source::inspect(&source,&id,expected.as_deref())?
+        }
+        "prepare_source_inventory.prepare_tex_source" => {
+            let source=path(&c.positional("source_path")?)?;
+            let destination=path(&c.positional("destination")?)?;
+            let id=string(&c.required("source_id")?,"source_id")?;
+            let expected=c.option("expected_source_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
+            c.finish()?;
+            tex_source::prepare(&source,&id,&destination,expected.as_deref())?
+        }
+        "prepare_source_inventory.fetch_arxiv_tex" => {
+            let target=c.positional("target")?;
+            let destination=path(&c.positional("destination")?)?;
+            let id=c.option("source_id",json!("main"));
+            let id=string(&id,"source_id")?;
+            let pdf=c.option("pdf_path",Value::Null);
+            let pdf=if pdf.is_null(){None}else{Some(path(&pdf)?)};
+            let timeout=c.option("timeout_seconds",json!(60)).as_u64().context("timeout_seconds must be a positive integer")?;
+            let compact=c.option("compact",json!(true)).as_bool().context("compact must be boolean")?;
+            c.finish()?;
+            tex_source::fetch_and_prepare(&target,&destination,&id,pdf.as_deref(),timeout,compact)?
+        }
+        "prepare_source_inventory.prepare_pdf_layout" => {
+            let source=path(&c.positional("source_path")?)?;
+            let destination=path(&c.positional("destination")?)?;
+            let id=c.option("source_id",json!("main"));
+            let id=string(&id,"source_id")?;
+            let render=c.option("render_pages",json!("selective"));
+            let render=string(&render,"render_pages")?;
+            let dpi=c.option("dpi",json!(150)).as_u64().context("dpi must be a positive integer")?;
+            let expected=c.option("expected_source_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
+            c.finish()?;
+            pdf_layout::prepare_pdf_layout(&source,&destination,&id,&render,dpi,expected.as_deref())?
+        }
         "vault_library.index" => {
             let root=path(&c.positional("vault_root")?)?;
             let lit=string(&c.positional("literature_relative")?,"literature_relative")?;
@@ -1445,6 +1581,29 @@ pub fn invoke(request: Value) -> Result<Value> {
             vault_publish::plan(vault_publish::Options{run:&run,run_sha:&run_sha,vault:&vault,literature_relative:&literature,
                 assets_relative:&assets,note_relative:&note,expected_existing_sha:expected.as_deref(),inspect_workflow:inspect},runtime_reports::progress_line)?
         }
+        "vault_publish.plan_standalone" => {
+            let vault=path(&c.positional("vault_root")?)?;
+            let literature=string(&c.required("literature_relative")?,"literature_relative")?;
+            let assets=string(&c.required("assets_relative")?,"assets_relative")?;
+            let note=string(&c.required("note_relative")?,"note_relative")?;
+            let candidate=path(&c.required("candidate_path")?)?;
+            let resource_root=path(&c.required("resource_root")?)?;
+            let backup=c.option("backup_root",Value::Null);
+            let backup=if backup.is_null(){None}else{Some(path(&backup)?)};
+            let expected=c.option("expected_existing_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_existing_sha256")?)};
+            let reuse_identical=c.option("reuse_identical_assets",json!(true)).as_bool().context("reuse_identical_assets must be boolean")?;
+            let disambiguate=c.option("disambiguate_conflicts",json!(true)).as_bool().context("disambiguate_conflicts must be boolean")?;
+            let req_out=c.option("commit_request_output",Value::Null);
+            let req_out=if req_out.is_null(){None}else{Some(path(&req_out)?)};
+            c.finish()?;
+            vault_publish::plan_standalone(vault_publish::StandalonePlanOptions{
+                vault:&vault,literature_relative:&literature,assets_relative:&assets,note_relative:&note,
+                candidate:&candidate,resource_root:&resource_root,backup_root:backup.as_deref(),
+                expected_existing_sha:expected.as_deref(),reuse_identical_assets:reuse_identical,
+                disambiguate_conflicts:disambiguate,commit_request_output:req_out.as_deref(),
+            },runtime_reports::throttled_progress)?
+        }
         "native_runtime.package" => {
             let source=path(&c.positional("source_root")?)?;let dest=path(&c.positional("destination")?)?;
             c.finish()?;native_install::package(&source,&dest,runtime_reports::progress_line)?
@@ -1472,7 +1631,12 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;ensure!(done<=total,"Progress exceeds declared total");
             runtime_reports::progress_line(done,total,label);Value::Null
         }
-        _ => bail!("UNSUPPORTED_OPERATION: {op}"),
+        _ => {
+            if let Err(e) = describe_operation(&op) {
+                return Err(e);
+            }
+            bail!("UNSUPPORTED_OPERATION: {op}");
+        }
     };
     Ok(json!({"schema_version": SCHEMA_VERSION, "result": result}))
 }

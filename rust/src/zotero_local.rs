@@ -3,7 +3,7 @@
 //! HTTP/1.1 parser specifically for the loopback server.
 use anyhow::{bail,ensure,Context,Result};
 use serde_json::{json,Value};
-use std::{collections::{BTreeMap,BTreeSet,VecDeque},io::{BufRead,BufReader,Read,Write},net::{SocketAddr,Ipv4Addr,TcpStream},path::{Path,PathBuf},time::{Duration,Instant},fs};
+use std::{collections::{BTreeMap,BTreeSet,HashMap,VecDeque},io::{BufRead,BufReader,Read,Write},net::{SocketAddr,Ipv4Addr,TcpStream},path::{Path,PathBuf},time::{Duration,Instant},fs};
 use crate::{files,path,path_text,metadata,pdf_structure::Pdf};
 const MAX_ROWS:usize=100_000;
 const MAX_REQUESTS:usize=4096;
@@ -87,17 +87,32 @@ fn decode_http_with_limit<R:BufRead>(mut reader:R,max_body:usize)->Result<Respon
     }
     Ok(Response{headers,body})
 }
-struct Client{addr:SocketAddr,started:Instant,requests:usize,server_id:Option<String>,library_version:Option<String>,observations:Vec<Value>,bytes:usize}
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum VersionScope{Object,Library}
+pub struct SearchOptions<'a>{
+    pub query:&'a str,
+    pub qmode:&'a str,
+    pub item_type:Option<&'a str>,
+    pub top_only:bool,
+    pub limit:usize,
+    pub start:usize,
+}
+struct Client{addr:SocketAddr,started:Instant,requests:usize,connect_timeout:Duration,read_timeout:Duration,server_id:Option<String>,library_version:Option<String>,observations:Vec<Value>,bytes:usize}
 impl Client{
-    fn new(addr:SocketAddr)->Self{Self{addr,started:Instant::now(),requests:0,server_id:None,library_version:None,observations:vec![],bytes:0}}
-    fn get(&mut self,route:&str)->Result<(Value,BTreeMap<String,String>)>{
+    fn new(addr:SocketAddr)->Self{
+        Self{addr,started:Instant::now(),requests:0,connect_timeout:Duration::from_secs(5),read_timeout:Duration::from_secs(60),server_id:None,library_version:None,observations:vec![],bytes:0}
+    }
+    fn with_timeouts(addr:SocketAddr,connect_secs:u64,read_secs:u64)->Self{
+        Self{addr,started:Instant::now(),requests:0,connect_timeout:Duration::from_secs(connect_secs),read_timeout:Duration::from_secs(read_secs),server_id:None,library_version:None,observations:vec![],bytes:0}
+    }
+    fn get(&mut self,route:&str,scope:VersionScope)->Result<(Value,BTreeMap<String,String>)>{
         ensure!(self.addr.ip().is_loopback(),"Local API may only access loopback");
         ensure!(route.starts_with("/api/")&&!route.chars().any(char::is_whitespace)&&!route.contains(['#','\\','\r','\n']),"Unsafe local API route");
         ensure!(self.requests<MAX_REQUESTS&&self.started.elapsed()<Duration::from_secs(300),"Local API request budget exceeded");
         self.requests+=1;
-        let mut stream=TcpStream::connect_timeout(&self.addr,Duration::from_secs(5)).context("ZOTERO_LOCAL_API_UNAVAILABLE: open Zotero and enable local API")?;
-        stream.set_read_timeout(Some(Duration::from_secs(60)))?;stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-        let mut header=format!("GET {route} HTTP/1.1\r\nHost: localhost:{}\r\nUser-Agent: z2o-rust\r\nZotero-API-Version: 3\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n",self.addr.port());
+        let mut stream=TcpStream::connect_timeout(&self.addr,self.connect_timeout).context("ZOTERO_LOCAL_API_UNAVAILABLE: open Zotero and enable local API")?;
+        stream.set_read_timeout(Some(self.read_timeout))?;stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        let mut header=format!("GET {route} HTTP/1.1\r\nHost: localhost:{}\r\nUser-Agent: z2o-rust\r\nZotero-Allowed-Request: true\r\nZotero-API-Version: 3\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n",self.addr.port());
         if let Some(id)=&self.server_id{
             ensure!(!id.contains(['\r','\n']),"Invalid server identity");header.push_str(&format!("Zotero-Server-ID: {id}\r\n"));
         }
@@ -107,25 +122,39 @@ impl Client{
         let id=response.headers.get("zotero-server-id").cloned();
         let version=response.headers.get("last-modified-version").cloned();
         if let Some(prior)=&self.server_id{ensure!(id.as_ref()==Some(prior),"Zotero server identity changed during read");}
-        if let Some(prior)=&self.library_version{
-            if self.server_id.is_some()&&version.is_some(){ensure!(version.as_ref()==Some(prior),"Zotero library version changed during read; retry");}
+        if scope==VersionScope::Library{
+            if let Some(prior)=&self.library_version{
+                if self.server_id.is_some()&&version.is_some(){ensure!(version.as_ref()==Some(prior),"Zotero library version changed during read; retry");}
+            }
+            if self.library_version.is_none(){self.library_version=version.clone();}
         }
         if self.server_id.is_none(){self.server_id=id.clone();}
-        if self.library_version.is_none(){self.library_version=version.clone();}
         self.bytes=self.bytes.saturating_add(response.body.len());
         let body=crate::parse_json(std::str::from_utf8(&response.body)?)?;
-        self.observations.push(json!({"route":route,"sha256":files::digest(&response.body),"bytes":response.body.len(),
-            "api_version":response.headers.get("zotero-api-version"),"server_id":id,"library_version":version}));
+        let mut obs=json!({"route":route,"sha256":files::digest(&response.body),"bytes":response.body.len(),
+            "api_version":response.headers.get("zotero-api-version"),"server_id":id});
+        match scope{
+            VersionScope::Library=>{
+                obs["version_scope"]=json!("library");
+                obs["library_version"]=json!(version);
+            }
+            VersionScope::Object=>{
+                obs["version_scope"]=json!("object");
+                obs["object_version"]=json!(version);
+                obs["library_version"]=Value::Null;
+            }
+        }
+        self.observations.push(obs);
         Ok((body,response.headers))
     }
     fn object(&mut self,route:&str,wanted:&str,kind:&str,id:u64)->Result<Value>{
-        let (v,_)=self.get(&format!("{route}?format=json&include=data"))?;
+        let (v,_)=self.get(&format!("{route}?format=json&include=data"),VersionScope::Object)?;
         check_object(&v,wanted,kind,id)?;Ok(v)
     }
     fn all(&mut self,route:&str,kind:&str,id:u64,mut progress:impl FnMut(usize,usize,&str))->Result<Vec<Value>>{
         let mut out=vec![];let mut seen=BTreeSet::new();let mut total=None;
         loop{
-            let (v,h)=self.get(&format!("{route}?format=json&include=data&limit={PAGE}&start={}",out.len()))?;
+            let (v,h)=self.get(&format!("{route}?format=json&include=data&limit={PAGE}&start={}",out.len()),VersionScope::Library)?;
             let rows=v.as_array().context("Zotero paginated result must be an array")?;
             ensure!(rows.len()<=PAGE&&out.len()+rows.len()<=MAX_ROWS,"Zotero returned invalid page size or exceeded row budget");
             if let Some(n)=h.get("total-results"){
@@ -160,10 +189,31 @@ fn local_version_consistent(client:&Client)->bool{
     if client.observations.is_empty(){return false;}
     let first_server=client.observations[0]["server_id"].as_str();
     let seen_any_server=client.server_id.is_some()||client.observations.iter().any(|o|!o["server_id"].is_null());
-    client.observations.iter().all(|o|{
-        o["library_version"].as_str()==Some(expected_ver)
-            &&(!seen_any_server||(o["server_id"].as_str()==first_server&&first_server.is_some()))
-    })
+    if seen_any_server&&!client.observations.iter().all(|o|o["server_id"].as_str()==first_server&&first_server.is_some()){
+        return false;
+    }
+    let expected_num=expected_ver.parse::<u64>().ok();
+    let mut saw_library=false;
+    let mut object_versions:HashMap<&str,Option<&str>>=HashMap::new();
+    for o in &client.observations{
+        if o.get("version_scope").and_then(Value::as_str)==Some("object"){
+            let obj_ver=o.get("object_version").and_then(Value::as_str);
+            if let (Some(lib_n),Some(obj_n))=(expected_num,obj_ver.and_then(|s|s.parse::<u64>().ok())){
+                if obj_n>lib_n{return false;}
+            }
+            if let Some(route)=o.get("route").and_then(Value::as_str){
+                if let Some(&prior)=object_versions.get(route){
+                    if prior!=obj_ver{return false;}
+                }else{
+                    object_versions.insert(route,obj_ver);
+                }
+            }
+        }else{
+            saw_library=true;
+            if o["library_version"].as_str()!=Some(expected_ver){return false;}
+        }
+    }
+    saw_library
 }
 fn attachment_path(raw:&Value,root:Option<&Path>,paths:&Value)->Result<Option<PathBuf>>{
     let k=key(raw["key"].as_str().context("Attachment key")?)?;
@@ -282,6 +332,89 @@ pub fn catalog(kind:&str,id:u64,mut progress:impl FnMut(usize,usize,&str))->Resu
 pub fn inspect_item(kind:&str,id:u64,item_key:&str,storage_root:Option<&Path>,paths:&Value,progress:impl FnMut(usize,usize,&str))->Result<Value>{
     inspect(Client::new(SocketAddr::from((Ipv4Addr::LOCALHOST,23119))),kind,id,item_key,storage_root,paths,progress)
 }
+pub(crate) fn inspect_item_at(addr:SocketAddr,kind:&str,id:u64,item_key:&str,storage_root:Option<&Path>,paths:&Value,progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    inspect(Client::new(addr),kind,id,item_key,storage_root,paths,progress)
+}
+pub(crate) fn parse_loopback_api_addr(api_url:&str)->Result<SocketAddr>{
+    let trimmed=api_url.trim().trim_end_matches('/');
+    let rest=trimmed.strip_prefix("http://").context("zotero_local_api must start with http://")?;
+    let host_port=rest.split('/').next().unwrap_or("");
+    let (host,port)=host_port.split_once(':').context("zotero_local_api must specify explicit loopback port")?;
+    ensure!(host=="127.0.0.1"||host.eq_ignore_ascii_case("localhost"),"zotero_local_api must target loopback host");
+    let port:u16=port.parse().context("Invalid zotero_local_api port")?;
+    Ok(SocketAddr::from((Ipv4Addr::LOCALHOST,port)))
+}
+pub fn probe_api(api_url:&str)->Value{
+    let addr=match parse_loopback_api_addr(api_url){
+        Ok(a)=>a,
+        Err(e)=>return json!({"reachable":false,"api_url":api_url,"error":format!("{e:#}")}),
+    };
+    probe_client(addr,api_url)
+}
+pub(crate) fn probe_client(addr:SocketAddr,api_url:&str)->Value{
+    let mut client=Client::with_timeouts(addr,2,5);
+    match client.get("/api/users/0/items/top?format=json&include=data&limit=1",VersionScope::Library){
+        Ok((v,_))=>{
+            let lib=v.as_array().and_then(|a|a.first()).map(|row|row["library"].clone()).filter(|v|v.is_object());
+            json!({"reachable":true,"api_url":api_url,"server_id":client.server_id,"library_version":client.library_version,"library":lib})
+        }
+        Err(e)=>json!({"reachable":false,"api_url":api_url,"error":format!("{e:#}")}),
+    }
+}
+fn search(mut client:Client,kind:&str,id:u64,opt:SearchOptions<'_>)->Result<Value>{
+    let prefix=library(kind,id)?;
+    let query=opt.query.trim();
+    ensure!(!query.is_empty()&&query.len()<=1024&&!query.chars().any(char::is_control),"query must be nonempty text without control characters");
+    ensure!(matches!(opt.qmode,"titleCreatorYear"|"everything"),"qmode must be titleCreatorYear or everything");
+    let item_type=opt.item_type.map(|s|{
+        let s=s.trim();
+        ensure!(!s.is_empty()&&s.len()<=256&&!s.chars().any(char::is_control),"item_type must be nonempty text without control characters");
+        Ok::<_,anyhow::Error>(s)
+    }).transpose()?;
+    ensure!((1..=PAGE).contains(&opt.limit),"limit must be between 1 and {PAGE}");
+    ensure!(opt.start<=MAX_ROWS,"start exceeds row budget");
+    let base=if opt.top_only{format!("{prefix}/items/top")}else{format!("{prefix}/items")};
+    let enc_q=percent_encoding::utf8_percent_encode(query,percent_encoding::NON_ALPHANUMERIC).to_string();
+    let mut route=format!("{base}?format=json&include=data&q={enc_q}&qmode={}&limit={}&start={}",opt.qmode,opt.limit,opt.start);
+    if let Some(t)=item_type{
+        let enc_t=percent_encoding::utf8_percent_encode(t,percent_encoding::NON_ALPHANUMERIC).to_string();
+        route.push_str(&format!("&itemType={enc_t}"));
+    }
+    let (v,h)=client.get(&route,VersionScope::Library)?;
+    let rows=v.as_array().context("Zotero search result must be an array")?;
+    ensure!(rows.len()<=opt.limit,"Zotero returned invalid search page size");
+    let total=h.get("total-results").map(|n|->Result<usize>{
+        let n=n.parse::<usize>()?;
+        ensure!(n<=MAX_ROWS,"Zotero total exceeded budget");
+        Ok(n)
+    }).transpose()?;
+    let link_more=h.get("link").is_some_and(|s|s.contains("rel=\"next\"")||s.contains("rel=next"));
+    let mut items=Vec::with_capacity(rows.len());
+    let mut seen=BTreeSet::new();
+    for row in rows{
+        let k=key(row["key"].as_str().context("Missing Zotero key")?)?;
+        check_object(row,k,kind,id)?;
+        ensure!(seen.insert(k.to_owned()),"Repeated Zotero search result");
+        items.push(row.clone());
+    }
+    let actual=items.first().map(|r|r["library"]["id"].as_u64().unwrap()).or(if id>0{Some(id)}else{None});
+    ensure!(items.iter().all(|r|r["library"]["id"].as_u64()==actual),"Zotero search spans more than one actual library");
+    let has_more=total.is_some_and(|t|opt.start.saturating_add(items.len())<t)||link_more;
+    let stable=local_version_consistent(&client);
+    Ok(json!({
+        "schema_version":1,"library":{"type":kind,"id":actual},
+        "query":query,"qmode":opt.qmode,"item_type":item_type,"top_only":opt.top_only,
+        "limit":opt.limit,"start":opt.start,"returned_count":items.len(),"total_results":total,"has_more":has_more,
+        "items":items,"local_version_consistent":stable,"api_reads":client.observations,
+        "attachment_downloaded":false,"zotero_modified":false,"source_fidelity":"not_assessed","boundary":BOUNDARY
+    }))
+}
+pub fn search_items(kind:&str,id:u64,opt:SearchOptions<'_>)->Result<Value>{
+    search(Client::new(SocketAddr::from((Ipv4Addr::LOCALHOST,23119))),kind,id,opt)
+}
+pub(crate) fn search_items_at(addr:SocketAddr,kind:&str,id:u64,opt:SearchOptions<'_>)->Result<Value>{
+    search(Client::new(addr),kind,id,opt)
+}
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -388,5 +521,99 @@ mod tests{
         assert_eq!(report["attachments"][0]["local"]["availability"],"path_unresolved");
         assert_eq!(report["local_version_consistent"],true);assert_eq!(report["language"],"unknown");
         assert_eq!(report["attachment_downloaded"],false);assert_eq!(report["zotero_modified"],false);
+    }
+    #[test]
+    fn inspect_allows_distinct_object_and_library_versions_like_zotero_desktop(){
+        let server=TcpListener::bind((Ipv4Addr::LOCALHOST,0)).unwrap();let addr=server.local_addr().unwrap();
+        let obj=|k:&str,ver:u64,data:Value|{let mut d=data;d["key"]=json!(k);json!({"key":k,"library":{"type":"user","id":9849314},"data":d,"version":ver})};
+        let parent=obj("5U5RW3TA",9802,json!({"itemType":"preprint","title":"Mayer path homology","collections":["ZTLKJLS5"],"language":"en"}));
+        let coll=obj("ZTLKJLS5",1882,json!({"name":"拓扑","parentCollection":false}));
+        let att=obj("RUCADIA2",9805,json!({"itemType":"attachment","parentItem":"5U5RW3TA","filename":"paper.pdf","linkMode":"imported_file","contentType":"application/pdf"}));
+        let expected=parent.clone();
+        let handle=thread::spawn(move||{
+            let routes=[
+                ("/api/users/0/items/5U5RW3TA?format=json&include=data",parent.clone(),"9802",None),
+                ("/api/users/0/collections/ZTLKJLS5?format=json&include=data",coll,"1882",None),
+                ("/api/users/0/items/5U5RW3TA/children?format=json&include=data&limit=100&start=0",json!([att]),"9818",Some(1)),
+                ("/api/users/0/items/RUCADIA2/children?format=json&include=data&limit=100&start=0",json!([]),"9818",Some(0)),
+                ("/api/users/0/items/5U5RW3TA?format=json&include=data",parent,"9802",None),
+            ];
+            for (route,value,ver,total) in routes{
+                let (mut socket,_)=server.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                let mut r=BufReader::new(&mut socket);
+                let first=String::from_utf8(line(&mut r,8192).unwrap()).unwrap();
+                assert_eq!(first,format!("GET {route} HTTP/1.1"));
+                loop{if line(&mut r,8192).unwrap().is_empty(){break;}}
+                drop(r);
+                let bytes=serde_json::to_vec(&value).unwrap();
+                write!(socket,"HTTP/1.1 200 OK\r\nZotero-API-Version: 3\r\nZotero-Server-Id: K8Ms6zL58J8z\r\nLast-Modified-Version: {ver}\r\nContent-Length: {}\r\n",bytes.len()).unwrap();
+                if let Some(n)=total{write!(socket,"Total-Results: {n}\r\n").unwrap();}
+                write!(socket,"\r\n").unwrap();socket.write_all(&bytes).unwrap();
+            }
+        });
+        let report=inspect(Client::new(addr),"user",0,"5U5RW3TA",None,&json!({}),|_,_,_|{}).unwrap();
+        handle.join().unwrap();
+        assert_eq!(report["raw"],expected);
+        assert_eq!(report["collection_ancestry"]["status"],"complete");
+        assert_eq!(report["local_version_consistent"],true);
+    }
+    #[test]
+    fn inspect_rejects_library_version_drift_across_list_reads(){
+        let server=TcpListener::bind((Ipv4Addr::LOCALHOST,0)).unwrap();let addr=server.local_addr().unwrap();
+        let obj=|k:&str,ver:u64,data:Value|{let mut d=data;d["key"]=json!(k);json!({"key":k,"library":{"type":"user","id":123},"data":d,"version":ver})};
+        let parent=obj("PARENT01",9802,json!({"itemType":"journalArticle","title":"T","collections":[]}));
+        let att=obj("ATTACH01",9805,json!({"itemType":"attachment","parentItem":"PARENT01","filename":"p.pdf","linkMode":"imported_file","contentType":"application/pdf"}));
+        let handle=thread::spawn(move||{
+            let routes=[
+                ("/api/users/0/items/PARENT01?format=json&include=data",parent,"9802",None),
+                ("/api/users/0/items/PARENT01/children?format=json&include=data&limit=100&start=0",json!([att]),"9818",Some(1)),
+                ("/api/users/0/items/ATTACH01/children?format=json&include=data&limit=100&start=0",json!([]),"9819",Some(0)),
+            ];
+            for (route,value,ver,total) in routes{
+                let (mut socket,_)=server.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                let mut r=BufReader::new(&mut socket);
+                let first=String::from_utf8(line(&mut r,8192).unwrap()).unwrap();
+                assert_eq!(first,format!("GET {route} HTTP/1.1"));
+                loop{if line(&mut r,8192).unwrap().is_empty(){break;}}
+                drop(r);
+                let bytes=serde_json::to_vec(&value).unwrap();
+                write!(socket,"HTTP/1.1 200 OK\r\nZotero-API-Version: 3\r\nZotero-Server-ID: K8Ms6zL58J8z\r\nLast-Modified-Version: {ver}\r\nContent-Length: {}\r\n",bytes.len()).unwrap();
+                if let Some(n)=total{write!(socket,"Total-Results: {n}\r\n").unwrap();}
+                write!(socket,"\r\n").unwrap();socket.write_all(&bytes).unwrap();
+            }
+        });
+        let err=inspect(Client::new(addr),"user",0,"PARENT01",None,&json!({}),|_,_,_|{}).unwrap_err();
+        handle.join().unwrap();
+        assert!(err.to_string().contains("Zotero library version changed during read; retry"),"{err}");
+    }
+    #[test]
+    fn search_items_loopback_percent_encodes_and_reports_totals(){
+        let server=TcpListener::bind((Ipv4Addr::LOCALHOST,0)).unwrap();let addr=server.local_addr().unwrap();
+        let row=json!({"key":"5U5RW3TA","library":{"type":"user","id":9849314},"version":9802,"data":{"key":"5U5RW3TA","itemType":"preprint","title":"Mayer 同调"}});
+        let handle=thread::spawn(move||{
+            let (mut socket,_)=server.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut r=BufReader::new(&mut socket);
+            let first=String::from_utf8(line(&mut r,8192).unwrap()).unwrap();
+            let enc_q=percent_encoding::utf8_percent_encode("mayer 同调",percent_encoding::NON_ALPHANUMERIC).to_string();
+            assert_eq!(first,format!("GET /api/users/0/items/top?format=json&include=data&q={enc_q}&qmode=everything&limit=5&start=1&itemType=preprint HTTP/1.1"));
+            loop{if line(&mut r,8192).unwrap().is_empty(){break;}}
+            drop(r);
+            let bytes=serde_json::to_vec(&json!([row])).unwrap();
+            write!(socket,"HTTP/1.1 200 OK\r\nZotero-API-Version: 3\r\nZotero-Server-Id: K8Ms6zL58J8z\r\nLast-Modified-Version: 9818\r\nTotal-Results: 3\r\nContent-Length: {}\r\n\r\n",bytes.len()).unwrap();
+            socket.write_all(&bytes).unwrap();
+        });
+        let res=search(Client::new(addr),"user",0,SearchOptions{
+            query:"mayer 同调",qmode:"everything",item_type:Some("preprint"),top_only:true,limit:5,start:1,
+        }).unwrap();
+        handle.join().unwrap();
+        assert_eq!(res["returned_count"],1);
+        assert_eq!(res["total_results"],3);
+        assert_eq!(res["has_more"],true);
+        assert_eq!(res["library"],json!({"type":"user","id":9849314}));
+        assert_eq!(res["items"][0]["key"],"5U5RW3TA");
+        assert_eq!(res["local_version_consistent"],true);
     }
 }

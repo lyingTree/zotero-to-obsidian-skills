@@ -13,6 +13,47 @@
 
 确认后记录 `project_root`、`vault_root`、`literature_root`、`templates_root`、`glossary_path`、`assets_resource_dir`、`work_root`，存绝对路径并同时保留相对 vault 根的版本。路径别名、符号链接与 OneDrive 重定向先解析再比较，不同路径不得因名称相似视为同一位置。
 
+## 技能内持久化配置
+
+用户级路径与偏好只写入当前技能目录：
+
+`<skills_root>/literature-zotero2obsidian/user/profile.json`
+
+使用 `user_profile.preflight`、`user_profile.locate`、`user_profile.load`、`user_profile.save`、`user_profile.patch` 管理该文件。禁止写入 `%APPDATA%`、`~/.config`、注册表或其他通用用户目录。`user/` 是技能私有用户状态，不进入安装包，升级技能时保留。
+
+首次运行按下列顺序执行，之后不再重复搜索：
+
+1. 日常任务优先单次调用 `user_profile.preflight`（可同时传入 `query` / `item_key`）：一次返回档案校验、Zotero API 探测、模板列表、条目/PDF 定位及 `work_dir`；仅在 `status: "uninitialized"` 或用户要求变更配置时重新发现并 `user_profile.save` / `user_profile.patch`。
+2. 每个记录路径先核对实际存在性、类型与包含关系。`paths.work_root` 必须指向总工作根目录（如 `<parent>/literature-pipeline-work/<vault>`），禁止将单篇条目工作子目录写入 `work_root`；`paths.obsidian_cli` 填实际可执行命令名或路径（如 `"obsidian"`），不带说明括号。
+3. 记录值与本次命令行/用户输入冲突时，以本次明确输入为准并更新记录，同时保留变更说明。
+4. 不以“上次运行成功”代替本次路径可读性核对，也不因记录存在而跳过写前边界检查。
+
+持久化字段包括 `paths`（Zotero 本地 API、Zotero 数据/存储目录、Obsidian vault、文献根、模板、术语表、附件资源根、工作根、Obsidian CLI）、`zotero_library`（`{"type":"user","id":<id>}`）、`templates`（按文献类型映射默认模板文件名与 `glossary`）与 `preferences`。`preferences` 至少保留：
+
+| 键 | 默认 | 含义 |
+|---|---|---|
+| `formula_table_enhancement` | `unasked` | 首次询问后写 `native` 或 `ocr` |
+| `arxiv_tex_auto` | `true` | 预印本默认尝试 TeX 源辅助 |
+| `transparent_figure` | `preserve_original` | 透明插图保留原图/alpha，不合成白底 |
+
+### 首次询问：复杂公式与表格增强
+
+只有 `formula_table_enhancement: "unasked"` 时询问一次，并把选择写入 profile：
+
+- 选项 A（默认直接执行，不提问、不下载）：使用 PDF 原生文字层、PdfCraft 页图/区域渲染与模型视觉核对；复杂公式与表格按区域放大、必要时用 TeX 源辅助。没有安装 OCR 包不阻断本条路径。
+- 选项 B（仅首次询问是否下载安装）：可选 PP-OCR/表格结构/公式模型包。用户同意后才调用 `prepare_source_inventory.install_ocr_package`，安装到技能内持久化 `store`；拒绝或安装失败保持选项 A，不反复询问。
+
+已写入 `native` 或 `ocr` 后，后续运行直接沿用，除非用户主动要求修改。
+
+### arXiv 预印本 TeX 源
+
+条目类型为 `preprint`，或元数据/附件中出现 arXiv ID、`arxiv.org` 链接时，视为预印本。`arxiv_tex_auto` 为 `true`（默认）时自动尝试 TeX 辅助，不先询问：
+
+1. 优先使用条目附件或本次工作目录中已有的 `.tex`、`.zip`、`.tar`、`.tar.gz`、`.gz` 源，调用 `prepare_source_inventory.prepare_tex_source`。
+2. 否则直接调用 `prepare_source_inventory.fetch_arxiv_tex`（传入 `item.json` / arXiv ID / `pdf_path`）：自动探测 arXiv ID、下载 e-print 到库外目录、自动展开 `.bbl` 与 `.gz`/`.tar` 并生成 `tex-structure.json` 与 `clean-source.md`（默认 `compact: true` 只返回紧凑摘要）；若返回 `status: "not_arxiv"` 或 `"unavailable"`，回退到 `prepare_source_inventory.prepare_pdf_layout`。
+3. TeX 只作文字、公式、表格和书目辅助；页面顺序、可见版面、图件边界仍以 PDF 页图核对。TeX 与 PDF 冲突时保留两者证据并人工裁决，不静默覆盖。
+4. 下载失败、源码缺页或版本不一致时记录原因并回退到 PDF 路径；不把辅助失败写成全文失败。
+
 ## 运行预检
 
 - 先明确本次步骤、允许写入的目标和已有运行记录，再只读检查本次实际使用的来源接口与文件工具。只有本次消费的依赖才是必需；单项本地 Markdown 修复不因未使用 Zotero 而启动全流程。
@@ -79,7 +120,7 @@
 ## 工具与边界
 
 - Zotero 操作使用同级 [zotero-skills](../../zotero-skills/SKILL.md)，先探测再调用，不假定 MCP 工具已安装，不打印凭据。
-- Obsidian 操作使用同级 [obsidian-cli](../../obsidian-cli/SKILL.md)，先读取实际 help；明确 vault 与相对 path，解析返回内容，不能只看退出码。
+- Obsidian 笔记与附件写入统一使用 `vault_publish.plan_standalone` + `vault_publish.commit_markdown`，提交回读与 SHA-256 校验已由 Rust 事务完成；写入后不要轮询启动 Obsidian 客户端、搜索索引或反向链接缓存，仅在用户明确要求查库内出链/触发客户端命令时再按需调用同级 [obsidian-cli](../../obsidian-cli/SKILL.md)（先读 help、明确 vault 与相对 path、检查实际输出）。
 - 含 LaTeX 反斜杠或长全文时，以文件方式保存正文再回读实际文件。移动或重命名时核对可枚举的入链；使用 CLI 时读取其实际返回文件内容。CLI 不可用时可使用文件接口，无法核实的入链范围单独保留待核记录。
 - 模板作为结构与格式参考。先检查模板实际行为，不盲跑其正则清理、改名或交互脚本。
 - 未覆盖的文献类型保留实际类型，采用不虚构字段的通用结构，不套成期刊论文。

@@ -269,8 +269,10 @@ fn targets(a:&mut Audit,inv:&Value,manifest:&Value,candidate:&Candidate,root:&Pa
     ensure!(units.keys().eq(deliveries.keys()),"Every registered unit needs one explicit target");
     let tables=candidate.table_records()?;
     let mut covered=BTreeSet::new();let mut refs=BTreeSet::new();let mut bibliography=BTreeMap::<String,String>::new();let mut calls=Vec::<(String,Span)>::new();
-    let formula=regex::Regex::new(r"(?ms)^ {0,3}\$\$[ \t]*(?:[^\r\n]+\$\$[ \t]*$|\r?\n.+?\r?\n {0,3}\$\$[ \t]*$)")?;
-    let heading=regex::Regex::new(r"(?m)^ {0,3}#{1,6}[ \t]+\S")?;
+    static FORMULA_RE:OnceLock<Regex>=OnceLock::new();
+    static HEADING_RE:OnceLock<Regex>=OnceLock::new();
+    let formula=FORMULA_RE.get_or_init(||regex::Regex::new(r"(?ms)^ {0,3}\$\$[ \t]*(?:[^\r\n]+\$\$[ \t]*$|\r?\n.+?\r?\n {0,3}\$\$[ \t]*$)").expect("static regex"));
+    let heading=HEADING_RE.get_or_init(||regex::Regex::new(r"(?m)^ {0,3}#{1,6}[ \t]+\S").expect("static regex"));
     for(id,u)in &units{
         let d=deliveries[id];let kind=u["kind"].as_str().context("Unit kind")?;
         let r=(||->Result<()>{

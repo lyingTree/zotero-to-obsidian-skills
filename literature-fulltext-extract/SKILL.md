@@ -19,10 +19,10 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 继续以现有逐页/结构清单与来源交付检查为机械证据；实际文件绑定使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md)。页图内容是否正确与源单元是否完整仍须核对。
 
 1. 核对每份附件的来源身份。
-2. 生成 PDF 题头页及对象所在页的可读页图。
-3. 先在 source-map.json 登记原文章节及对象清单。
-4. 按原文阅读顺序逐块提取内容。
-5. 对照页图复核需要精确转录的字段。
+2. 预印本优先调用 `prepare_source_inventory.fetch_arxiv_tex`；常规 PDF 优先调用 `prepare_source_inventory.prepare_pdf_layout`（默认 `render_pages: "selective"`），自动执行分栏排序、段落聚类、行末连字符愈合、生成 `clean-layout.md`，并仅为含图表、乱码或跨行公式的页面输出可读页图与 `visual-review-regions.json`。
+3. 先在 `source-map.json`（或 `layout-blocks.json` / `tex-structure.json`）登记原文章节及对象清单。
+4. 按原文阅读顺序逐块提取内容，仅针对 `visual_review_regions` 或模糊区域按需裁剪核对。
+5. 对照页图或 TeX 源码复核需要精确转录的字段与公式。
 6. 回查清单中尚无提取结果的对象。
 
 ## DOCX 结构入口
@@ -32,6 +32,16 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 先按 `native_blocks` 的顺序提取正文与表格。再按 `media_calls` 的实际 relationship 找原图，并结合前后题注确认逻辑图号。同一图可以对应多个媒体调用；ZIP 中的图片文件名和媒体序号不代表图号。原图文件绑定位于 `native_media[].file`。
 
 `native_issues` 列出 OMML 公式、浮动图形、裁剪变换、其他部件等尚需核对的对象。保留这些原始条目，在 `native_issue_reviews` 另记实际处置及证据。需要看排版时实际渲染 DOCX，再记录该次渲染的文件和定位；不能将段落序号写成 PDF 页码，也不能用生成清单代替内容核验。
+
+## 预印本 TeX 源辅助
+
+条目为 `preprint` 或出现 arXiv ID / `arxiv.org` 链接时默认启用 TeX 辅助，不需要再次询问。直接调用 `prepare_source_inventory.fetch_arxiv_tex`（自动探测 ID、下载 e-print、展开 `.bbl` 与 `.gz`/`.tar` 并写出 `tex-structure.json` 与 `clean-source.md`）；若工作区或附件已有 `.tex`、`.zip`、`.tar`、`.tar.gz`、`.gz`，也可调用 `prepare_source_inventory.inspect_tex_source` 或 `prepare_source_inventory.prepare_tex_source`，读取 `blocks`、`equations`、`tables`、`citations`、`graphics` 与 `clean-source.md`。
+
+TeX 用于核对乱码文字层难以辨认的公式、表格和书目；PDF 页图仍是页面顺序、可见版面和图件边界的依据。两者冲突时同时保留并登记裁决，不用 TeX 静默覆盖 PDF。下载或解析失败时记录原因并回退 `prepare_pdf_layout` 继续 PDF 路径。
+
+## 透明背景图
+
+遵循档案 `transparent_figure: preserve_original` 偏好：透明背景插图默认保留原图透明通道（alpha），禁止主动合成纯白底（`#FFFFFF`）。整幅图可定位为单个 PDF 图像对象时优先 `export_image_object`（直接保留原编码与 SMask alpha）。只能按页裁剪或存在矢量叠加层时调用 `render_pdfcraft_region` / `render_page_region`（`transparent` 默认 `true`）。若源图本身有实色白底则保持原样；仅在需要记录像素诊断对照时临时使用合成视图，不覆盖最终交付 PNG。记录 `transparent_background`、`alpha_min`、`alpha_max` 与最终文件哈希。
 
 ## 约束
 

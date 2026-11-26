@@ -35,7 +35,7 @@ pub fn prepare_sources(sources:&Value,root:&Path,roles:&Value,glossary:Option<&P
 }
 #[allow(clippy::too_many_arguments)]
 fn prepare_impl(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dpi:u64,ocr:Option<&crate::pdf_inventory::OcrSettings>,docx_only:bool,mut progress:impl FnMut(usize,usize,&str))->Result<PathBuf>{
-    let map=sources.as_object().filter(|m|!m.is_empty()).context("Provide at least one source PDF or DOCX")?;
+    let map=sources.as_object().filter(|m|!m.is_empty()).context("source_pdfs must be a nonempty JSON object mapping source_id to file path, e.g. {\"main\": \"path/to/paper.pdf\"}")?;
     ensure!((72..=600).contains(&dpi),"dpi must be between 72 and 600");
     ensure!(roles.is_null()||roles.is_object(),"source_roles must be an object");
     // Cheap no-work rejection for a completed prior run. Repeat under the

@@ -32,10 +32,10 @@ fn ident(s:&str)->bool{
 fn ref_kind(k:&str)->bool{matches!(k,"reference"|"bibliography")}
 fn spec(k:&str)->Option<(&'static str,&'static str)>{
     Some(match k{
-        "header"=>("original_title authors affiliations translated","notes"),"heading"=>("level","numbered"),
-        "list"=>("style count",""),"metadata"=>("notes",""),"paragraph"|"translator_note"=>("","links literals"),
+        "header"=>("original_title authors affiliations translated","notes links literals"),"heading"=>("level","numbered literals"),
+        "list"=>("style count","links literals"),"metadata"=>("notes","links literals"),"paragraph"|"translator_note"=>("","links literals"),
         "figure"=>("images label anchor","links literals"),"formula"=>("latex anchor",""),"table"=>("data anchor",""),
-        "reference"|"bibliography"=>("source_text","anchor"),"zotero_link"=>("uri",""),_=>return None,
+        "reference"|"bibliography"=>("source_text","anchor links literals"),"zotero_link"=>("uri",""),_=>return None,
     })
 }
 fn plan_units(plan:&Value)->R<&Vec<Value>>{
@@ -104,6 +104,11 @@ fn fragment(s:&str)->String{
     let mut out=String::new();for c in s.chars(){if "%<>#\\&".contains(c){out.push_str(&format!("%{:02X}",c as u32));}else{out.push(c);}}out
 }
 fn marker(s:&str)->bool{!s.is_empty()&&s.bytes().all(|b|b.is_ascii_alphanumeric())}
+fn validate_email(email:&str,p:&str)->R<String>{
+    let(a,b)=email.split_once('@').ok_or_else(||bad(p,"invalid email"))?;
+    check(!a.is_empty()&&!b.is_empty()&&!b.contains('@')&&!email.chars().any(|c|c.is_whitespace()||matches!(c,'<'|'>')),p,"invalid email")?;
+    Ok(percent(email,|b|b.is_ascii_alphanumeric()||b"@.+-_~".contains(&b)))
+}
 fn header_item(v:&Value,field:&str,p:&str)->R<String>{
     if v.is_string(){return Ok(literal(line(v,p)?));}
     if field=="affiliations"{
@@ -122,9 +127,8 @@ fn header_item(v:&Value,field:&str,p:&str)->R<String>{
     if let Some(c)=v.get("corresponding"){if c.as_bool().ok_or_else(||bad(&format!("{p}/corresponding"),"expected a boolean"))?{markers.push("\\ast");}}
     if let Some(e)=v.get("email"){
         let email=line(e,&format!("{p}/email"))?;
-        let(a,b)=email.split_once('@').ok_or_else(||bad(&format!("{p}/email"),"invalid email"))?;
-        check(!a.is_empty()&&!b.is_empty()&&!b.contains('@')&&!email.chars().any(|c|c.is_whitespace()||matches!(c,'<'|'>')),&format!("{p}/email"),"invalid email")?;
-        name=format!("[{name}](mailto:{})",percent(email,|b|b.is_ascii_alphanumeric()||b"@.+-_~".contains(&b)));
+        let encoded=validate_email(email,&format!("{p}/email"))?;
+        name=format!("[{name}](mailto:{encoded})");
     }
     if !markers.is_empty(){name.push_str(&format!("{}{{}}^{{{}}}{}",'$',markers.join(","),'$'));}Ok(name)
 }
@@ -143,7 +147,7 @@ fn citation(v:&Value,p:&str,targets:&TextMap,numbers:&HashMap<String,usize>)->R<
         }
     }out.push_str("\\]</sup>");Ok(out)
 }
-fn inline(u:&Value,value:&str,p:&str,targets:&TextMap,numbers:&HashMap<String,usize>,ambiguous:&HashSet<String>)->R<String>{
+fn inline_many(u:&Value,values:&[&str],p:&str,targets:&TextMap,numbers:&HashMap<String,usize>,ambiguous:&HashSet<String>)->R<Vec<String>>{
     static TOKENS:OnceLock<Regex>=OnceLock::new();static BLOCK:OnceLock<Regex>=OnceLock::new();
     let token=TOKENS.get_or_init(||Regex::new(r"\{\{(link|literal):([A-Za-z0-9][A-Za-z0-9_.-]*)\}\}").unwrap());
     let block=BLOCK.get_or_init(||Regex::new(r"^(?:#{1,6}(?:\s|$)|>|[-+*]\s|\d+[.)]\s|[-*_]{3,}\s*$|\^[-A-Za-z0-9]+$|\x60{3,}|~{3,}|\$\$|<[/!A-Za-z])").unwrap());
@@ -155,7 +159,32 @@ fn inline(u:&Value,value:&str,p:&str,targets:&TextMap,numbers:&HashMap<String,us
             let rendered=if typ=="literal"{
                 let raw=line(spec,p)?;check(!block.is_match(raw),p,"protected inline text contains a block delimiter")?;raw.to_owned()
             }else if spec.get("citation").is_some(){citation(spec,p,targets,numbers)?}
-            else{
+            else if spec.get("url").is_some(){
+                fields(spec,p,"url label","")?;
+                let url=line(&spec["url"],p)?;
+                check(!url.chars().any(|c|c.is_whitespace()||matches!(c,'<'|'>')),p,"invalid external URL")?;
+                let dest=if let Some(email)=url.strip_prefix("mailto:"){
+                    format!("mailto:{}",validate_email(email,p)?)
+                }else{
+                    check(url.starts_with("https://")||url.starts_with("http://"),p,"URL link must start with https://, http://, or mailto:")?;
+                    url.to_owned()
+                };
+                let label=literal(line(&spec["label"],p)?);
+                if dest.contains(['(',')']){format!("[{label}](<{dest}>)")}else{format!("[{label}]({dest})")}
+            }else if spec.get("file").is_some(){
+                fields(spec,p,"file label","")?;
+                let raw=line(&spec["file"],p)?;
+                check(!raw.contains(['\\',':','<','>']),p,"invalid relative file link")?;
+                let (rel,frag)=match raw.split_once('#'){Some((a,b))=>(a,Some(b)),None=>(raw,None)};
+                check(!rel.is_empty()&&!rel.starts_with('/')&&rel.ends_with(".md")&&rel.split('/').all(|s|!s.is_empty()&&!matches!(s,"."|"..")),
+                    p,"file link must be a relative .md path without traversal")?;
+                let mut dest=rel.replace('%',"%25").replace('?',"%3F").replace('&',"&amp;");
+                if let Some(f)=frag{
+                    check(!f.is_empty()&&!f.contains(['#','\\','<','>']),p,"invalid file link fragment")?;
+                    dest.push('#');dest.push_str(&fragment(f));
+                }
+                format!("[{}](<{dest}>)",literal(line(&spec["label"],p)?))
+            }else{
                 fields(spec,p,"target label","")?;let target=line(&spec["target"],p)?;
                 let dest=targets.get(target).ok_or_else(||bad(p,format!("unresolved link target {target}")))?;
                 check(!ambiguous.contains(dest),p,&format!("link target resolves to multiple headings: {target}"))?;
@@ -163,14 +192,23 @@ fn inline(u:&Value,value:&str,p:&str,targets:&TextMap,numbers:&HashMap<String,us
             };rules.insert(format!("{typ}:{name}"),rendered);
         }
     }
-    let mut cursor=0;let mut out=String::new();let mut used=HashSet::new();
-    for caps in token.captures_iter(value){
-        let m=caps.get(0).unwrap();let key=format!("{}:{}",&caps[1],&caps[2]);
-        let replacement=rules.get(&key).filter(|_|used.insert(key.clone())).ok_or_else(||bad(p,format!("unregistered or repeated placeholder {}",m.as_str())))?;
-        out.push_str(&literal(&value[cursor..m.start()]));out.push_str(replacement);cursor=m.end();
+    let mut out=Vec::with_capacity(values.len());
+    let mut used=HashSet::new();
+    for &value in values{
+        let mut cursor=0;let mut row=String::new();
+        for caps in token.captures_iter(value){
+            let m=caps.get(0).unwrap();let key=format!("{}:{}",&caps[1],&caps[2]);
+            let replacement=rules.get(&key).filter(|_|used.insert(key.clone())).ok_or_else(||bad(p,format!("unregistered or repeated placeholder {}",m.as_str())))?;
+            row.push_str(&literal(&value[cursor..m.start()]));row.push_str(replacement);cursor=m.end();
+        }
+        row.push_str(&literal(&value[cursor..]));
+        out.push(row);
     }
     check(used.len()==rules.len(),p,"missing registered placeholder(s)")?;
-    out.push_str(&literal(&value[cursor..]));Ok(out)
+    Ok(out)
+}
+fn inline(u:&Value,value:&str,p:&str,targets:&TextMap,numbers:&HashMap<String,usize>,ambiguous:&HashSet<String>)->R<String>{
+    Ok(inline_many(u,&[value],p,targets,numbers,ambiguous)?.into_iter().next().unwrap())
 }
 pub fn canonical(v:&Value)->String{files::digest(&serde_json::to_vec(v).expect("JSON value serialization"))}
 fn render(plan:&Value,content:&Value)->R<(String,Vec<Value>)>{
@@ -196,13 +234,22 @@ fn render(plan:&Value,content:&Value)->R<(String,Vec<Value>)>{
         if k=="heading"{
             let level=u["level"].as_u64().filter(|n|(2..=6).contains(n)).ok_or_else(||bad(&p,"heading requires level 2–6 and boolean numbered"))? as usize;
             let numbered=u.get("numbered").map(|v|v.as_bool().ok_or_else(||bad(&p,"heading requires level 2–6 and boolean numbered"))).transpose()?.unwrap_or(true);
-            let mut name=v["text"].as_str().unwrap().to_owned();
-            if numbered{
+            let num_prefix=if numbered{
                 let depth=level-1;check(depth<=levels.len()+1,&format!("{p}/level"),"numbered heading skips a parent")?;
                 levels.resize(depth,0);levels[depth-1]+=1;
-                name=format!("{} {name}",levels.iter().map(usize::to_string).collect::<Vec<_>>().join("."));
-            }
-            headings.insert(uid.to_owned(),format!("{} {}","#".repeat(level),literal(&name)));targets.insert(uid.to_owned(),fragment(&name));continue;
+                Some(levels.iter().map(usize::to_string).collect::<Vec<_>>().join("."))
+            }else{None};
+            let raw=v["text"].as_str().unwrap();
+            let(rendered_body,frag_source)=if u.get("literals").is_some(){
+                let expanded=inline(u,raw,&format!("{cp}/text"),&TextMap::new(),&HashMap::new(),&HashSet::new())?;
+                let combined=if let Some(num)=num_prefix{format!("{num} {expanded}")}else{expanded};
+                (combined.clone(),combined)
+            }else{
+                let name=if let Some(num)=num_prefix{format!("{num} {raw}")}else{raw.to_owned()};
+                (literal(&name),name)
+            };
+            headings.insert(uid.to_owned(),format!("{} {rendered_body}","#".repeat(level)));
+            targets.insert(uid.to_owned(),fragment(&frag_source));continue;
         }
         let mut anchor=u.get("anchor").cloned();
         if ref_kind(k){
@@ -239,11 +286,20 @@ fn render(plan:&Value,content:&Value)->R<(String,Vec<Value>)>{
                     let items=u[field].as_array().ok_or_else(||bad(&format!("{p}/{field}"),"expected a list of source lines"))?;
                     if !items.is_empty(){blocks.push(items.iter().enumerate().map(|(j,item)|header_item(item,field,&format!("{p}/{field}/{j}"))).collect::<R<Vec<_>>>()?.join(sep));}
                 }
-                if let Some(notes)=u["notes"].as_array().filter(|a|!a.is_empty()){blocks.push(notes.iter().map(|n|format!("> {}",literal(n.as_str().unwrap()))).collect::<Vec<_>>().join("\n"));}
+                let note_strs:Vec<&str>=u.get("notes").and_then(Value::as_array).map(|a|a.iter().map(|n|n.as_str().unwrap()).collect()).unwrap_or_default();
+                let rendered_notes=inline_many(u,&note_strs,&format!("{p}/notes"),&targets,&numbers,&ambiguous)?;
+                if !rendered_notes.is_empty(){blocks.push(rendered_notes.into_iter().map(|n|format!("> {n}")).collect::<Vec<_>>().join("\n"));}
                 blocks.join("\n\n")
             }
-            "metadata"=>u["notes"].as_array().unwrap().iter().map(|n|format!("> {}",literal(n.as_str().unwrap()))).collect::<Vec<_>>().join("\n"),
-            "list"=>v["items"].as_array().unwrap().iter().enumerate().map(|(j,item)|format!("{}{}",if u["style"]=="ordered"{format!("{}. ",j+1)}else{"- ".into()},literal(item.as_str().unwrap()))).collect::<Vec<_>>().join("\n"),
+            "metadata"=>{
+                let note_strs:Vec<&str>=u["notes"].as_array().unwrap().iter().map(|n|n.as_str().unwrap()).collect();
+                inline_many(u,&note_strs,&format!("{p}/notes"),&targets,&numbers,&ambiguous)?.into_iter().map(|n|format!("> {n}")).collect::<Vec<_>>().join("\n")
+            }
+            "list"=>{
+                let item_strs:Vec<&str>=v["items"].as_array().unwrap().iter().map(|n|n.as_str().unwrap()).collect();
+                inline_many(u,&item_strs,&format!("{cp}/items"),&targets,&numbers,&ambiguous)?.into_iter().enumerate()
+                    .map(|(j,item)|format!("{}{item}",if u["style"]=="ordered"{format!("{}. ",j+1)}else{"- ".into()})).collect::<Vec<_>>().join("\n")
+            }
             "heading"=>headings[uid].clone(),
             "paragraph"|"translator_note"=>{
                 let text=inline(u,v["text"].as_str().unwrap(),&format!("{cp}/text"),&targets,&numbers,&ambiguous)?;
@@ -265,7 +321,10 @@ fn render(plan:&Value,content:&Value)->R<(String,Vec<Value>)>{
                 let caption=if cap.is_empty(){format!("**{label}**")}else{format!("**{label}** {cap}")};
                 figures::build(&u["images"],&caption,&targets[uid],"\n").map_err(|e|bad(&p,e.to_string()))?.trim_end_matches('\n').to_owned()
             }
-            "reference"|"bibliography"=>format!("{}. {} {}",numbers[uid],literal(line(&u["source_text"],&format!("{p}/source_text"))?),targets[uid]),
+            "reference"|"bibliography"=>{
+                let src=inline(u,line(&u["source_text"],&format!("{p}/source_text"))?,&format!("{p}/source_text"),&targets,&numbers,&ambiguous)?;
+                format!("{}. {src} {}",numbers[uid],targets[uid])
+            }
             "zotero_link"=>{
                 fn uri_regex()->&'static Regex{static URI:OnceLock<Regex>=OnceLock::new();URI.get_or_init(||Regex::new(r"^zotero://select/(?:library|groups/[1-9][0-9]*)/items/[A-Za-z0-9]+$").unwrap())}
                 let uri=line(&u["uri"],&format!("{p}/uri"))?;

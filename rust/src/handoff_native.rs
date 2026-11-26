@@ -3,7 +3,7 @@
 use anyhow::{ensure,Context,Result};
 use regex::Regex;
 use serde_json::{json,Map,Value};
-use std::{collections::{BTreeMap,BTreeSet,HashSet},fs,io::Write,path::{Path,PathBuf}};
+use std::{collections::{BTreeMap,BTreeSet,HashSet},fs,io::Write,path::{Path,PathBuf},sync::OnceLock};
 use crate::{check_ledger,docx,files,handoff_scan::{Candidate,Span},path,path_text,pdf_structure::Pdf};
 
 pub const BOUNDARY:&str="Bindings and recorded relationships are checked against the supplied inventory and candidate. Source PDFs are not reinterpreted here. Generated views are extracted, pending records; they do not certify observation, semantic correctness, inventory completeness, or real-library matching.";
@@ -314,7 +314,8 @@ impl Ctx{
                 ensure!(actual.contains(&key)&&overrides.insert(key,(id.as_str(),r)).is_none(),"MAP_LINK_OVERRIDE");
             }
         }}
-        let scheme=Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:")?;
+        static SCHEME_RE:OnceLock<Regex>=OnceLock::new();
+        let scheme=SCHEME_RE.get_or_init(||Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:").expect("static regex"));
         let mut out:BTreeMap<&str,Vec<Value>>=LINKS.iter().map(|s|(*s,vec![])).collect();
         let mut unresolved=vec![];let mut calls=BTreeMap::<String,BTreeSet<String>>::new();
         for(i,o)in self.candidate.links.iter().enumerate(){

@@ -60,3 +60,5 @@ GitHub Releases 提供五大平台的预编译技能包与 `z2o` 二进制，直
 ## 使用
 
 对 Agent 说"把某篇 Zotero 文献整理进 Obsidian"，主入口 `literature-zotero2obsidian` 会按 [Rust 运行入口](literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` JSON 协议调用各阶段机械操作。
+
+首次运行会把 Zotero、Obsidian、文献根等已核实路径和偏好写入 `literature-zotero2obsidian/user/profile.json`。该文件位于技能目录内，不使用 `%APPDATA%`、`~/.config` 等通用用户目录；后续运行直接复用记录，仅对失效路径或用户主动修改的字段重新发现。

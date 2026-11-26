@@ -105,7 +105,11 @@ pub fn build_plan(mut a:Map<String,Value>)->Result<Value>{
     let maximum=positive(&a.remove("max_utf16_units").unwrap_or(json!(250)),"max_utf16_units")?;
     let byte_limit=limit(&opt(&mut a,"filename_max_utf8_bytes"),"filename_max_utf8_bytes")?;
     let path_limit=limit(&opt(&mut a,"full_path_max_utf16_units"),"full_path_max_utf16_units")?;
-    ensure!(a.is_empty(),"unknown naming arguments: {:?}",a.keys());
+    if !a.is_empty(){
+        let mut extra:Vec<_>=a.keys().map(String::as_str).collect();
+        extra.sort_unstable();
+        anyhow::bail!("unknown naming arguments: [{}]; run `z2o describe format_helpers.build_naming_plan` for accepted parameters",extra.join(", "));
+    }
     ensure!(maximum<=250,"max_utf16_units must not exceed 250");
     ensure!(path_limit.is_none()||target_dir.is_some(),"a full-path limit requires target_directory");
     let year_token=if year.is_null(){string(&no_year,"no_year_reason")?;"无年份".to_owned()}else{

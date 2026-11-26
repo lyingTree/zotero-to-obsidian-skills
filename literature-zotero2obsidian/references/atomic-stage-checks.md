@@ -19,7 +19,7 @@
 | 库内链接 | audit_unchanged_properties、inspect_relative_files | LIB-A08 属性字节相等；明确目标的可读性，不证明身份、版本或出链全覆盖 |
 | 总流程 | coverage_catalog、record_file_checks、既有 inspect_workflow | 独立记录实际原子验收结果；保留源语义未决，不将辅助函数的状态外推 |
 
-在编辑器内编写任务脚本、导入模块，路径由实际运行记录提供。新建属性的 confirmed 值须从已核定的当前来源和模板取得，作者标记须为已经核实的有序列表。示例：
+在编辑器内编写任务脚本、导入模块，路径由实际运行记录提供。`split_frontmatter`、`build_properties`、`repair_properties` 的输入可为 UTF-8 原文字符串或 `{"$bytes": "<base64>"}` 对象，返回均为 `{"$bytes": "<base64>"}`（保留精确字节与换行）。新建属性的 confirmed 值须从已核定的当前来源和模板取得，作者标记须为已经核实的有序列表。示例：
 
 ```json
 {

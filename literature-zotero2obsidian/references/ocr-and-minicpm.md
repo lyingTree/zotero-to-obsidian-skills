@@ -4,6 +4,15 @@
 
 ## 证据边界与能力状态
 
+## 首次运行的选择
+
+复杂公式与表格有两条路径，由技能内 `user/profile.json` 的 `preferences.formula_table_enhancement` 记录：
+
+- **选项 A：直接执行**。使用 PDF 原生文字层、PdfCraft 页图/区域渲染、模型视觉核对，以及可用的 arXiv TeX 源。不要求下载模型，不因缺少 OCR 包阻断。
+- **选项 B：可选 OCR 增强**。首次运行且记录为 `unasked` 时询问一次是否下载安装 `ocr-cpu-assets.json` 绑定的公式/表格资源。用户同意后调用 `install_ocr_package`；拒绝或失败保持选项 A，后续不重复询问。
+
+已记录为 `native` 或 `ocr` 后直接沿用。安装位置仍须位于当前技能内的持久化 `store`，不得写入通用用户目录。
+
 - `ocr_backend`（`ppocr-rs`，pinned revision `b87550b775206655acf84d7fc421ca5bdf745fd3`）在 `z2o describe` 中的定位为 `"qualification": "optional_package"`、`"policy": "cpu_first"`、`"gpu_required": false`。
 - 所有 OCR、表格、公式识别与 MiniCPM 转录结果均仅作**候选识别草稿**；输出固定包含 `"source_fidelity": "not_assessed"`（MiniCPM/Jev 另附 `"acceptance_ready": false`）。自信度或 Jev 概率分数均不替代对源文件的独立核对与视觉比较，也不自动覆盖正文或授予验收。
 

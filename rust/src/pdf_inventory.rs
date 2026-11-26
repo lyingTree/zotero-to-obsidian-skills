@@ -285,7 +285,7 @@ pub fn replay(source:&Value,p:&Path,mut progress:impl FnMut(usize,usize,&str))->
         ensure!(structure==row["image_index"]&&structure==read_json(&ev["image_structure"])?,"PDF page {page} image occurrence index differs");
         ensure!(ocr_pdf::classify(&glyphs,&structure)==ev["classification"],"PDF page {page} classification differs");
         let dpi=row["render"]["dpi"].as_u64().filter(|d|(72..=600).contains(d)).context("Valid recorded PDF DPI required")?;
-        let (png,actual)=backend.raster(page,None,dpi)?;
+        let (png,actual)=backend.raster(page,None,dpi,false)?;
         for key in ["width","height","dpi","pixel_sha256","pixel_format"]{
             ensure!(actual[key]==row["render"][key],"PDF page {page} rendered geometry or pixels differ: {key}");
         }
