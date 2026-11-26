@@ -1,31 +1,45 @@
 # 文献笔记快速写作速查（Cheatsheet）
 
-只读本页完成常规笔记撰写；模板脚本仅参考 `preflight` 返回的 `template_skeleton`，术语只读本篇 `matched-glossary.md`，无需通读 11 个子 skill。
+只读本页 + `preflight` 返回值即可完成全文撰写与入库；**禁预读 11 个子 skill、Templater 脚本、全量术语表或库内已有笔记**。
 
-## 1. 标准 7 步极速流程
+## 1. 标准 7 步极速流程（~15–22 次调用）
 
-1. **单次预检** `user_profile.preflight`（传 `query` / `item_key` + `create_work_dirs: true`）：获取路径、Zotero 元数据、`naming_plan`、`suggested_asset_bucket_relative`、`template_skeleton` 与库外工作目录。
-2. **源码准备** `prepare_source_inventory.prepare_paper`（传 `work_dir`、`pdf_path`、`tex_target`、`glossary_path`）：自动优先获取 arXiv TeX（生成 `clean-source.md`）、执行选择性 PDF 版面聚类与 `figure_candidates` 提取，并过滤输出本篇 `matched-glossary.md`。
-3. **批量裁图** `pdf_image_objects.render_page_regions_batch`（依据 `figure_candidates` 一次裁剪多图，`transparent: true` 默认、`auto_trim: true`，输出 `contact_sheet_destination` 拼图），仅看拼图微调个别裁框。
-4. **撰写候选稿** 写入 `<work>/work/candidate.md`：普通 Markdown GFM 表格直接书写（交付流水线自动转 `rich-table`）。
-5. **流水线规范化与验收** `note_pipeline.process_markdown`（开 `write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）：只查看返回 JSON 的 `summary`（含 `failed_checks`、`unresolved_items`、`review_prompts_sample`）。
-6. **可选库内出链** `vault_library.index`（`use_cache: true` 目录指纹缓存）+ `vault_library.match_references_batch`。
-7. **授权一步写库** `vault_publish.publish_standalone`（传 `authorized: true`、`asset_source_dir`、`report_output`）：自动完成预检、冲突消歧、备份、写库与 SHA-256/`WRITE-A04`/`WRITE-A05` 回读，并生成回执报告。**返回 `verified_file_write` 后即终态，立即总结结果结束。**
+1. **定位二进制**：直查 `<主技能目录>/runtime/z2o.exe`（没有则查仓库根 `runtime/z2o.exe`）；**禁遍历源码/`target`，禁整份倾倒 `z2o describe`**。
+2. **单次预检**：`user_profile.preflight`（`query`/`item_key` + `create_work_dirs: true`）取 `naming_plan`（含 `and` / `et al`）、`suggested_asset_bucket_relative`（仅 `<第一作者>`）、`template_skeleton` 与 `work_dirs`。
+3. **源码与术语**：`prepare_source_inventory.prepare_paper`（`work_dir`、`pdf_path`、`tex_target`、`glossary_path`）。按 **400–600 行大块**通读 `clean-source.md`（或 `clean-layout.md`）与 `matched-glossary.md`。
+4. **批量裁图**：将 `figure_candidates` 传 `pdf_image_objects.render_page_regions_batch`（默认 `transparent: true`、`auto_trim: true`，配 `contact_sheet_destination`），仅看拼图微调异常框；SI 图用 `figS1` / `fig-s1`。
+5. **分段写完整 `candidate.md`**：按第 2 节格式分 2–3 次连续写完 `<work>/work/candidate.md`（**禁只写 PART 1 或留 `<!--PART-->` 占位符就结束**）。
+6. **机械规范化**：`note_pipeline.process_markdown`（开 `write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`），只看 `summary` 与未决项修复；按需 `vault_library.index`（`use_cache: true`）+ `match_references_batch`。
+7. **授权写库**：用户要求“处理/整理某文献到 Obsidian”（非仅要方案/审查/离线稿），**即已授权写库**，须调用 `vault_publish.publish_standalone`（`authorized: true`、`asset_source_dir`、`report_output`）写入并回读。**未获 `verified_file_write` 禁结束；获得后即终态收工。**
 
-## 2. 正文与格式高频硬约束
+## 2. 模板与排版精确语法（照抄即可）
 
-- **Frontmatter（YAML）**：仅保留 `template_skeleton.frontmatter_keys` 要求字段；`年份` 保持空值或核实发表年，禁止出现废弃键 `库内参考文献`。
-- **题头与中英混排**：一级标题后紧接中文译名行，作者/单位按原文核实。中文与英文、数字或 `$...$` 行内公式之间不加多余空格；标题行内英文字母/数字紧贴中文（流水线会同步更新 `#标题` 与 `[[#标题]]` 锚链）。
-- **章节与参考文献**：按 `template_skeleton.headings` 组织；参考文献标题参与连续一级分节编号（如 `## 10 参考文献`），置于补充材料之前。
-- **图表与块锚**：
-  - 图：`![[<assets_relative>/<年份>/<第一作者>/<资源桶>/figN.png]]` 后紧跟 `**图N：** 图注说明` 与单独一行 `^fig-N`（连续多子图同一行尾加两个空格断行）。默认保留透明通道，禁将透明背景涂白。
-  - 表：优先写标准 GFM 表格，前置一行 `**表N：** 表注说明`，表后紧跟 `^tbl-N`，交由 `convert_markdown_tables: true` 自动生成 Rich Table v2 代码块。
-- **公式与引用**：展示公式独立成段，编号用 `\tag{n}`，末尾换行紧跟 `^eq-n`（启用 `strip_display_trailing_punctuation: true` 清理句末标点）。正文引文上标统一 `<sup>[[n]](#ref-n)</sup>` 或 `<sup>[n](#ref-n)</sup>`。
-- **文末原条目**：全文最末尾单独成节 `## [Zotero原条目](zotero://select/library/items/<KEY>)`。
+- **Frontmatter（YAML `[PROP-C01]`）**：仅允许以下键（**禁写** `作者`/`标题`/`DOI`/`链接`/`库内参考文献`）：
+  ```yaml
+  ---
+  类型: "预印本"   # 期刊论文 | 会议论文 | 学位论文 | 预印本（按 template_skeleton.type_label）
+  年份: 2026       # 发表年整数；无来源留空
+  关键词: ["..."]
+  期刊名: "..."    # 仅 journalArticle 保留
+  ---
+  ```
+- **题头（H1 + 译名 + 作者 + 单位）**：
+  ```markdown
+  # Original Paper Title
+  中文译名
 
-## 3. 明确禁止项
+  [First Author](mailto:a@b.edu)${}^{1,\ast}$; Second Author${}^{1,2}$
 
-- **禁盲扫仓库**：禁止递归扫描 `z2o` 源码或预读 `target/`、`runtime/`。
-- **禁全量倾倒**：禁止读取 328 KB 全量术语表与 41 KB+ Templater 脚本；禁止向对话直接打印完整 `normalization.json` / `acceptance.json`。
-- **禁无意义全页渲染**：TeX 源码已就绪时禁用 `render_pages: "all"`；常规裁图禁用 `transparent: false`。
-- **禁写库后空转**：`publish_standalone` / `commit_markdown` 校验通过后禁止调用 `obsidian` CLI、`Start-Sleep` 或重复验收。
+  ${}^{1}$ First Affiliation, City, Country  
+  ${}^{2}$ Second Affiliation, City, Country
+  ```
+  （作者/单位照录原文不译，单位每行末加两空格换行）
+- **摘要与章节**：有摘要写 `## 摘要` 下接首段；无摘要略。正文从 `## 1 ...` 连续编号至 `## N 参考文献`（保留原文文献标题，每行末标 `^ref-n`）。
+- **混排与块结构**：中文与英文/数字/行内 `$...$` 间**不加空格**（数值与单位如 `100 km` 保留）。
+  - **图块**（三行紧贴无空行）：`![[<suggested_asset_bucket_relative>/fig1.png]]` ↵ `**图1：** 题注` ↵ `^fig-1`；引用 `[图1](<#^fig-1>)`。
+  - **表块**：`**表1：** 题注` + 标准 GFM 表 + `^tbl-1`（自动转 Rich Table）；合并单元格调 `format_helpers.build_rich_table_block`（传 `merges`）；引用 `[表1](<#^tbl-1>)`。
+  - **公式**：`$$\n... \tag{1}\n$$` ↵ `^eq-1`；引用 `[公式1](<#^eq-1>)`。
+  - **引文**：数字 `<sup>\[[1](<#^ref-1>),[2](<#^ref-2>)\]</sup>` 或 `<sup>\[[1](<#^ref-1>)-[5](<#^ref-5>)\]</sup>`；作者年份 `[Hines (1960)](<#^ref-22>)` / `（[Hines, 1960](<#^ref-22>)）`。
+  - **文末**：`---` ↵↵ `## [Zotero原条目](zotero://select/library/items/<KEY>)`。
+
+

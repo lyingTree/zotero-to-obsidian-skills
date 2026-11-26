@@ -24,7 +24,7 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 4. 对照 `figure_candidates` 调用 `pdf_image_objects.render_page_regions_batch` 批量裁剪与导出拼图（默认 `transparent: true`、`auto_trim`），仅看拼图微调异常裁框；DOCX 调用 `prepare_sources`。
 5. 撰写完整中文候选稿（普通表可写 GFM 表格），运行 `note_pipeline.process_markdown`（开启 `force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`），只核对返回的 `summary` 与未决位置；若需出链校验则使用 `vault_library.index`（`use_cache: true`）与 `vault_library.match_references_batch`。
 6. 对程序未判断的译义、图像裁剪内容和引文身份做来源核对；可使用[逐段复核入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)。
-7. 获用户授权后调用 `vault_publish.publish_standalone`（传 `authorized: true`、`asset_source_dir`、`report_output`）一次完成预检、冲突消歧、备份、写库与 SHA-256 回读，随即基于真实回执报告结束对话，不再轮询客户端或重跑验收。
+7. **默认已授权并必须写库收尾**：只要用户请求处理/整理某文献至 Obsidian（且未明确限制为仅要方案、审查或离线候选），请求本身即视为对 `[PIPE-C34]` 的授权；直接调用 `vault_publish.publish_standalone`（传 `authorized: true`、`asset_source_dir`、`report_output`）一次完成预检、冲突消歧、备份、写库与 SHA-256 回读，拿到 `verified_file_write` 后即汇报收工。**严禁仅写完部分 `candidate.md`、留有 `<!--PART-->` 占位符或未落盘 Obsidian `.md` 就提前结束对话**。
 
 测试时按 PDF / DOCX 提取、标题、作者单位、翻译、段落拼接、引文身份、链接组装、图表公式、空行格式等环节持续报告具体问题。未观察到的起因保持未知；只有输出缺失不能直接归因到 PDF 提取。
 
@@ -71,7 +71,7 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 - [PIPE-C31] 不自动改动集合。
 - [PIPE-C32] 不自动合并条目。
 - [PIPE-C33] 不自动删除笔记。
-- [PIPE-C34] 用户要求处理或写入文献时，按已授权范围提交。
+- [PIPE-C34] 用户要求处理或写入文献时，按已授权范围提交（未指定只做方案、审查或离线候选时，整理请求本身即授权完成完整建档与 Obsidian 写库）。
 - [PIPE-C35] 用户仅要方案、审查或候选时，交付范围止于该请求。
 - [PIPE-C36] 主文全部内容（含主文参考文献）排在补充材料之前。
 - [PIPE-C37] 「Zotero原条目」排在文献内容的最后。
@@ -116,13 +116,14 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 2. **源码准备与术语匹配**：PDF / arXiv 条目优先调用 `prepare_source_inventory.prepare_paper`（传 `work_dir`、`pdf_path`、`tex_target`、`glossary_path`），一次性完成 TeX 源码获取、选择性 PDF 聚类、`figure_candidates` 提取与本篇 `matched-glossary.md` 生成；DOCX 调用 `prepare_sources`。
 3. **批量裁图与视觉拼图**：将 `figure_candidates` 传给 `pdf_image_objects.render_page_regions_batch`（默认 `transparent: true`、`auto_trim`，配 `contact_sheet_destination`），集中审阅拼图并仅按需微调个别裁框。
 4. **候选撰写与流水线验收**：按 `template_skeleton` 与 `matched-glossary.md` 撰写候选稿（普通表格可写 GFM 语法），调用 `note_pipeline.process_markdown`（开 `write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）或 `process_content`，仅核对返回的 `summary` 与未决位置；若需出链则用 `vault_library.index`（`use_cache: true`）+ `vault_library.match_references_batch`。
-5. **授权一步写库与收尾**：获用户明确授权后调用 `vault_publish.publish_standalone`（传 `authorized: true`、`asset_source_dir`、`report_output`），或 `plan_standalone` + `commit_markdown`。**写库返回 `verified_file_write` 后即进入终态，立即汇报实测路径与哈希收工。**
+5. **授权一步写库与收尾**：只要任务目标是处理/整理文献入库（未限缩为 `[PIPE-C35]` 离线候选/方案/审查），直接调用 `vault_publish.publish_standalone`（传 `authorized: true`、`asset_source_dir`、`report_output`），或 `plan_standalone` + `commit_markdown`。**必须实际生成 Obsidian 笔记并取得 `verified_file_write` 才可结束；返回后即进入终态，立即汇报实测路径与哈希收工。**
 6. **旧工作目录兼容**：仅当恢复既有 `complete_pdf_candidate_v1` 工作目录时，按该目录已有台账继续步骤（第 1–11 步子 skill、逐段 `run.json` 与 `complete_workflow` 入口）。
 
 ## 禁止事项（效率与收尾铁律）
 
-- **禁止递归扫描代码库**：禁止遍历整个 `z2o` 源码、`target/` 或 `runtime/`，禁止预读全部 11 个子 skill（先读[写作速查表](references/writing-cheatsheet.md)，仅按需查具体规则）。
-- **禁止全量倾倒大文件**：禁止整份读取 328 KB 全量术语表与 41 KB+ Templater 脚本；大 JSON 输出统一 `--output <file>`，不直接打印 `normalization.json` / `acceptance.json` 原文。
+- **禁止递归扫描代码库或翻读旧笔记**：禁止遍历 `z2o` 源码、`target/`、`runtime/`，禁止预读全部 11 个子 skill，也禁止打开库内已有文献笔记“参考写法”（全部语法已集中在[写作速查表](references/writing-cheatsheet.md)与 `template_skeleton`）。
+- **禁止小步碎读与全量倾倒**：读取 `clean-source.md` / `clean-layout.md` 应按 **400–600 行大块**读取，禁止每次 100–150 行碎读消耗轮次；禁止整份读取 328 KB 全量术语表与 41 KB+ Templater 脚本；大 JSON 输出统一 `--output <file>`（注意 `z2o describe` 不支持 `--output` 且无需整份倾倒）。
+- **禁止未写库提前停在半途**：禁止只写出 PART 1、保留 `<!--PART-->` 占位符或停留在 `candidate.md` 尚未执行 `note_pipeline.process_markdown` 与 `vault_publish.publish_standalone` 时就自行结束。
 - **禁止退化渲染参数**：TeX 已成功时禁止设 `render_pages: "all"`；PDF 切图除像素诊断外禁止设 `transparent: false`。
 - **写库完成即终态**：`vault_publish.publish_standalone` / `commit_markdown` 返回 `verified_file_write` 且完成 SHA-256 / `WRITE-A04` / `WRITE-A05` 回读后，禁止调用 `obsidian` CLI、`Start-Sleep`、刷新客户端缓存或重复重跑检查，直接总结真实结果结束本轮任务。
 

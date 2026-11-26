@@ -285,23 +285,41 @@ fn extract_year(raw:&str)->Option<String>{
     }
     None
 }
-fn first_author_token(creators:&Value)->String{
-    let Some(list)=creators.as_array() else{return "未知作者".into();};
-    let chosen=list.iter().find(|c|c["creatorType"]=="author").or_else(||list.first());
-    let Some(c)=chosen else{return "未知作者".into();};
+fn creator_marker(c:&Value)->Option<String>{
     if let Some(name)=c["name"].as_str().map(str::trim).filter(|s|!s.is_empty()){
-        return name.to_owned();
+        return Some(name.to_owned());
     }
     let last=c["lastName"].as_str().map(str::trim).unwrap_or("");
     let first=c["firstName"].as_str().map(str::trim).unwrap_or("");
     if !last.is_empty(){
         if has_cjk(last)&&!first.is_empty()&&has_cjk(first){
-            return format!("{last}{first}");
+            return Some(format!("{last}{first}"));
         }
-        return last.to_owned();
+        return Some(last.to_owned());
     }
-    if !first.is_empty(){return first.to_owned();}
-    "未知作者".into()
+    if !first.is_empty(){return Some(first.to_owned());}
+    None
+}
+fn author_markers(creators:&Value)->Vec<String>{
+    let Some(list)=creators.as_array() else{return vec![];};
+    let authors:Vec<String>=list.iter()
+        .filter(|c|c["creatorType"]=="author")
+        .filter_map(creator_marker)
+        .collect();
+    if !authors.is_empty(){return authors;}
+    list.iter().filter_map(creator_marker).collect()
+}
+fn first_author_token(creators:&Value)->String{
+    author_markers(creators).into_iter().next().unwrap_or_else(||"未知作者".into())
+}
+fn filename_author_token(creators:&Value)->String{
+    let markers=author_markers(creators);
+    match markers.as_slice(){
+        []=>"未知作者".into(),
+        [one]=>one.clone(),
+        [one,two]=>format!("{one} and {two}"),
+        [first,..]=>format!("{first} et al"),
+    }
 }
 fn truncate_filename(prefix:&str,title:&str,suffix:&str,max_units:usize)->String{
     let fixed_units=prefix.encode_utf16().count()+suffix.encode_utf16().count();
@@ -330,11 +348,51 @@ fn relative_under_vault(vault_root:Option<&str>,target:Option<&str>,fallback:&st
     }
     fallback.into()
 }
-fn extract_template_skeleton(template_root:Option<&str>,template_name:Option<&str>)->Value{
+fn extract_template_skeleton(template_root:Option<&str>,template_name:Option<&str>,item_type:&str)->Value{
     let (Some(dir),Some(name))=(template_root,template_name) else{return Value::Null;};
     let p=Path::new(dir).join(name);
     if !p.is_file(){return Value::Null;}
     let Ok(raw)=fs::read_to_string(&p) else{return Value::Null;};
+    let trimmed_raw=raw.trim_start_matches('\u{feff}').trim_start();
+    if trimmed_raw.starts_with("<%*"){
+        let type_label=match item_type{
+            "journalArticle"=>"期刊论文",
+            "thesis"=>"学位论文",
+            "conferencePaper"=>"会议论文",
+            "preprint"=>"预印本",
+            _=>"",
+        };
+        let mut fm_keys=Vec::new();
+        for key in ["类型","年份","关键词"]{
+            if raw.contains(&format!("'{key}: "))||raw.contains(&format!("\"{key}: "))||raw.contains(key){
+                fm_keys.push(key.to_owned());
+            }
+        }
+        if item_type=="journalArticle"&&(raw.contains("'期刊名: ")||raw.contains("\"期刊名: ")||raw.contains("期刊名")){
+            fm_keys.push("期刊名".to_owned());
+        }
+        return json!({
+            "template_file":name,
+            "template_kind":"templater_js",
+            "type_label":type_label,
+            "frontmatter_keys":fm_keys,
+            "headings":[
+                "## 摘要",
+                "## 1 <首节>",
+                "## N 参考文献",
+                "## [Zotero原条目](zotero://select/library/items/<KEY>)"
+            ],
+            "format_cues":[
+                "yaml: 仅保留 frontmatter_keys（无作者/标题/DOI/链接/库内参考文献）",
+                "header: # 原题\\n中文译名\\n\\n[Name](mailto:addr)${}^{1,\\ast}$; Name2${}^{1,2}$\\n\\n${}^{1}$ 单位1  \\n${}^{2}$ 单位2",
+                "citations: <sup>\\[[1](<#^ref-1>)-[5](<#^ref-5>)\\]</sup> 或 [Author (Year)](<#^ref-1>)",
+                "figures: ![[<asset_bucket>/figN.png]]\\n**图N：** 题注\\n^fig-N（块内无空行）",
+                "tables: **表N：** 题注 + 标准 GFM 表格 + ^tbl-N（convert_markdown_tables 自动转 Rich Table v2）",
+                "equations: $$\\n... \\tag{n}\\n$$\\n^eq-n",
+                "footer: ---\\n\\n## [Zotero原条目](zotero://select/library/items/<KEY>)"
+            ]
+        });
+    }
     let lines:Vec<&str>=raw.lines().collect();
     let mut fm_keys=Vec::new();
     let mut headings=Vec::new();
@@ -371,7 +429,7 @@ fn extract_template_skeleton(template_root:Option<&str>,template_name:Option<&st
             markers.push(t.chars().take(60).collect::<String>());
         }
     }
-    json!({"template_file":name,"frontmatter_keys":fm_keys,"headings":headings,"format_cues":markers})
+    json!({"template_file":name,"template_kind":"markdown","frontmatter_keys":fm_keys,"headings":headings,"format_cues":markers})
 }
 pub fn locate(skill_root:Option<&Path>)->Result<Value>{
     let root=match skill_root{
@@ -540,10 +598,12 @@ pub fn preflight(skill_root:Option<&Path>,query:Option<&str>,item_key:Option<&st
                         let year=data["date"].as_str().and_then(extract_year);
                         let year_token=year.clone().unwrap_or_else(||"无年份".into());
                         let first_author=first_author_token(&data["creators"]);
-                        let clean_author=clean_component(&first_author);
+                        let clean_first_author=clean_component(&first_author);
+                        let filename_author=filename_author_token(&data["creators"]);
+                        let clean_filename_author=clean_component(&filename_author);
                         let clean_title=clean_component(title.trim());
                         let suggested_filename=if clean_title.is_empty(){None}else{
-                            Some(truncate_filename(&format!("{year_token}-{clean_author}-"),&clean_title,".md",250))
+                            Some(truncate_filename(&format!("{year_token}-{clean_filename_author}-"),&clean_title,".md",250))
                         };
                         let bucket=if title.trim().is_empty(){None}else{Some(title_bucket(title))};
                         let mut col_paths:Vec<String>=rep["collection_ancestry"]["collections"].as_array().into_iter().flatten().filter_map(|c|{
@@ -562,8 +622,8 @@ pub fn preflight(skill_root:Option<&Path>,query:Option<&str>,item_key:Option<&st
                             lit_rel.clone()
                         };
                         let suggested_note_relative=suggested_filename.as_ref().map(|f|format!("{col_rel}/{f}"));
-                        let suggested_asset_bucket_relative=bucket.as_ref().map(|b|format!("{assets_rel}/{year_token}/{clean_author}/{b}"));
-                        let tpl_skeleton=extract_template_skeleton(profile["paths"]["template_root"].as_str(),matched_tpl.as_deref());
+                        let suggested_asset_bucket_relative=bucket.as_ref().map(|b|format!("{assets_rel}/{year_token}/{clean_first_author}/{b}"));
+                        let tpl_skeleton=extract_template_skeleton(profile["paths"]["template_root"].as_str(),matched_tpl.as_deref(),item_type);
                         let atts:Vec<Value>=rep["attachments"].as_array().into_iter().flatten().map(|a|json!({
                             "key":a["key"],"link_mode":a["link_mode"],"declared_mime":a["declared_mime"],
                             "filename":a["raw"]["data"]["filename"],"local":a["local"],
@@ -606,7 +666,7 @@ pub fn preflight(skill_root:Option<&Path>,query:Option<&str>,item_key:Option<&st
                                 "local_version_consistent":rep["local_version_consistent"],"raw":rep["raw"],
                             },
                             "naming_plan":{
-                                "year":year,"year_token":year_token,"author_token":clean_author,"first_author":first_author,
+                                "year":year,"year_token":year_token,"author_token":clean_filename_author,"first_author":first_author,
                                 "filename":suggested_filename,"title_bucket":bucket,
                                 "literature_relative":lit_rel,"assets_relative":assets_rel,
                                 "collection_relative":col_rel,"suggested_note_relative":suggested_note_relative,
@@ -712,8 +772,33 @@ mod tests{
         assert_eq!(extract_year("2024-03-15"),Some("2024".into()));
         assert_eq!(first_author_token(&json!([{"creatorType":"author","firstName":"Hao","lastName":"Fan"}])),"Fan");
         assert_eq!(first_author_token(&json!([{"creatorType":"author","firstName":"三","lastName":"张"}])),"张三");
+        assert_eq!(filename_author_token(&json!([])),"未知作者");
+        assert_eq!(filename_author_token(&json!([{"creatorType":"author","firstName":"Hao","lastName":"Fan"}])),"Fan");
+        assert_eq!(filename_author_token(&json!([
+            {"creatorType":"author","firstName":"Dilan","lastName":"Karaguler"},
+            {"creatorType":"author","firstName":"Guo-Wei","lastName":"Wei"}
+        ])),"Karaguler and Wei");
+        assert_eq!(filename_author_token(&json!([
+            {"creatorType":"author","firstName":"Dilan","lastName":"Karaguler"},
+            {"creatorType":"author","firstName":"Guo-Wei","lastName":"Wei"},
+            {"creatorType":"author","firstName":"Jane","lastName":"Smith"}
+        ])),"Karaguler et al");
+        assert_eq!(filename_author_token(&json!([
+            {"creatorType":"author","firstName":"三","lastName":"张"},
+            {"creatorType":"author","firstName":"四","lastName":"李"}
+        ])),"张三 and 李四");
 
         let repo=tempfile::tempdir().unwrap();
+        let tpl_dir=repo.path().join("tpl");fs::create_dir(&tpl_dir).unwrap();
+        fs::write(tpl_dir.join("preprint.md"),"<%*\nconst yaml=['---','类型: '+JSON.stringify(type),'年份: '+year,'关键词: '+JSON.stringify(profile.keywords||[])];if(d.itemType==='journalArticle')yaml.push('期刊名: '+JSON.stringify(d.publicationTitle||''));\n%>\n").unwrap();
+        let sk_pre=extract_template_skeleton(tpl_dir.to_str(),Some("preprint.md"),"preprint");
+        assert_eq!(sk_pre["template_kind"],"templater_js");
+        assert_eq!(sk_pre["type_label"],"预印本");
+        assert_eq!(sk_pre["frontmatter_keys"],json!(["类型","年份","关键词"]));
+        let sk_journal=extract_template_skeleton(tpl_dir.to_str(),Some("preprint.md"),"journalArticle");
+        assert_eq!(sk_journal["type_label"],"期刊论文");
+        assert_eq!(sk_journal["frontmatter_keys"],json!(["类型","年份","关键词","期刊名"]));
+
         let nested_skill=repo.path().join(SKILL);
         fs::create_dir_all(&nested_skill).unwrap();
         fs::write(nested_skill.join("SKILL.md"),"---\nname: literature-zotero2obsidian\nversion: v0\n---\n").unwrap();

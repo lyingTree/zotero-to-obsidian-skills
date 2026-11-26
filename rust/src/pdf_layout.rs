@@ -297,18 +297,33 @@ fn extract_fig_id(caption:&str)->Option<String>{
     Some(out)
 }
 
+    let page_w=(max_x-min_x).max(1.0);
+    let mid_x=min_x+0.5*page_w;
+    let min_prose_w=if two_column{0.35*page_w}else{0.50*page_w};
+    let is_subfigure_label=|p:&Draft|->bool{
+        if p.kind!="paragraph"{return false;}
+        let t=p.text.trim();
+        rx!(r"^(?:\([a-zA-Z0-9]\)|[a-zA-Z]\))\s+.*(?:\([b-zB-Z0-9]\)|\b[b-zB-Z]\))").is_match(t)
+            ||(p.line_indices.len()==1
+                &&!p.last_line_ended_sentence
+                &&rx!(r"^(?:\([a-zA-Z0-9]\)|[a-zA-Z]\))\s+").is_match(t))
+    };
+    let is_prose_barrier=|p:&Draft|->bool{
+        if is_subfigure_label(p){return false;}
+        p.kind=="heading"
+            ||p.kind=="caption"
+            ||(p.text.len()>=55&&(p.bbox[2]-p.bbox[0])>=min_prose_w)
+    };
     let mut blocks=Vec::with_capacity(drafts.len());
     let mut figure_candidates=Vec::new();
     let mut has_figure_caption=false;
     let mut has_table_caption=false;
     let mut prose_lines_set=BTreeSet::<u64>::new();
     for d in &drafts{
-        if d.kind!="caption" && (d.text.len()>=45 || d.line_indices.len()>=2 || d.kind=="heading"){
+        if d.kind!="caption"&&is_prose_barrier(d){
             prose_lines_set.extend(d.line_indices.iter().copied());
         }
     }
-    let page_w=(max_x-min_x).max(1.0);
-    let mid_x=min_x+0.5*page_w;
 
     for (i,d) in drafts.iter().enumerate(){
         let id=format!("{source_id}-p{page}-b{}",i+1);
@@ -331,10 +346,16 @@ fn extract_fig_id(caption:&str)->Option<String>{
                 let prev_bottom=drafts[..i].iter()
                     .filter(|p|p.bbox[3]<=d.bbox[1]+2.0
                         &&(p.col==d.col||p.col==0||d.col==0)
-                        &&(p.kind=="heading"||p.kind=="caption"||p.text.len()>=45||p.line_indices.len()>=2))
+                        &&!(p.kind=="paragraph"&&p.line_indices.len()==1&&!p.last_line_ended_sentence&&d.bbox[1]-p.bbox[3]<=24.0)
+                        &&is_prose_barrier(p))
                     .map(|p|p.bbox[3])
                     .reduce(f64::max);
-                let search_top=prev_bottom.unwrap_or_else(||bounds[1]+0.04*(bounds[3]-bounds[1])).min(d.bbox[1]-8.0).max(bounds[1]);
+                let cap_top=(d.bbox[1]-1.0).max(bounds[1]+8.0);
+                let search_top=prev_bottom
+                    .map(|b|b+4.0)
+                    .unwrap_or_else(||bounds[1]+0.04*(bounds[3]-bounds[1]))
+                    .min(cap_top-8.0)
+                    .max(bounds[1]);
 
                 let mut matched_xrefs=Vec::new();
                 let mut img_union:Option<Box4>=None;
@@ -370,13 +391,23 @@ fn extract_fig_id(caption:&str)->Option<String>{
                     fig_union=Some(fig_union.map_or(l.bbox,|u|union(u,l.bbox)));
                 }
 
-                let cap_top=(d.bbox[1]-1.0).max(bounds[1]+8.0);
-                let suggested_bbox=if let Some(u)=fig_union{
-                    let top=(u[1]-8.0).max(bounds[1]).min(cap_top-4.0);
-                    let bottom=(u[3]+6.0).min(cap_top).max(top+4.0);
-                    [(u[0]-8.0).max(bounds[0]),top,(u[2]+8.0).min(bounds[2]).max((u[0]-8.0).max(bounds[0])+4.0),bottom]
+                let suggested_bbox=if !matched_xrefs.is_empty(){
+                    if let Some(u)=fig_union{
+                        let top=(u[1]-8.0).max(bounds[1]).min(cap_top-4.0);
+                        let bottom=(u[3]+6.0).min(cap_top).max(top+4.0);
+                        [(u[0]-8.0).max(bounds[0]),top,(u[2]+8.0).min(bounds[2]).max((u[0]-8.0).max(bounds[0])+4.0),bottom]
+                    }else{
+                        let top=(cap_top-260.0).max(search_top).min(cap_top-4.0);
+                        [col_x0,top,col_x1.max(col_x0+4.0),cap_top]
+                    }
                 }else{
-                    let top=(d.bbox[1]-220.0).max(search_top).min(cap_top-4.0);
+                    let band_top=if prev_bottom.is_some(){
+                        search_top.max(cap_top-420.0)
+                    }else{
+                        (cap_top-260.0).max(search_top)
+                    };
+                    let label_top=fig_union.map_or(band_top,|u|(u[1]-12.0).max(search_top));
+                    let top=band_top.min(label_top).max(bounds[1]).min(cap_top-4.0);
                     [col_x0,top,col_x1.max(col_x0+4.0),cap_top]
                 };
                 let single_object_reusable=matched_xrefs.len()==1&&!has_surrounding_labels&&clean_effects;
@@ -718,30 +749,67 @@ pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{
             let pdf_clean=layout_dir.join("clean-layout.md");
             if pdf_clean.is_file(){corpus.push_str(&fs::read_to_string(&pdf_clean)?);}
             if !corpus.trim().is_empty(){
+                struct GlossaryAgg{
+                    en:String,
+                    zh:String,
+                    ctx:String,
+                    line:u64,
+                    has_exact:bool,
+                    family_tokens:BTreeSet<String>,
+                }
                 let gl=glossary::Glossary::new(gp)?;
                 let sug=gl.suggest(&corpus,6)?;
-                let mut rows=BTreeMap::<String,(String,String,String,String,u64)>::new();
+                let mut aggregated=BTreeMap::<String,GlossaryAgg>::new();
                 for m in sug["matches"].as_array().into_iter().flatten(){
                     let e=&m["entry"];
                     let Some(id)=e["id"].as_str() else{continue;};
                     let kinds:Vec<&str>=m["match_types"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-                    let en=e["english"].as_str().unwrap_or("").replace('|',"\\|");
-                    let zh=e["translation"].as_str().unwrap_or("").replace('|',"\\|");
-                    let ctx=e["context"].as_str().unwrap_or("").replace('|',"\\|");
-                    let line=e["line"].as_u64().unwrap_or(0);
-                    rows.entry(id.to_owned()).or_insert((en,zh,ctx,kinds.join(", "),line));
+                    let rec=aggregated.entry(id.to_owned()).or_insert_with(||GlossaryAgg{
+                        en:e["english"].as_str().unwrap_or("").replace('|',"\\|"),
+                        zh:e["translation"].as_str().unwrap_or("").replace('|',"\\|"),
+                        ctx:e["context"].as_str().unwrap_or("").replace('|',"\\|"),
+                        line:e["line"].as_u64().unwrap_or(0),
+                        has_exact:false,
+                        family_tokens:BTreeSet::new(),
+                    });
+                    if kinds.contains(&"exact_token_phrase"){rec.has_exact=true;}
+                    if kinds.contains(&"shared_token_family"){
+                        if let Some(q)=m["query"].as_str().map(str::trim).filter(|s|!s.is_empty()){
+                            rec.family_tokens.insert(q.to_ascii_lowercase());
+                        }
+                    }
                 }
-                let mut md=format!("# 本篇命中术语表（matched-glossary）\n\n来源术语表：`{}`（sha256: `{}`）\n命中词条数：{}\n\n| ID | 英文术语 | 译名 | 语境/备注 | 匹配方式 | 术语表行号 |\n|---|---|---|---|---|---|\n",
+                let total_candidates=aggregated.len();
+                let mut kept:Vec<(String,GlossaryAgg)>=aggregated.into_iter()
+                    .filter(|(_,r)|r.has_exact||r.family_tokens.len()>=2)
+                    .collect();
+                let filtered_noise_count=total_candidates.saturating_sub(kept.len());
+                let exact_count=kept.iter().filter(|(_,r)|r.has_exact).count();
+                let family_count=kept.len().saturating_sub(exact_count);
+                kept.sort_by(|(id_a,a),(id_b,b)|b.has_exact.cmp(&a.has_exact).then_with(||id_a.cmp(id_b)));
+                let mut md=format!("# 本篇命中术语表（matched-glossary）\n\n来源术语表：`{}`（sha256: `{}`）\n命中词条数：{}（精确短语：{}，多词词族：{}；已过滤单词噪声：{}）\n\n| ID | 英文术语 | 译名 | 语境/备注 | 匹配方式 | 术语表行号 |\n|---|---|---|---|---|---|\n",
                     gl.binding["path"].as_str().unwrap_or(""),
                     gl.binding["sha256"].as_str().unwrap_or(""),
-                    rows.len());
-                for (id,(en,zh,ctx,kind,line)) in &rows{
-                    md.push_str(&format!("| {id} | {en} | {zh} | {ctx} | {kind} | {line} |\n"));
+                    kept.len(),
+                    exact_count,
+                    family_count,
+                    filtered_noise_count);
+                for (id,r) in &kept{
+                    let kind=if r.has_exact{
+                        if r.family_tokens.is_empty(){"exact_token_phrase".to_owned()}else{"exact_token_phrase (+family)".to_owned()}
+                    }else{
+                        let toks:Vec<&str>=r.family_tokens.iter().map(String::as_str).collect();
+                        format!("shared_token_family ({} tokens: {})",r.family_tokens.len(),toks.join(", "))
+                    };
+                    md.push_str(&format!("| {id} | {} | {} | {} | {kind} | {} |\n",r.en,r.zh,r.ctx,r.line));
                 }
                 pipeline::publish_replace(&matched_glossary_file,md.as_bytes())?;
                 matched_glossary=json!({
                     "file":check_ledger::bind_file(&matched_glossary_file)?,
-                    "matched_count":rows.len(),
+                    "matched_count":kept.len(),
+                    "exact_count":exact_count,
+                    "family_count":family_count,
+                    "filtered_noise_count":filtered_noise_count,
                     "glossary_source":gl.binding,
                 });
             }
@@ -830,9 +898,9 @@ mod tests{
         assert_eq!(fc[0]["single_object_reusable"],true);
 
         let gl_path=tmp.path().join("glossary.md");
-        fs::write(&gl_path,"| ID | 英文术语 | 中文译名 | 备注 |\n| --- | --- | --- | --- |\n| T_HOM | homology | 同调 | 代数拓扑 |\n| T_MISSING | zeta function | ζ函数 | 未出现 |\n").unwrap();
+        fs::write(&gl_path,"| ID | 英文术语 | 中文译名 | 备注 |\n| --- | --- | --- | --- |\n| T_HOM | homology | 同调 | 代数拓扑 |\n| T_FAM | persistent groups | 持续群 | 拓扑 |\n| T_NOISE | stable stratification | 稳定层结 | 大气 |\n| T_MISSING | zeta function | ζ函数 | 未出现 |\n").unwrap();
         let tex_path=tmp.path().join("paper.tex");
-        fs::write(&tex_path,"\\documentclass{article}\n\\title{Persistent Homology}\n\\begin{document}\nWe compute homology groups cleanly.\n\\end{document}\n").unwrap();
+        fs::write(&tex_path,"\\documentclass{article}\n\\title{Persistent Homology}\n\\begin{document}\nWe compute persistent homology groups cleanly with stable behavior.\n\\end{document}\n").unwrap();
         let paper_work=tmp.path().join("paper-work");
         let tex_val=json!(tex_path.to_string_lossy().to_string());
         let prep=prepare_paper(PreparePaperOptions{
@@ -840,13 +908,47 @@ mod tests{
             glossary_path:Some(&gl_path),render_pages:"auto",dpi:72,expected_pdf_sha256:None,arxiv_timeout_seconds:5,
         }).unwrap();
         assert_eq!(prep["tex_succeeded"],true);
-        assert_eq!(prep["matched_glossary"]["matched_count"],1);
+        assert_eq!(prep["matched_glossary"]["matched_count"],2);
+        assert_eq!(prep["matched_glossary"]["exact_count"],1);
+        assert_eq!(prep["matched_glossary"]["family_count"],1);
+        assert_eq!(prep["matched_glossary"]["filtered_noise_count"],1);
         let mg=fs::read_to_string(prep["matched_glossary"]["file"]["path"].as_str().unwrap()).unwrap();
-        assert!(mg.contains("T_HOM")&&!mg.contains("T_MISSING"),"{mg}");
+        assert!(mg.contains("T_HOM")&&mg.contains("T_FAM")&&!mg.contains("T_NOISE")&&!mg.contains("T_MISSING"),"{mg}");
         let prep_cached=prepare_paper(PreparePaperOptions{
             pdf_path:Some(&pdf),tex_target:Some(&tex_val),work_dir:&paper_work,
             glossary_path:Some(&gl_path),render_pages:"auto",dpi:72,expected_pdf_sha256:None,arxiv_timeout_seconds:5,
         }).unwrap();
         assert_eq!(prep_cached["pdf_layout"]["status"],"cached");
+    }
+
+    #[test]
+    fn vector_figure_above_caption_not_collapsed_by_tikz_labels(){
+        let glyphs=json!([
+            {"glyph_index":0,"line_index":0,"text":"This is a full-width prose paragraph preceding a pure vector TikZ diagram.","space_before":false,"bbox":[72.0,100.0,520.0,112.0]},
+            {"glyph_index":1,"line_index":1,"text":"It explains the boundary operator construction before Figure 1 appears below.","space_before":false,"bbox":[72.0,114.0,520.0,126.0]},
+            {"glyph_index":2,"line_index":2,"text":"v0","space_before":false,"bbox":[150.0,248.0,164.0,258.0]},
+            {"glyph_index":3,"line_index":3,"text":"v1","space_before":false,"bbox":[150.0,262.0,164.0,272.0]},
+            {"glyph_index":4,"line_index":4,"text":"(a)","space_before":false,"bbox":[145.0,276.0,160.0,286.0]},
+            {"glyph_index":5,"line_index":5,"text":"(b)","space_before":false,"bbox":[350.0,276.0,365.0,286.0]},
+            {"glyph_index":6,"line_index":6,"text":"Figure 1: Directed graphs used for Mayer path homology.","space_before":false,"bbox":[100.0,295.0,490.0,307.0]},
+        ]);
+        let p=analyze_page("main",5,[0.0,0.0,595.0,842.0],&json!({"glyphs":glyphs}),&json!({"occurrences":[]}),&mut false);
+        let fc=p["figure_candidates"].as_array().unwrap();
+        assert_eq!(fc.len(),1,"{p}");
+        let b=fc[0]["suggested_bbox"].as_array().unwrap();
+        let h=b[3].as_f64().unwrap()-b[1].as_f64().unwrap();
+        assert!(h>=120.0,"expected >=120pt height, got {h} ({b:?})");
+
+        let glyphs2=json!([
+            {"glyph_index":0,"line_index":0,"text":"The rank of H is called the Mayer Path Betti number. The following examples illustrate this construction.","space_before":false,"bbox":[72.0,620.0,523.3,634.6]},
+            {"glyph_index":1,"line_index":1,"text":"(a) L1 - 4 node-feedback loop (b) L2 - Bi-parallel (c) L3 - Bi-fan","space_before":false,"bbox":[72.0,737.5,492.6,746.9]},
+            {"glyph_index":2,"line_index":2,"text":"Figure 1: Digraphs","space_before":false,"bbox":[250.0,758.3,332.9,768.3]},
+        ]);
+        let p2=analyze_page("main",5,[0.0,0.0,595.3,842.0],&json!({"glyphs":glyphs2}),&json!({"occurrences":[]}),&mut false);
+        let fc2=p2["figure_candidates"].as_array().unwrap();
+        assert_eq!(fc2.len(),1,"{p2}");
+        let b2=fc2[0]["suggested_bbox"].as_array().unwrap();
+        let h2=b2[3].as_f64().unwrap()-b2[1].as_f64().unwrap();
+        assert!(h2>=100.0,"expected >=100pt height above subfigure row, got {h2} ({b2:?})");
     }
 }

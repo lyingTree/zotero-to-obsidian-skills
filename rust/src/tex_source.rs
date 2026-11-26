@@ -450,9 +450,13 @@ fn render_clean_markdown(parsed:&Value)->String{
                 let prefix=if text.starts_with("\\subsubsection"){"####"}
                     else if text.starts_with("\\subsection"){"###"}
                     else{"##"};
-                let heading=command_arg(text,"\\subsubsection")
+                let heading=command_arg(text,"\\subsubsection*")
+                    .or_else(||command_arg(text,"\\subsubsection"))
+                    .or_else(||command_arg(text,"\\subsection*"))
                     .or_else(||command_arg(text,"\\subsection"))
+                    .or_else(||command_arg(text,"\\section*"))
                     .or_else(||command_arg(text,"\\section"))
+                    .or_else(||command_arg(text,"\\chapter*"))
                     .or_else(||command_arg(text,"\\chapter"))
                     .unwrap_or(text);
                 out.push_str(&format!("{prefix} {heading} <!-- {id} -->\n\n"));
@@ -724,6 +728,7 @@ a & b \\
             "\\begin{document}\n",
             "\\begin{abstract}First sentence.\nSecond sentence.\\end{abstract}\n",
             "\\section{Intro}We compare methods~\\cite{refA}.\n",
+            "\\section*{Code Availability}Public repo.\n",
             "\\bibliography{sample}\n",
             "\\end{document}\n"
         );
@@ -737,6 +742,7 @@ a & b \\
         assert!(prep["clean_markdown"]["path"].as_str().unwrap().ends_with("clean-source.md"));
         let md=fs::read_to_string(prep["clean_markdown"]["path"].as_str().unwrap()).unwrap();
         assert!(md.contains("# Sample Paper")&&md.contains("## Abstract")&&md.contains("## Intro"));
+        assert!(md.contains("## Code Availability")&&!md.contains("\\section*{Code Availability}"),"{md}");
 
         // .tar.gz with .bbl expansion & multi-line \bibitem
         let bbl="\\begin{thebibliography}{1}\n\\bibitem[1]{refA} Author A.\nJournal 2025.\n\\end{thebibliography}\n";
