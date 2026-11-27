@@ -22,7 +22,7 @@ JSON 交接文件用序列化器生成并立即回读；LaTeX 反斜杠不得手
 | source-inventory.json | PDF 逐页材料或 DOCX 结构块与媒体关系，以及已核实来源单元；字段见[来源交付索引](delivery-checks.md) | 2、11；后续增量补齐来源单元 |
 | delivery-manifest.json | 来源单元与当前最终候选的对应关系；含实际文件哈希 | 总入口 |
 | assets/ | 原图裁剪或提取结果、必要表格结构及核对材料 | 2 |
-| translated.md | 逐块对应的中文全文；中文文献跳过时不生成重复文件 | 3 |
+| translated.md | 启用翻译时保存逐块对应的中文全文。中文文献或用户要求保留原文时，复用原文并记录跳过原因 | 3 |
 | terminology.json | 术语表路径与哈希、采用译法、语境、未决术语及块号 | 3 |
 | drafts/06-properties.md | 以 content_input 或本次指定既有 MD 为基础的完整候选稿 | 6 |
 | drafts/07-header.md | 上一步稿件的题头修订版 | 7 |

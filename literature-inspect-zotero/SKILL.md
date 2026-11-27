@@ -1,10 +1,16 @@
 ---
 name: literature-inspect-zotero
-version: v2.1.0
+version: v2.1.1
 description: 只读检查指定 Zotero 条目的完整可用信息、集合层级、文献语言、全文及补充附件。用于全文处理前取证，不负责翻译、分类修改或下载文献。
 ---
 
+<!-- z2o:first-run:start -->
+若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+<!-- z2o:first-run:end -->
+
 # 读取条目与全文状态
+
+需要模板或术语表且目标库尚未配置时，按[模板与术语表配置](../literature-zotero2obsidian/references/project-profile.md#模板与术语表配置)向用户确认路径。
 
 机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 

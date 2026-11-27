@@ -1,10 +1,16 @@
 ---
 name: literature-fulltext-extract
-version: v2.1.0
+version: v2.1.1
 description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF 按页 OCR 及 DOCX、HTML、EPUB、文本等格式，修复版面断行并保留来源定位。不负责翻译或写入 Obsidian。
 ---
 
+<!-- z2o:first-run:start -->
+若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+<!-- z2o:first-run:end -->
+
 # 提取全文与段落
+
+需要模板或术语表且目标库尚未配置时，按[模板与术语表配置](../literature-zotero2obsidian/references/project-profile.md#模板与术语表配置)向用户确认路径。
 
 机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 

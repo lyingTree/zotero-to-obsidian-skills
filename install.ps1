@@ -2,16 +2,17 @@
 <#
   All-in-one installer for the 12 literature-* skills, precompiled Rust runtime/z2o.exe,
   and bundled PP-OCRv6 OCR/layout/table runtime (when included in the release bundle)
-  from GitHub Releases, plus optional external dependency skills (obsidian-cli, zotero-skills).
+  from GitHub Releases.
   No local compilation and no first-run OCR download prompts required.
 
   Usage:
-    ./install.ps1 [-SkillsRoot <dir>] [-Version <tag>] [-Repo <owner/repo>] [-SkipExternalDependencies]
+    ./install.ps1 [-SkillsRoot <dir>] [-Version <tag>] [-Repo <owner/repo>]
 #>
 param(
   [string]$SkillsRoot = "",
   [string]$Version = "",
   [string]$Repo = "lyingTree/zotero-to-obsidian-skills",
+  # Legacy options retained for existing installer callers.
   [string]$ObsidianSkillsRef = "",
   [string]$ZoteroSkillsRef = "",
   [switch]$SkipExternalDependencies
@@ -59,13 +60,6 @@ New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
 
 function Get-FileSha256Hex([string]$path) {
   return (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLowerInvariant()
-}
-
-function Invoke-Git([string[]]$GitArgs) {
-  & git @GitArgs
-  if ($LASTEXITCODE -ne 0) {
-    throw "git $($GitArgs -join ' ') failed with exit code $LASTEXITCODE"
-  }
 }
 
 try {
@@ -123,62 +117,6 @@ try {
     throw "z2o verify-install failed with exit code $LASTEXITCODE"
   }
   Write-Host $verifyOutput
-
-  if (-not $SkipExternalDependencies) {
-    $lockFile = Join-Path $PSScriptRoot "dependencies.lock.json"
-    $obsidianRev = if ($ObsidianSkillsRef) { $ObsidianSkillsRef } else { "b110b2f8e9eb1f287892f937050dfd40af862cbb" }
-    $zoteroRev   = if ($ZoteroSkillsRef)   { $ZoteroSkillsRef }   else { "e5c11e744fab34d9dd322319195249daf735c2b1" }
-    if (Test-Path $lockFile) {
-      $lockData = Get-Content $lockFile -Raw | ConvertFrom-Json
-      if (-not $ObsidianSkillsRef -and $lockData.dependencies.'obsidian-cli'.revision) {
-        $obsidianRev = $lockData.dependencies.'obsidian-cli'.revision
-      }
-      if (-not $ZoteroSkillsRef -and $lockData.dependencies.'zotero-skills'.revision) {
-        $zoteroRev = $lockData.dependencies.'zotero-skills'.revision
-      }
-    }
-
-    if (Get-Command git -ErrorAction SilentlyContinue) {
-      Write-Host "==> Fetching pinned external skills (obsidian-cli@$obsidianRev, zotero-skills@$zoteroRev) ..."
-      $obsTmp = Join-Path $tmpRoot "obsidian-skills"
-      Invoke-Git @("init", "-q", $obsTmp)
-      Invoke-Git @("-C", $obsTmp, "remote", "add", "origin", "https://github.com/obsidianmd/obsidian-skills.git")
-      Invoke-Git @("-C", $obsTmp, "fetch", "-q", "--depth", "1", "origin", $obsidianRev)
-      Invoke-Git @("-C", $obsTmp, "checkout", "-q", "FETCH_HEAD")
-      $obsSkillSrc = Join-Path $obsTmp "plugins\obsidian\skills\obsidian-cli"
-      $obsLicenseSrc = Join-Path $obsTmp "LICENSE"
-      if (-not (Test-Path $obsSkillSrc -PathType Container) -or -not (Test-Path $obsLicenseSrc -PathType Leaf)) {
-        throw "Cloned obsidian-skills is missing expected skill files."
-      }
-      $dstObs = Join-Path $resolvedSkillsRoot "obsidian-cli"
-      if (Test-Path $dstObs) { Remove-Item $dstObs -Recurse -Force }
-      Copy-Item $obsSkillSrc $dstObs -Recurse -Force
-      Copy-Item $obsLicenseSrc (Join-Path $dstObs "LICENSE") -Force
-
-      $zotTmp = Join-Path $tmpRoot "zotero-skills"
-      Invoke-Git @("init", "-q", $zotTmp)
-      Invoke-Git @("-C", $zotTmp, "remote", "add", "origin", "https://github.com/WenyuChiou/zotero-skills.git")
-      Invoke-Git @("-C", $zotTmp, "fetch", "-q", "--depth", "1", "origin", $zoteroRev)
-      Invoke-Git @("-C", $zotTmp, "checkout", "-q", "FETCH_HEAD")
-      $zotSkillSrc = Join-Path $zotTmp "skills\zotero-skills"
-      $zotScriptsSrc = Join-Path $zotTmp "scripts"
-      $zotLicenseSrc = Join-Path $zotTmp "LICENSE"
-      $zotReqSrc = Join-Path $zotTmp "requirements.txt"
-      if (-not (Test-Path $zotSkillSrc -PathType Container) -or -not (Test-Path $zotScriptsSrc -PathType Container) -or -not (Test-Path $zotLicenseSrc -PathType Leaf)) {
-        throw "Cloned zotero-skills is missing expected skill files."
-      }
-      $dstZot = Join-Path $resolvedSkillsRoot "zotero-skills"
-      if (Test-Path $dstZot) { Remove-Item $dstZot -Recurse -Force }
-      Copy-Item $zotSkillSrc $dstZot -Recurse -Force
-      Copy-Item $zotScriptsSrc (Join-Path $dstZot "scripts") -Recurse -Force
-      if (Test-Path $zotReqSrc -PathType Leaf) {
-        Copy-Item $zotReqSrc (Join-Path $dstZot "requirements.txt") -Force
-      }
-      Copy-Item $zotLicenseSrc (Join-Path $dstZot "LICENSE") -Force
-    } else {
-      Write-Warning "git not found on PATH; skipped external skills (obsidian-cli, zotero-skills)."
-    }
-  }
 
   Write-Host "==> Rust skill installation complete ($Version, $target)."
 }

@@ -1404,6 +1404,22 @@ const SCHEMAS: &[OpSchema] = &[
         ],
     },
     OpSchema {
+        op: "zotero_local.sync_child_note",
+        summary: "Preview or explicitly authorize a Zotero 10+ child note sync, with versioned updates and verified readback.",
+        args: &[
+            req_arg("library_type", "user|group"),
+            req_arg("library_id", "integer"),
+            req_arg("parent_key", "string"),
+            req_arg("sync_id", "string"),
+            req_arg("html_path", "path"),
+        ],
+        kwargs: &[
+            opt_kw("authorized", "boolean", "false"),
+            opt_kw("expected_version", "integer|null", "null"),
+            opt_kw("expected_server_id", "string|null", "null"),
+        ],
+    },
+    OpSchema {
         op: "user_profile.locate",
         summary: "Locate the skill-local persistent profile without reading or writing it.",
         args: &[],

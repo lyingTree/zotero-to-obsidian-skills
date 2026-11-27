@@ -1,10 +1,16 @@
 ---
 name: literature-translate-zh
-version: v2.1.0
+version: v2.1.1
 description: 根据已核实的文献语言和项目术语表，将原文 Markdown 完整译成中文；中文文献复用原稿，混合文献按内容块分流。用于全文翻译或已有译文的指定部分修订。
 ---
 
+<!-- z2o:first-run:start -->
+若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+<!-- z2o:first-run:end -->
+
 # 按术语表翻译
+
+需要模板或术语表且目标库尚未配置时，按[模板与术语表配置](../literature-zotero2obsidian/references/project-profile.md#模板与术语表配置)向用户确认路径。
 
 机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 

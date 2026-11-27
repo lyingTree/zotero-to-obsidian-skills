@@ -15,6 +15,9 @@ const MAX_FILES:usize=50_000;
 const MAX_TOTAL:u64=2*1024*1024*1024;
 const BOUNDARY:&str="All-in-one offline Rust skill bundle. The twelve local skills, Rust executable, and bundled PP-OCRv6 OCR runtime (when packaged) are hash-verified and ready out of the box. External integrations remain separate.";
 const GUARD:&str="\n\n> **Rust runtime only**\n>\n> 机械操作统一使用主技能目录 literature-zotero2obsidian/runtime/z2o（Windows: z2o.exe）的 describe / invoke JSON 协议；参考 literature-zotero2obsidian/references/rust-entrypoints.md。\n\n";
+const FIRST_RUN_START:&str="<!-- z2o:first-run:start -->";
+const FIRST_RUN_END:&str="<!-- z2o:first-run:end -->";
+const MAGPIE_RUNTIME_SCRIPTS:&[&str]=&["scripts/ensure-runtime.ps1","scripts/ensure-runtime.sh"];
 type FileMap=BTreeMap<String,Value>;
 fn exe_name()->&'static str{if cfg!(windows){"z2o.exe"}else{"z2o"}}
 fn exe_relative()->String{format!("literature-zotero2obsidian/runtime/{}",exe_name())}
@@ -150,10 +153,19 @@ pub fn package_with_ocr(source:&Path,destination:&Path,ocr_bundle:Option<&Path>,
         let root=dir(&source.join(name),false)?;skill_header(&root,name)?;
         let m=scan(&root,true)?;
         ensure!(m.keys().all(|p|!p.starts_with("runtime/")),"Package input must be a repository skill, not an installed runtime");
-        let clean_files:FileMap=m.iter().filter(|(p,_)|!disallowed_script_path(p))
+        let clean_files:FileMap=m.iter().filter(|(p,_)|!disallowed_script_path(p)
+            && !(*name==SKILLS[0]&&MAGPIE_RUNTIME_SCRIPTS.contains(&p.as_str())))
             .map(|(p,r)|(p.clone(),r.clone())).collect();
         let dest=payload.join(name);fs::create_dir(&dest)?;copy_map(&root,&dest,&clean_files)?;
         let (mut header,at)=skill_header(&dest,name)?;
+        // The offline bundle already supplies the runtime. Keep its installed hashes stable.
+        if let Some(start)=header[at..].find(FIRST_RUN_START).map(|offset| at+offset){
+            let end=start+header[start..].find(FIRST_RUN_END).context("Unclosed Magpie bootstrap block")?
+                +FIRST_RUN_END.len();
+            let trailing=&header[end..];
+            let after=end+(trailing.len()-trailing.trim_start_matches(['\r','\n']).len());
+            header.replace_range(start..after,"");
+        }
         header.insert_str(at,GUARD);fs::write(dest.join("SKILL.md"),header.as_bytes())?;
         ensure!(scan(&root,true)?==m,"Skill changed during packaging");
         progress(i+1,SKILLS.len(),"stage rust skill bundle");

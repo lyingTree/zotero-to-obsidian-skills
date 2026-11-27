@@ -1,10 +1,16 @@
 ---
 name: literature-write2obsidian
-version: v2.1.0
+version: v2.1.1
 description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已完成的候选稿、资源和命名变更，备份后直接读取文件验证。支持仅规划或只提交，不负责提取、翻译和内容重写。
 ---
 
+<!-- z2o:first-run:start -->
+若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+<!-- z2o:first-run:end -->
+
 # 规划目录与提交笔记
+
+需要模板或术语表且目标库尚未配置时，按[模板与术语表配置](../literature-zotero2obsidian/references/project-profile.md#模板与术语表配置)向用户确认路径。
 
 机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 

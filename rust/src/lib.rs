@@ -248,6 +248,7 @@ pub const OPERATIONS: &[&str] = &[
     "zotero_local.inspect_item",
     "zotero_local.catalog",
     "zotero_local.search_items",
+    "zotero_local.sync_child_note",
     "user_profile.locate",
     "user_profile.load",
     "user_profile.save",
@@ -1376,6 +1377,30 @@ pub fn invoke(request: Value) -> Result<Value> {
             }else{c.finish()?;zotero_local::catalog(&kind,id,runtime_reports::progress_line)?};
             if let Some(p)=output{let b=runtime_reports::save_new_report(&p,&report)?;report["saved_record"]=b;}
             report
+        }
+        "zotero_local.sync_child_note" => {
+            let kind = string(&c.positional("library_type")?, "library_type")?;
+            let id = c.positional("library_id")?.as_u64().context("library_id must be an integer")?;
+            let parent_key = string(&c.positional("parent_key")?, "parent_key")?;
+            let sync_id = string(&c.positional("sync_id")?, "sync_id")?;
+            let html_path = path(&c.positional("html_path")?)?;
+            let authorized = c.option("authorized", json!(false)).as_bool().context("authorized must be boolean")?;
+            let version = c.option("expected_version", Value::Null);
+            let expected_version = if version.is_null() { None } else {
+                Some(version.as_u64().context("expected_version must be a nonnegative integer")?)
+            };
+            let server = c.option("expected_server_id", Value::Null);
+            let expected_server_id = if server.is_null() { None } else {
+                Some(string(&server, "expected_server_id")?)
+            };
+            c.finish()?;
+            zotero_local::sync_child_note(&kind, id, &parent_key, zotero_local::NoteSyncOptions {
+                sync_id: &sync_id,
+                html_path: &html_path,
+                authorized,
+                expected_version,
+                expected_server_id: expected_server_id.as_deref(),
+            })?
         }
         "zotero_local.search_items" => {
             let kind=string(&c.positional("library_type")?,"library_type")?;

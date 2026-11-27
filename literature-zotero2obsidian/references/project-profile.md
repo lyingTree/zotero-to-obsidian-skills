@@ -1,6 +1,20 @@
 # 项目配置与运行时发现
 
-首次运行读取。本文件不含任何绝对路径：项目根、vault 与文献根在运行时确认后写入 run.json，同一项目后续复用。迁移到其他机器或仓库无需修改本文件。
+项目路径在运行时确认。技能级配置保存于主技能的 `user/profile.json`，任务记录保存本次实际使用的路径。
+
+## Magpie 首次运行
+
+宿主若仍载有旧入口，先确认磁盘上当前的 `SKILL.md` 仍有首次运行标记。
+
+1. 以被调用的 `SKILL.md` 的实际位置确定项目的 `.agent/skills`，找到同级的 `literature-zotero2obsidian`。使用被调用技能 frontmatter 中的 `version`，确认与主技能版本一致。Windows 用 PowerShell 调用主技能的 `scripts/ensure-runtime.ps1 -Version <version>`，Linux 和 macOS 用 `bash <主技能>/scripts/ensure-runtime.sh <version>`。脚本验证本地 `z2o describe`，缺失或不可用时从对应版本的官方发布包补齐 `runtime/`，返回实际可执行文件的绝对路径。失败时说明原因，保留引导段供重试。
+2. 按下节发现实际 Obsidian 库。调用返回的 `z2o` 通过 `user_profile.load` 读取已保存的配置，显式传入当前主技能绝对路径作为 `skill_root`。按「模板与术语表配置」确认并保存路径。只有本次任务确实需要模板或术语表时，才因路径尚未确认而暂停；独立任务可继续，引导段留待配置完成。
+3. 运行器和路径配置均成功后，由 Agent 在同一 `.agent/skills` 内逐个清理本组 12 个 `SKILL.md`。仅删除从 `<!-- z2o:first-run:start -->` 到 `<!-- z2o:first-run:end -->` 的完整区段及其紧随的空行。每个文件在同目录写入临时文件并原子替换，保留其余内容和换行，跳过没有标记的文件。仅处理本组技能目录内的实际文件。完成后继续原任务；若宿主仍缓存旧入口，以磁盘上的区段和已保存配置为准。
+
+## 模板与术语表配置
+
+1. 对已确认的 vault，优先复用已配置且可用的 `paths.template_root` 和 `paths.glossary_path`。首次配置时，向用户显示实际默认路径并提问：“模板默认放在 `<vault_root>/template`，术语表默认用该目录下的 `glossary.md`。使用默认位置，还是分别指定模板目录和术语表文件？”等待用户确认后初始化。
+2. 默认文件位于主技能的 `template/`。在用户选定位置只补缺失文件，保留已有模板和术语表。模板映射使用 `journalArticle` → `journal-article.md`、`thesis` → `thesis.md`、`conferencePaper` → `conference-paper.md`、`preprint` → `preprint.md`，保留用户已有映射。
+3. 用 `user_profile.patch` 保存 `paths.obsidian_vault_root`、`paths.template_root`、`paths.glossary_path` 和 `templates`。如果切换 vault，将离开的库的模板与术语表路径及模板映射保存在 `preferences.vault_templates`，以已核实的 vault 绝对路径为键。切回时先恢复该库的配置；对未配置的库重新提问。切换时按新库核对文献根、附件和工作目录，避免继续使用上一个库的路径。
 
 ## 配置来源
 
@@ -8,8 +22,9 @@
 
 1. 用户本次明确给出的路径、库名或笔记位置。
 2. 当前工作目录及其向上最近的 `.obsidian` 目录（vault 根）。
-3. `obsidian-cli` 列出的实际 vault 列表。
-4. 仍不确定时向用户确认一次，不静默假设。
+3. 主技能配置中已核实且仍可用的 vault。
+4. 如已配置 Obsidian 客户端 CLI，可通过实际命令核实 vault 列表。
+5. 仍不确定时向用户确认一次。
 
 确认后记录 `project_root`、`vault_root`、`literature_root`、`templates_root`、`glossary_path`、`assets_resource_dir`、`work_root`，存绝对路径并同时保留相对 vault 根的版本。路径别名、符号链接与 OneDrive 重定向先解析再比较，不同路径不得因名称相似视为同一位置。
 
@@ -77,8 +92,8 @@
 | 项 | 默认值 |
 |---|---|
 | 文献根 | `<vault_root>/文献` |
-| 模板 | `<literature_root>/template/`，按实际 itemType 选 `journal-article.md`、`thesis.md`、`conference-paper.md` 或 `preprint.md` |
-| 术语表 | `<literature_root>/template/glossary.md` |
+| 模板 | `<vault_root>/template/`，按实际 itemType 选 `journal-article.md`、`thesis.md`、`conference-paper.md` 或 `preprint.md` |
+| 术语表 | `<vault_root>/template/glossary.md` |
 | 附件资源 | `<assets_resource_dir>`（默认 `attachments`，图与视频同目录） |
 | 工作根 | `<project_root>/Backups/literature-pipeline/`，解析后必须位于 vault 之外；不满足时按运行预检选择库外位置 |
 | Rich Table 数据版本 | 按实际模板采用 v2 或 v3，逐工作表检查数据 |
@@ -117,8 +132,8 @@
 
 ## 工具与边界
 
-- Zotero 操作使用同级 [zotero-skills](../../zotero-skills/SKILL.md)，先探测再调用，不假定 MCP 工具已安装，不打印凭据。
-- Obsidian 笔记与附件写入统一使用 `vault_publish.publish_standalone`（一步完成预检、冲突消歧、事务备份、写入、SHA-256/`WRITE-A04`/`WRITE-A05` 回读并生成 `report.md`）或 `vault_publish.plan_standalone` + `vault_publish.commit_markdown`。提交回读由 Rust 事务保证，返回 `verified_file_write` 即进入终态：禁止轮询启动 Obsidian 客户端、休眠等待或检查反向链接缓存；仅在用户明确要求查库内出链/触发客户端命令时再按需调用同级 [obsidian-cli](../../obsidian-cli/SKILL.md)（先读 help、明确 vault 与相对 path、检查实际输出）。
+- 使用 `z2o` 的 `zotero_local.search_items`、`inspect_item` 或 `catalog` 读取 Zotero 本地 API，先探测接口，不打印凭据。
+- Obsidian 笔记与附件写入统一使用 `vault_publish.publish_standalone`（一步完成预检、冲突消歧、事务备份、写入、SHA-256/`WRITE-A04`/`WRITE-A05` 回读并生成 `report.md`）或 `vault_publish.plan_standalone` + `vault_publish.commit_markdown`。返回 `verified_file_write` 即完成。用户明确要求客户端操作时，可调用已配置的 Obsidian 客户端 CLI，先核对帮助、目标库和命令输出。
 - 含 LaTeX 反斜杠或长全文时，以文件方式保存正文再回读实际文件。移动或重命名时核对可枚举的入链；使用 CLI 时读取其实际返回文件内容。CLI 不可用时可使用文件接口，无法核实的入链范围单独保留待核记录。
 - 模板作为结构与格式参考。先检查模板实际行为，不盲跑其正则清理、改名或交互脚本。
 - 未覆盖的文献类型保留实际类型，采用不虚构字段的通用结构，不套成期刊论文。
@@ -137,4 +152,6 @@
 
 ## Zotero note 兼容
 
-同步仅在用户明确要求时启用。按同一条目及版本寻找既有译文 note，不因重跑再建一份；多个候选或用户修改冲突先保留差异，不自行删除或合并。通过 zotero-skills 的写入能力提交并回读，Obsidian 专用语法不能原样视为 Zotero 可呈现内容。单独记录 note 同步状态；失败不撤销已验证的 Obsidian 写入。
+同步仅在用户明确要求时启用，使用 `zotero_local.sync_child_note`。需要 Zotero 10 或更新版本并启用本地 API。准备 UTF-8 的 Zotero 兼容 HTML，转换 Obsidian 专用语法，保留本次选择的正文语言。以已核实的库、父条目 key 和稳定的 `sync_id` 定位同步对象，同一份笔记重跑时复用同一个 `sync_id`。
+
+先用默认的 `authorized: false` 查看计划。更新前核对现有子笔记及差异，传入已核对的 `expected_version` 和 `expected_server_id`；有用户修改冲突时保留差异。传 `authorized: true` 开始写入，Zotero Desktop 会弹出授权。返回 `verified_zotero_note_write` 或 `unchanged` 后记录同步结果。若写入结果不确定，先重新查看现有笔记。同步失败单独报告。

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # All-in-one installer for the 12 literature-* skills, precompiled Rust runtime/z2o,
 # and bundled PP-OCRv6 OCR/layout/table runtime (when included in the release bundle)
-# from GitHub Releases, plus optional external dependency skills (obsidian-cli, zotero-skills).
+# from GitHub Releases.
 # No local compilation and no first-run OCR download prompts required.
 #
-# Usage: ./install.sh [skills-root] [version-tag] [obsidian-ref] [zotero-ref]
+# Usage: ./install.sh [skills-root] [version-tag]
 set -euo pipefail
 
+# Accept the two legacy trailing arguments for existing installer callers.
 if [ "$#" -gt 4 ]; then
-  echo "Usage: ./install.sh [skills-root] [version-tag] [obsidian-ref] [zotero-ref]" >&2
+  echo "Usage: ./install.sh [skills-root] [version-tag]" >&2
   exit 2
 fi
 
@@ -22,31 +23,7 @@ if [ -z "$SKILLS_ROOT" ]; then
   SKILLS_ROOT="$SCRIPT_DIR"
 fi
 
-lock_revision() {
-  local dep="$1"
-  local lock_file="${SCRIPT_DIR}/dependencies.lock.json"
-  [ -f "$lock_file" ] || return 0
-  awk -v dep="\"${dep}\"[[:space:]]*:[[:space:]]*\\{" '
-    !found && $0 ~ dep { found = 1; depth = 1; next }
-    found {
-      if ($0 ~ /"revision"[[:space:]]*:/) {
-        line = $0
-        sub(/^.*"revision"[[:space:]]*:[[:space:]]*"/, "", line)
-        sub(/".*$/, "", line)
-        print line
-        exit
-      }
-      if ($0 ~ /\{/) depth++
-      if ($0 ~ /\}/) { depth--; if (depth <= 0) exit }
-    }
-  ' "$lock_file"
-}
-
 VERSION="${2:-${Z2O_VERSION:-}}"
-OBSIDIAN_REF="${3:-${Z2O_OBSIDIAN_SKILLS_REF:-$(lock_revision "obsidian-cli")}}"
-OBSIDIAN_REF="${OBSIDIAN_REF:-b110b2f8e9eb1f287892f937050dfd40af862cbb}"
-ZOTERO_REF="${4:-${Z2O_ZOTERO_SKILLS_REF:-$(lock_revision "zotero-skills")}}"
-ZOTERO_REF="${ZOTERO_REF:-e5c11e744fab34d9dd322319195249daf735c2b1}"
 REPO="${Z2O_REPO:-lyingTree/zotero-to-obsidian-skills}"
 
 OS="$(uname -s)"
@@ -124,38 +101,5 @@ mkdir -p "$SKILLS_ROOT"
 echo "==> Installing 12 literature-* skills, runtime/z2o, and any bundled OCR runtime into ${SKILLS_ROOT} ..."
 "$Z2O_BIN" install "$MANIFEST" "$MANIFEST_SHA" "$SKILLS_ROOT"
 "${SKILLS_ROOT}/literature-zotero2obsidian/runtime/z2o" verify-install "$MANIFEST" "$MANIFEST_SHA" "$SKILLS_ROOT"
-
-if [ "${Z2O_SKIP_EXTERNAL_DEPENDENCIES:-0}" != "1" ] && command -v git >/dev/null 2>&1; then
-  echo "==> Fetching pinned external skills (obsidian-cli@${OBSIDIAN_REF}, zotero-skills@${ZOTERO_REF}) ..."
-  OBS_TMP="${TMP_DIR}/obsidian-skills"
-  git init -q "$OBS_TMP"
-  git -C "$OBS_TMP" remote add origin "https://github.com/obsidianmd/obsidian-skills.git"
-  git -C "$OBS_TMP" fetch -q --depth 1 origin "$OBSIDIAN_REF"
-  git -C "$OBS_TMP" checkout -q FETCH_HEAD
-  if [ ! -d "${OBS_TMP}/plugins/obsidian/skills/obsidian-cli" ] || [ ! -f "${OBS_TMP}/LICENSE" ]; then
-    echo "Cloned obsidian-skills is missing expected skill files." >&2
-    exit 1
-  fi
-  rm -rf "${SKILLS_ROOT}/obsidian-cli"
-  cp -R "${OBS_TMP}/plugins/obsidian/skills/obsidian-cli" "${SKILLS_ROOT}/obsidian-cli"
-  cp "${OBS_TMP}/LICENSE" "${SKILLS_ROOT}/obsidian-cli/LICENSE"
-
-  ZOT_TMP="${TMP_DIR}/zotero-skills"
-  git init -q "$ZOT_TMP"
-  git -C "$ZOT_TMP" remote add origin "https://github.com/WenyuChiou/zotero-skills.git"
-  git -C "$ZOT_TMP" fetch -q --depth 1 origin "$ZOTERO_REF"
-  git -C "$ZOT_TMP" checkout -q FETCH_HEAD
-  if [ ! -d "${ZOT_TMP}/skills/zotero-skills" ] || [ ! -d "${ZOT_TMP}/scripts" ] || [ ! -f "${ZOT_TMP}/LICENSE" ]; then
-    echo "Cloned zotero-skills is missing expected skill files." >&2
-    exit 1
-  fi
-  rm -rf "${SKILLS_ROOT}/zotero-skills"
-  cp -R "${ZOT_TMP}/skills/zotero-skills" "${SKILLS_ROOT}/zotero-skills"
-  cp -R "${ZOT_TMP}/scripts" "${SKILLS_ROOT}/zotero-skills/scripts"
-  if [ -f "${ZOT_TMP}/requirements.txt" ]; then
-    cp "${ZOT_TMP}/requirements.txt" "${SKILLS_ROOT}/zotero-skills/requirements.txt"
-  fi
-  cp "${ZOT_TMP}/LICENSE" "${SKILLS_ROOT}/zotero-skills/LICENSE"
-fi
 
 echo "==> Rust skill installation complete (${VERSION}, ${TARGET})."

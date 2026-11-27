@@ -1,5 +1,5 @@
-//! Read Zotero Desktop's documented local API v3 without credentials,
-//! external HTTP endpoints, redirects, attachment downloads or write methods.
+//! Zotero Desktop local API v3 over loopback. Ordinary reads are unauthenticated.
+//! Explicit note writes use Zotero 10's in-client authorization.
 //! HTTP/1.1 parser specifically for the loopback server.
 use anyhow::{bail,ensure,Context,Result};
 use serde_json::{json,Value};
@@ -35,14 +35,17 @@ fn line<R:BufRead>(r:&mut R,limit:usize)->Result<Vec<u8>>{
 pub(crate) fn decode_http<R:BufRead>(reader:R)->Result<Response>{
     decode_http_with_limit(reader,MAX_HTTP_BODY)
 }
-fn decode_http_with_limit<R:BufRead>(mut reader:R,max_body:usize)->Result<Response>{
+fn decode_http_with_limit<R:BufRead>(reader:R,max_body:usize)->Result<Response>{
+    decode_http_status(reader,max_body,200,true)
+}
+fn decode_http_status<R:BufRead>(mut reader:R,max_body:usize,expected:u16,reading:bool)->Result<Response>{
     let status=line(&mut reader,8192)?;
     let status=std::str::from_utf8(&status)?;
     let mut fields=status.splitn(3,' ');
     ensure!(matches!(fields.next(),Some("HTTP/1.1"|"HTTP/1.0")),"Unexpected HTTP protocol");
     let code=fields.next().context("Missing HTTP status")?.parse::<u16>()?;
-    if code==403{bail!("ZOTERO_LOCAL_API_DISABLED: enable Zotero local API in Advanced settings");}
-    ensure!(code==200,"ZOTERO_HTTP_STATUS_{code}: no redirect, download or retry to external endpoint");
+    if reading&&code==403{bail!("ZOTERO_LOCAL_API_DISABLED: enable Zotero local API in Advanced settings");}
+    ensure!(code==expected,"ZOTERO_HTTP_STATUS_{code}: expected {expected}");
     let mut headers=BTreeMap::<String,String>::new();let mut budget:usize=64*1024;
     loop{
         let row=line(&mut reader,8192)?;budget=budget.checked_sub(row.len()+2).context("HTTP headers exceed budget")?;
@@ -58,6 +61,7 @@ fn decode_http_with_limit<R:BufRead>(mut reader:R,max_body:usize)->Result<Respon
             ensure!(old==value,"Conflicting response header: {name}");
         }
     }
+    if code==204{return Ok(Response{headers,body:Vec::new()});}
     ensure!(headers.get("content-encoding").is_none_or(|s|s.eq_ignore_ascii_case("identity")),"Unexpected compressed HTTP response");
     let mut body=Vec::new();
     if let Some(transfer)=headers.get("transfer-encoding"){
@@ -105,17 +109,21 @@ impl Client{
     fn with_timeouts(addr:SocketAddr,connect_secs:u64,read_secs:u64)->Self{
         Self{addr,started:Instant::now(),requests:0,connect_timeout:Duration::from_secs(connect_secs),read_timeout:Duration::from_secs(read_secs),server_id:None,library_version:None,observations:vec![],bytes:0}
     }
-    fn get(&mut self,route:&str,scope:VersionScope)->Result<(Value,BTreeMap<String,String>)>{
+    fn connect(&mut self,method:&str,route:&str)->Result<(TcpStream,String)>{
         ensure!(self.addr.ip().is_loopback(),"Local API may only access loopback");
         ensure!(route.starts_with("/api/")&&!route.chars().any(char::is_whitespace)&&!route.contains(['#','\\','\r','\n']),"Unsafe local API route");
         ensure!(self.requests<MAX_REQUESTS&&self.started.elapsed()<Duration::from_secs(300),"Local API request budget exceeded");
         self.requests+=1;
-        let mut stream=TcpStream::connect_timeout(&self.addr,self.connect_timeout).context("ZOTERO_LOCAL_API_UNAVAILABLE: open Zotero and enable local API")?;
+        let stream=TcpStream::connect_timeout(&self.addr,self.connect_timeout).context("ZOTERO_LOCAL_API_UNAVAILABLE: open Zotero and enable local API")?;
         stream.set_read_timeout(Some(self.read_timeout))?;stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-        let mut header=format!("GET {route} HTTP/1.1\r\nHost: localhost:{}\r\nUser-Agent: z2o-rust\r\nZotero-Allowed-Request: true\r\nZotero-API-Version: 3\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n",self.addr.port());
+        let mut header=format!("{method} {route} HTTP/1.1\r\nHost: localhost:{}\r\nUser-Agent: z2o-rust\r\nZotero-Allowed-Request: true\r\nZotero-API-Version: 3\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n",self.addr.port());
         if let Some(id)=&self.server_id{
             ensure!(!id.contains(['\r','\n']),"Invalid server identity");header.push_str(&format!("Zotero-Server-ID: {id}\r\n"));
         }
+        Ok((stream,header))
+    }
+    fn get(&mut self,route:&str,scope:VersionScope)->Result<(Value,BTreeMap<String,String>)>{
+        let (mut stream,mut header)=self.connect("GET",route)?;
         header.push_str("\r\n");stream.write_all(header.as_bytes())?;
         let response=decode_http(BufReader::new(stream))?;
         ensure!(response.headers.get("zotero-api-version").is_none_or(|s|s=="3"),"Unsupported local Zotero API version");
@@ -183,6 +191,167 @@ fn check_object(v:&Value,wanted:&str,kind:&str,id:u64)->Result<()>{
     ensure!(v["library"]["type"]==kind,"Zotero object library differs");
     let actual=v["library"]["id"].as_u64().context("Actual Zotero library identity missing")?;
     ensure!(actual>0&&(id==0&&kind=="user"||actual==id),"Zotero library identity differs");Ok(())
+}
+
+impl Client {
+    fn send_json(
+        &mut self,
+        method: &str,
+        route: &str,
+        payload: &Value,
+        condition: Option<(&str, u64)>,
+        expected_status: u16,
+    ) -> Result<Response> {
+        let server_id = self.server_id.clone().context("Zotero 10+ local API is required for writes")?;
+        let (mut stream, mut header) = self.connect(method, route)?;
+        if let Some((credential, version)) = condition {
+            header.push_str(&format!(
+                "Zotero-API-Key: {credential}\r\nIf-Unmodified-Since-Version: {version}\r\n"
+            ));
+        } else {
+            // The desktop authorization dialog waits for the user's choice.
+            stream.set_read_timeout(Some(Duration::from_secs(180)))?;
+        }
+        let body = serde_json::to_vec(payload)?;
+        header.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n\r\n", body.len()));
+        stream.write_all(header.as_bytes())?;
+        stream.write_all(&body)?;
+        let response_limit = if condition.is_some() { 32 * 1024 * 1024 } else { 16 * 1024 };
+        let response = decode_http_status(BufReader::new(stream), response_limit, expected_status, false)?;
+        ensure!(response.headers.get("zotero-server-id") == Some(&server_id), "Zotero server identity changed");
+        Ok(response)
+    }
+
+    fn authorize_write(&mut self) -> Result<String> {
+        let response = self.send_json("POST", "/api/local/authorize", &json!({"appName":"z2o"}), None, 200)
+            .context("Zotero write authorization did not succeed; check the Zotero Desktop dialog and local API settings")?;
+        // Keep the credential in this invocation only. Never include response data in an error.
+        let grant: Value = serde_json::from_slice(&response.body).ok().context("Invalid Zotero authorization response")?;
+        let credential = grant["key"].as_str().filter(|value| value.len() == 32
+            && value.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+            .context("Invalid Zotero authorization credential")?;
+        Ok(credential.to_owned())
+    }
+}
+
+pub struct NoteSyncOptions<'a> {
+    pub sync_id: &'a str,
+    pub html_path: &'a Path,
+    pub authorized: bool,
+    pub expected_version: Option<u64>,
+    pub expected_server_id: Option<&'a str>,
+}
+
+fn is_synced_note(item: &Value, parent_key: &str, tag: &str) -> bool {
+    let data = &item["data"];
+    data["itemType"] == "note" && data["parentItem"] == parent_key
+        && data["tags"].as_array().is_some_and(|tags| tags.iter().any(|row| row["tag"] == tag))
+}
+
+fn note_content(html: &str) -> &str {
+    let html = html.trim();
+    // Zotero may add the standard note editor wrapper to an HTML fragment.
+    html.strip_prefix("<div data-schema-version=\"9\">")
+        .and_then(|inner| inner.strip_suffix("</div>"))
+        .map_or(html, str::trim)
+}
+
+pub fn sync_child_note(kind: &str, id: u64, parent_key: &str, options: NoteSyncOptions<'_>) -> Result<Value> {
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 23119));
+    sync_note(Client::new(addr), kind, id, parent_key, options)
+}
+
+fn sync_note(mut client: Client, kind: &str, id: u64, parent_key: &str, options: NoteSyncOptions<'_>) -> Result<Value> {
+    const MAX_NOTE_BYTES: u64 = 4 * 1024 * 1024;
+    key(parent_key)?;
+    ensure!(!options.sync_id.is_empty() && options.sync_id.len() <= 80
+        && options.sync_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
+        "sync_id must be a stable identifier of up to 80 ASCII letters, digits, dots, underscores or hyphens");
+    let mut bytes = Vec::new();
+    fs::File::open(options.html_path)?.take(MAX_NOTE_BYTES + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() as u64 <= MAX_NOTE_BYTES, "Zotero note HTML exceeds 4 MiB");
+    let html = std::str::from_utf8(&bytes)?.trim_start_matches('\u{feff}').trim();
+    ensure!(!html.is_empty(), "Zotero note HTML is empty");
+    ensure!(!html.bytes().any(|byte| matches!(byte, 0..=8 | 11..=12 | 14..=31 | 127)),
+        "Zotero note HTML contains control characters");
+
+    let parent = client.object(&format!("{}/items/{parent_key}", library(kind, id)?), parent_key, kind, id)?;
+    let actual_id = parent["library"]["id"].as_u64().context("Missing Zotero library ID")?;
+    let item_type = parent["data"]["itemType"].as_str().context("Missing Zotero parent item type")?;
+    ensure!(!matches!(item_type, "note" | "attachment" | "annotation") && parent["data"]["deleted"] != true,
+        "Zotero parent must be a live bibliographic item");
+    let server_id = client.server_id.clone().context("Zotero 10+ local API is required for note sync")?;
+    if let Some(expected) = options.expected_server_id {
+        ensure!(expected == server_id.as_str(), "Zotero database differs from the reviewed note");
+    }
+    let items = format!("{}/items", library(kind, actual_id)?);
+    let children = client.all(&format!("{items}/{parent_key}/children"), kind, actual_id, |_, _, _| {})?;
+    let tag = format!("z2o-sync:{}", options.sync_id);
+    let mut matches = children.iter().filter(|item| is_synced_note(item, parent_key, &tag));
+    let existing = matches.next();
+    ensure!(matches.next().is_none(), "Multiple Zotero notes share this sync_id; resolve the conflict before writing");
+    let desired_sha = files::digest(note_content(html).as_bytes());
+    let mut receipt = json!({
+        "server_id":server_id, "library_type":kind, "library_id":actual_id, "parent_key":parent_key,
+        "sync_id":options.sync_id, "requested_content_sha256":desired_sha
+    });
+    let mut existing_version = None;
+    if let Some(item) = existing {
+        ensure!(item["data"]["deleted"] != true, "The matched Zotero note is in the trash");
+        let current = item["data"]["note"].as_str().context("Missing Zotero note content")?;
+        let version = item["version"].as_u64().context("Missing Zotero note version")?;
+        receipt["note_key"] = item["key"].clone();
+        receipt["version"] = json!(version);
+        receipt["current_content_sha256"] = json!(files::digest(note_content(current).as_bytes()));
+        if note_content(current) == note_content(html) {
+            receipt["status"] = json!("unchanged");
+            return Ok(receipt);
+        }
+        existing_version = Some(version);
+    }
+    if !options.authorized {
+        receipt["status"] = json!(if existing.is_some() {"would_update"} else {"would_create"});
+        return Ok(receipt);
+    }
+
+    let (method, route, payload, version, status) = if let Some(item) = existing {
+        ensure!(options.expected_server_id.is_some() && options.expected_version.is_some()
+            && options.expected_version == existing_version,
+            "ZOTERO_NOTE_CONFLICT: review the existing note and pass its current version and server ID before updating");
+        let note_key = item["key"].as_str().context("Missing Zotero note key")?;
+        ("PATCH", format!("{items}/{note_key}"), json!({"note":html}),
+            existing_version.context("Missing Zotero note version")?, 204)
+    } else {
+        ensure!(options.expected_version.is_none(), "The previously reviewed Zotero note no longer exists");
+        let library_version = client.library_version.as_deref().context("Missing Zotero library version")?.parse::<u64>()?;
+        ("POST", items.clone(), json!([{
+            "itemType":"note", "parentItem":parent_key, "note":html,
+            "tags":[{"tag":tag}], "collections":[], "relations":{}
+        }]), library_version, 200)
+    };
+    let credential = client.authorize_write()?;
+    let write = client.send_json(method, &route, &payload, Some((&credential, version)), status)
+        .context("Zotero note write was not confirmed; inspect the current note before retrying")?;
+    let note_key = if let Some(item) = existing {
+        item["key"].as_str().context("Missing Zotero note key")?.to_owned()
+    } else {
+        let result: Value = serde_json::from_slice(&write.body).context("Invalid Zotero creation receipt; inspect children before retrying")?;
+        ensure!(result["failed"]["0"].is_null(), "Zotero rejected child note creation (item code {})", result["failed"]["0"]["code"]);
+        let created = result["successful"]["0"]["key"].as_str().or_else(|| result["success"]["0"].as_str())
+            .context("Zotero creation response lacks a success key; inspect children before retrying")?;
+        key(created)?.to_owned()
+    };
+    let saved = client.object(&format!("{items}/{note_key}"), &note_key, kind, actual_id)
+        .with_context(|| format!("Zotero accepted the write to {note_key}, but readback failed"))?;
+    ensure!(is_synced_note(&saved, parent_key, &tag) && saved["data"]["deleted"] != true
+        && saved["data"]["note"].as_str().is_some_and(|current| note_content(current) == note_content(html)),
+        "Zotero accepted the write to {note_key}, but the saved note differs from the request");
+    receipt["status"] = json!("verified_zotero_note_write");
+    receipt["action"] = json!(if existing.is_some() {"updated"} else {"created"});
+    receipt["note_key"] = json!(note_key);
+    receipt["version"] = json!(saved["version"].as_u64().context("Missing saved Zotero note version")?);
+    receipt["current_content_sha256"] = json!(desired_sha);
+    Ok(receipt)
 }
 fn local_version_consistent(client:&Client)->bool{
     let Some(expected_ver)=client.library_version.as_deref() else{return false;};
@@ -419,6 +588,98 @@ pub(crate) fn search_items_at(addr:SocketAddr,kind:&str,id:u64,opt:SearchOptions
 mod tests{
     use super::*;
     use std::{io::Cursor,net::TcpListener,thread};
+
+    #[test]
+    fn note_sync_previews_creates_updates_and_rejects_stale_versions() {
+        const PARENT: &str = "/api/users/123/items/PARENT01?format=json&include=data";
+        const CHILDREN: &str = "/api/users/123/items/PARENT01/children?format=json&include=data&limit=100&start=0";
+        const ITEMS: &str = "/api/users/123/items";
+        const NOTE: &str = "/api/users/123/items/NOTE0001";
+        const HTML: &str = "<p>Current source</p>";
+        const CREDENTIAL: &str = "0123456789abcdef0123456789abcdef";
+        let directory = tempfile::tempdir().unwrap();
+        let html_path = directory.path().join("note.html");
+        fs::write(&html_path, HTML).unwrap();
+        let parent = json!({"key":"PARENT01","version":1,"library":{"type":"user","id":123},
+            "data":{"key":"PARENT01","itemType":"journalArticle"}});
+        let note = |html: &str, version: u64| json!({
+            "key":"NOTE0001", "version":version, "library":{"type":"user","id":123},
+            "data":{"key":"NOTE0001","itemType":"note","parentItem":"PARENT01","note":html,
+                "tags":[{"tag":"z2o-sync:paper"}]}
+        });
+
+        for (action, expected_version, current, expected_status) in [
+            ("preview", None, None, "would_create"),
+            ("create", None, None, "verified_zotero_note_write"),
+            ("update", Some(4), Some("<p>Old source</p>"), "verified_zotero_note_write"),
+            ("stale", Some(3), Some("<p>User edited</p>"), "conflict"),
+            ("same", None, Some(HTML), "unchanged"),
+        ] {
+            let server = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let addr = server.local_addr().unwrap();
+            let mut exchanges = vec![
+                ("GET", PARENT.to_owned(), 200, None, parent.clone()),
+                ("GET", CHILDREN.to_owned(), 200, None, json!(current.map(|html| note(html, 4)).into_iter().collect::<Vec<_>>())),
+            ];
+            if matches!(action, "create" | "update") {
+                exchanges.push(("POST", "/api/local/authorize".to_owned(), 200,
+                    Some(json!({"appName":"z2o"})), json!({"key":CREDENTIAL,"remember":false})));
+                if action == "create" {
+                    exchanges.push(("POST", ITEMS.to_owned(), 200, Some(json!([{
+                        "itemType":"note","parentItem":"PARENT01","note":HTML,
+                        "tags":[{"tag":"z2o-sync:paper"}],"collections":[],"relations":{}
+                    }])), json!({"success":{"0":"NOTE0001"},"failed":{}})));
+                } else {
+                    exchanges.push(("PATCH", NOTE.to_owned(), 204, Some(json!({"note":HTML})), Value::Null));
+                }
+                exchanges.push(("GET", format!("{NOTE}?format=json&include=data"), 200, None, note(HTML, 8)));
+            }
+            let handle = thread::spawn(move || {
+                for (method, route, status, payload, response) in exchanges {
+                    let (mut stream, _) = server.accept().unwrap();
+                    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut reader = BufReader::new(&mut stream);
+                    assert_eq!(String::from_utf8(line(&mut reader, 8192).unwrap()).unwrap(),
+                        format!("{method} {route} HTTP/1.1"));
+                    let mut headers = BTreeMap::new();
+                    loop {
+                        let row = line(&mut reader, 8192).unwrap();
+                        if row.is_empty() { break; }
+                        let row = std::str::from_utf8(&row).unwrap();
+                        let (name, value) = row.split_once(':').unwrap();
+                        headers.insert(name.to_owned(), value.trim().to_owned());
+                    }
+                    if let Some(payload) = payload {
+                        let mut body = vec![0; headers["Content-Length"].parse().unwrap()];
+                        reader.read_exact(&mut body).unwrap();
+                        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), payload);
+                        assert_eq!(headers["Zotero-Server-ID"], "test-instance");
+                        if route != "/api/local/authorize" {
+                            assert_eq!(headers["Zotero-API-Key"], CREDENTIAL);
+                            assert_eq!(headers["If-Unmodified-Since-Version"], if method == "PATCH" {"4"} else {"7"});
+                        }
+                    }
+                    drop(reader);
+                    let body = if status == 204 { Vec::new() } else { serde_json::to_vec(&response).unwrap() };
+                    write!(stream, "HTTP/1.1 {status} Response\r\nZotero-Server-ID: test-instance\r\nLast-Modified-Version: 7\r\nContent-Length: {}\r\n\r\n", body.len()).unwrap();
+                    stream.write_all(&body).unwrap();
+                }
+            });
+            let result = sync_note(Client::with_timeouts(addr, 3, 5), "user", 123, "PARENT01", NoteSyncOptions {
+                sync_id: "paper", html_path: &html_path, authorized: action != "preview",
+                expected_version, expected_server_id: expected_version.map(|_| "test-instance"),
+            });
+            if expected_status == "conflict" {
+                assert!(result.unwrap_err().to_string().contains("ZOTERO_NOTE_CONFLICT"));
+            } else {
+                let receipt = result.unwrap();
+                assert_eq!(receipt["status"], expected_status);
+                assert!(!receipt.to_string().contains(CREDENTIAL));
+            }
+            handle.join().unwrap();
+        }
+    }
+
     #[test]
     fn bounded_http_framing(){
         let raw=b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n";

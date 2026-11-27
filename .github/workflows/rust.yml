@@ -30,12 +30,17 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - name: Verify repository version alignment and script-free layout
+      - name: Verify repository version alignment and shell syntax
         shell: bash
         run: |
           set -euo pipefail
           bash -n install.sh
+          bash -n literature-zotero2obsidian/scripts/ensure-runtime.sh
           repo_ver="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "$GITHUB_REF_NAME" != "$repo_ver" ]]; then
+            echo "Tag $GITHUB_REF_NAME must equal VERSION ($repo_ver)" >&2
+            exit 1
+          fi
           cargo_ver="$(awk -F'"' '/^version = / {print $2; exit}' rust/Cargo.toml)"
           if [[ "$repo_ver" != "v${cargo_ver}" ]]; then
             echo "VERSION ($repo_ver) must equal v${cargo_ver}" >&2
@@ -88,14 +93,16 @@ jobs:
         working-directory: .
         shell: powershell
         run: |
-          $tokens = $null
-          $parseErrors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $PWD 'install.ps1'), [ref]$tokens, [ref]$parseErrors
-          ) | Out-Null
-          if ($parseErrors.Count -gt 0) {
-            $parseErrors | ForEach-Object { Write-Error $_.Message }
-            exit 1
+          foreach ($scriptFile in @('install.ps1', 'literature-zotero2obsidian/scripts/ensure-runtime.ps1')) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $scriptFile), [ref]$tokens, [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              $parseErrors | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
           }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (Node 24)
         with:

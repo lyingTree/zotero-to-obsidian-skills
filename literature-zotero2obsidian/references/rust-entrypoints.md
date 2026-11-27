@@ -5,7 +5,7 @@
 ## 统一协议
 
 需要精确 schema 时仅按操作名查询，**禁止常规流程整份倾倒 `z2o describe`（注意 `z2o describe` 不支持 `--output` 参数）**：
-- `z2o describe`：检查 `engine=rust`、`version=v2.1.0` 与全部注册 `operations`。
+- `z2o describe`：检查 `engine=rust`、`version=v2.1.1` 与全部注册 `operations`。
 - `z2o describe <operation>`：查询单个操作的位置参数 `args`、关键字参数 `kwargs`、默认值、`request_template` 与核心复合接口的 `parameter_examples`（也可用 `z2o describe --all` 或 `z2o --help`）。
 - 只有 `describe` 中注册的操作才能调用。将 UTF-8 JSON 请求写到实际任务文件，或通过标准输入传给 `z2o invoke -`，例如：
 
@@ -63,6 +63,7 @@
 |---|---|
 | 技能内配置 | `user_profile.preflight`、`user_profile.locate`、`user_profile.load`、`user_profile.save`、`user_profile.patch`（固定写入主技能 `user/profile.json`） |
 | Zotero 只读检查 | `zotero_local.search_items`、`zotero_local.inspect_item`、`zotero_local.catalog`（全库或大结果建议传入 `output_path` 落盘） |
+| Zotero 子笔记同步 | `zotero_local.sync_child_note`（依次提供 `library_type`、`library_id`、`parent_key`、`sync_id`、`html_path`；默认预检，`authorized: true` 写入；更新需提供已核实的 `expected_version` 和 `expected_server_id`） |
 | 文件名 | `format_helpers.build_naming_plan`、`format_helpers.validate_naming_plan` |
 | 属性、来源绑定和回读 | `deterministic_stage_checks.*` |
 | 来源、草稿队列与图件 | `prepare_source_inventory.*`、`docx_source_inventory.*`、`pdf_image_objects.*`、`draft_queue.*` |

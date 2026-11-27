@@ -1,14 +1,22 @@
 ---
 name: literature-zotero2obsidian
-version: v2.1.0
-description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程，支持指定步骤、断点续做和逐篇验收。只改文件名、属性或链接时，转交对应子 skill。
+version: v2.1.1
+description: 编排 Zotero 全文到 Obsidian 文献笔记的完整流程，默认译为中文，支持保留原文、指定步骤、断点续做和逐篇验收。只改文件名、属性或链接时，转交对应子 skill。
 ---
 
+<!-- z2o:first-run:start -->
+若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+<!-- z2o:first-run:end -->
+
 # Zotero → Obsidian 文献流程
+
+需要模板或术语表且目标库尚未配置时，按[模板与术语表配置](references/project-profile.md#模板与术语表配置)向用户确认路径。
 
 机械操作统一通过 [Rust 运行入口](references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行；写作规格与速查先读 [写作速查表](references/writing-cheatsheet.md)（<=4 KB），无需预读全部 11 个子 skill、原始 Templater 脚本或全量术语表。未通过实际验收的能力保持阻断或待核。
 
 每条规则的 ID 用于定位对应证据。
+
+外文默认译为中文。用户要求“不翻译”或“保留原文”时，正文、图表文字和补充材料保留原语言，跳过翻译及译文复核，继续排版、链接、写库和来源核对。记录跳过原因，恢复任务时沿用用户选择。
 
 验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，以 Rust 回写与 SHA-256/`WRITE-A04`/`WRITE-A05` 回读为准；**写入返回 `verified_file_write` 即终态**，禁止调用 `obsidian` CLI 检查阅读视图、反向链接或客户端缓存。
 
@@ -22,7 +30,7 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 2. 读取[写作速查表](references/writing-cheatsheet.md)；仅在遇到特例时按需打开对应子 skill，禁止通读全部 11 个子 skill、41 KB+ 模板 JS 脚本或 328 KB 全量术语表。
 3. 调用 `prepare_source_inventory.prepare_paper` 准备源码（自动优先获取 arXiv TeX + 选择性 PDF 聚类 + 提取 `figure_candidates` + 输出本篇 `matched-glossary.md`）。
 4. 对照 `figure_candidates` 调用 `pdf_image_objects.render_page_regions_batch` 批量裁剪与导出拼图（默认 `transparent: true`、`auto_trim`），仅看拼图微调异常裁框；DOCX 调用 `prepare_sources`。
-5. 撰写完整中文候选稿（普通表可写 GFM 表格），运行 `note_pipeline.process_markdown`（开启 `force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`），只核对返回的 `summary` 与未决位置；若需出链校验则使用 `vault_library.index`（`use_cache: true`）与 `vault_library.match_references_batch`。
+5. 按用户选择撰写完整的译文或原文候选稿（普通表可写 GFM 表格），运行 `note_pipeline.process_markdown`（开启 `force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`），只核对返回的 `summary` 与未决位置；若需出链校验则使用 `vault_library.index`（`use_cache: true`）与 `vault_library.match_references_batch`。
 6. 对程序未判断的译义、图像裁剪内容和引文身份做来源核对；可使用[逐段复核入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)。
 7. **默认已授权并必须写库收尾**：只要用户请求处理/整理某文献至 Obsidian（且未明确限制为仅要方案、审查或离线候选），请求本身即视为对 `[PIPE-C34]` 的授权；直接调用 `vault_publish.publish_standalone`（传 `authorized: true`、`asset_source_dir`、`report_output`）一次完成预检、冲突消歧、备份、写库与 SHA-256 回读，拿到 `verified_file_write` 后即汇报收工。**严禁仅写完部分 `candidate.md`、留有 `<!--PART-->` 占位符或未落盘 Obsidian `.md` 就提前结束对话**。
 
@@ -76,7 +84,7 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 - [PIPE-C36] 主文全部内容（含主文参考文献）排在补充材料之前。
 - [PIPE-C37] 「Zotero原条目」排在文献内容的最后。
 - [PIPE-C38] 参考文献标题参加所在层级的连续编号，例如 `## 10 参考文献`。
-- [PIPE-C39] 仅在用户明确指定时同步 Zotero note。
+- [PIPE-C39] 仅在用户明确指定时调用 `zotero_local.sync_child_note` 同步子笔记，按[Zotero note 兼容](references/project-profile.md#zotero-note-兼容)预检、授权并记录回读结果。
 - [PIPE-C40] 子步骤可独立调用。
 - [PIPE-C41] 按需读取同一 skills 根下的规则。
 - [PIPE-C42] 按需读取同一 skills 根下的工具说明。
@@ -100,7 +108,7 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 |---|---|---|---|
 | 1 | [literature-inspect-zotero](../literature-inspect-zotero/SKILL.md) | 读取条目信息、集合全路径、语言与附件状态 | item.json |
 | 2 | [literature-fulltext-extract](../literature-fulltext-extract/SKILL.md) | 多格式全文提取、按需 OCR、分段与断行修复 | source.md、source-map.json、assets/ |
-| 3 | [literature-translate-zh](../literature-translate-zh/SKILL.md) | 按语言分流，结合术语表翻译 | translated.md 或中文原文复用记录 |
+| 3 | [literature-translate-zh](../literature-translate-zh/SKILL.md) | 按用户选择和文献语言决定是否翻译 | translated.md 或原文复用记录 |
 | 4 | [literature-write2obsidian](../literature-write2obsidian/SKILL.md) | 规划目录；最后提交、回读和恢复 | 写入计划、write-receipt.json |
 | 5 | [literature-filename](../literature-filename/SKILL.md) | 文件名规范、长度与冲突处理 | 命名计划 |
 | 6 | [literature-note-properties](../literature-note-properties/SKILL.md) | 构建最小笔记属性 | drafts/06-properties.md |
@@ -108,7 +116,7 @@ description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程�
 | 8 | [literature-body-format](../literature-body-format/SKILL.md) | 正文排版、图表公式呈现及书目编号 | drafts/08-body.md |
 | 9 | [literature-internal-links](../literature-internal-links/SKILL.md) | 本篇图、表、公式、引文的链接 | drafts/09-internal.md、link-map.json |
 | 10 | [literature-library-links](../literature-library-links/SKILL.md) | 参考文献指向库内其他文献的出链 | drafts/10-library.md、匹配记录 |
-| 11 | [literature-supplement-materials](../literature-supplement-materials/SKILL.md) | SI 文本、图、表、视频的提取与翻译，合并为正文后章节（第 8 步前执行） | si.md、si-map.json、drafts/11-supplement.md |
+| 11 | [literature-supplement-materials](../literature-supplement-materials/SKILL.md) | 提取 SI 文本、图、表和视频，按用户选择保留原文或翻译，合并为正文后章节（第 8 步前执行） | si.md、si-map.json、drafts/11-supplement.md |
 
 ## 执行步骤
 
