@@ -1,6 +1,6 @@
 ---
 name: literature-header-format
-version: v2.0.3
+version: v2.0.4
 description: 核对并规范文献的原文标题、中文译名、作者、单位、通讯标记和邮箱区域。用于题头构建或修复，不改 YAML 属性及正文论述。
 ---
 

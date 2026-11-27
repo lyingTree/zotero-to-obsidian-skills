@@ -1,6 +1,6 @@
 ---
 name: literature-supplement-materials
-version: v2.0.3
+version: v2.0.4
 description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、表、视频），合并为正文后的补充材料章节；在第 8 步排版与第 9 步链接之前执行。
 ---
 
