@@ -1,6 +1,6 @@
 ---
 name: literature-write2obsidian
-version: v2.0.4
+version: v2.1.0
 description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已完成的候选稿、资源和命名变更，备份后直接读取文件验证。支持仅规划或只提交，不负责提取、翻译和内容重写。
 ---
 

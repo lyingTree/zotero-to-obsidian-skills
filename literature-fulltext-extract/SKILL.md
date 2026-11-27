@@ -1,6 +1,6 @@
 ---
 name: literature-fulltext-extract
-version: v2.0.4
+version: v2.1.0
 description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF 按页 OCR 及 DOCX、HTML、EPUB、文本等格式，修复版面断行并保留来源定位。不负责翻译或写入 Obsidian。
 ---
 

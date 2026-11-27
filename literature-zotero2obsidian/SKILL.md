@@ -1,6 +1,6 @@
 ---
 name: literature-zotero2obsidian
-version: v2.0.4
+version: v2.1.0
 description: 编排 Zotero 全文到 Obsidian 中文文献笔记的完整流程，支持指定步骤、断点续做和逐篇验收。只改文件名、属性或链接时，转交对应子 skill。
 ---
 

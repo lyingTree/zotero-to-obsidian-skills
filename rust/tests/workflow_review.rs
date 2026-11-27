@@ -180,7 +180,7 @@ fn complete_workflow_reaches_records_ready_and_commits_to_vault() {
     fs::create_dir_all(skills.join("minimal-skill")).unwrap();
     fs::write(
         skills.join("minimal-skill/SKILL.md"),
-        "---\nname: minimal-skill\nversion: v2.0.4\ndescription: E2E fixture\n---\n\n- [ ] [MIN-A01] Actual candidate check recorded. <!-- check-type: offline_outcome -->\n",
+        "---\nname: minimal-skill\nversion: v2.1.0\ndescription: E2E fixture\n---\n\n- [ ] [MIN-A01] Actual candidate check recorded. <!-- check-type: offline_outcome -->\n",
     )
     .unwrap();
     let work = root.join("work");

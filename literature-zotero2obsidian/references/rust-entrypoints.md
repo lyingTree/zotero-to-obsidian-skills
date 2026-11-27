@@ -5,7 +5,7 @@
 ## 统一协议
 
 需要精确 schema 时仅按操作名查询，**禁止常规流程整份倾倒 `z2o describe`（注意 `z2o describe` 不支持 `--output` 参数）**：
-- `z2o describe`：检查 `engine=rust`、`version=v2.0.4` 与全部注册 `operations`。
+- `z2o describe`：检查 `engine=rust`、`version=v2.1.0` 与全部注册 `operations`。
 - `z2o describe <operation>`：查询单个操作的位置参数 `args`、关键字参数 `kwargs`、默认值、`request_template` 与核心复合接口的 `parameter_examples`（也可用 `z2o describe --all` 或 `z2o --help`）。
 - 只有 `describe` 中注册的操作才能调用。将 UTF-8 JSON 请求写到实际任务文件，或通过标准输入传给 `z2o invoke -`，例如：
 

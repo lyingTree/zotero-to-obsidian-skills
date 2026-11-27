@@ -1,6 +1,6 @@
 ---
 name: literature-translate-zh
-version: v2.0.4
+version: v2.1.0
 description: 根据已核实的文献语言和项目术语表，将原文 Markdown 完整译成中文；中文文献复用原稿，混合文献按内容块分流。用于全文翻译或已有译文的指定部分修订。
 ---
 

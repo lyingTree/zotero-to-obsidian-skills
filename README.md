@@ -1,6 +1,6 @@
 # zotero-to-obsidian-skills
 
-将 Zotero 文献全文处理为 Obsidian 中文文献笔记的 Agent 技能包（版本 `v2.0.4`），含 12 个 `literature-*` 技能与 Rust 运行器 `z2o`，另配两个外部依赖技能。适用于支持 Agent Skills（`SKILL.md`）的宿主。
+将 Zotero 文献全文处理为 Obsidian 中文文献笔记的 Agent 技能包（版本 `v2.1.0`），含 12 个 `literature-*` 技能与 Rust 运行器 `z2o`，另配两个外部依赖技能。适用于支持 Agent Skills（`SKILL.md`）的宿主。
 
 ## 组成
 
@@ -8,18 +8,18 @@
 
 | 技能 | 版本 | 职责 |
 |---|---|---|
-| `literature-zotero2obsidian` | `v2.0.4` | 主编排：Zotero → Obsidian 全流程 |
-| `literature-inspect-zotero` | `v2.0.4` | 读取条目、集合、语言、附件状态 |
-| `literature-fulltext-extract` | `v2.0.4` | 多格式全文提取、按需 OCR、断行修复 |
-| `literature-translate-zh` | `v2.0.4` | 按术语表翻译为中文 |
-| `literature-write2obsidian` | `v2.0.4` | 目录规划、提交、回读与恢复 |
-| `literature-filename` | `v2.0.4` | 文件名规范与冲突处理 |
-| `literature-note-properties` | `v2.0.4` | Obsidian YAML 属性 |
-| `literature-header-format` | `v2.0.4` | 标题、作者、单位、通讯身份 |
-| `literature-body-format` | `v2.0.4` | 正文排版、图表公式、书目编号 |
-| `literature-internal-links` | `v2.0.4` | 篇内图/表/公式/引文链接 |
-| `literature-library-links` | `v2.0.4` | 参考文献指向库内其他文献的出链 |
-| `literature-supplement-materials` | `v2.0.4` | 补充材料（SI）提取与翻译 |
+| `literature-zotero2obsidian` | `v2.1.0` | 主编排：Zotero → Obsidian 全流程 |
+| `literature-inspect-zotero` | `v2.1.0` | 读取条目、集合、语言、附件状态 |
+| `literature-fulltext-extract` | `v2.1.0` | 多格式全文提取、按需 OCR、断行修复 |
+| `literature-translate-zh` | `v2.1.0` | 按术语表翻译为中文 |
+| `literature-write2obsidian` | `v2.1.0` | 目录规划、提交、回读与恢复 |
+| `literature-filename` | `v2.1.0` | 文件名规范与冲突处理 |
+| `literature-note-properties` | `v2.1.0` | Obsidian YAML 属性 |
+| `literature-header-format` | `v2.1.0` | 标题、作者、单位、通讯身份 |
+| `literature-body-format` | `v2.1.0` | 正文排版、图表公式、书目编号 |
+| `literature-internal-links` | `v2.1.0` | 篇内图/表/公式/引文链接 |
+| `literature-library-links` | `v2.1.0` | 参考文献指向库内其他文献的出链 |
+| `literature-supplement-materials` | `v2.1.0` | 补充材料（SI）提取与翻译 |
 
 ## 支持平台（预编译分发）
 

@@ -1,6 +1,6 @@
 ---
 name: literature-body-format
-version: v2.0.4
+version: v2.1.0
 description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段落、图表公式及参考文献编号。保留内容语义和既有锚点，不承担翻译或引用目标匹配。
 ---
 
