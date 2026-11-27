@@ -32,7 +32,9 @@ GitHub Releases 提供五大平台的预编译技能包与 `z2o` 二进制，直
 
 ## 安装
 
-运行 [install.ps1](install.ps1)（Windows）或 [install.sh](install.sh)（Linux / macOS），脚本会自动识别当前平台、从 GitHub Release 下载对应预编译包、校验 `SHA256SUMS.txt` 与 `package.json`，并调用包内 `z2o install` 将 12 个技能的 `.md` 文档与 `literature-zotero2obsidian/runtime/z2o[.exe]` 原子安装到目标 Skills 目录（同时按 [dependencies.lock.json](dependencies.lock.json) 拉取 `obsidian-cli` 与 `zotero-skills`）：
+运行 [install.ps1](install.ps1)（Windows）或 [install.sh](install.sh)（Linux / macOS），脚本会自动识别当前平台、从 GitHub Release 下载对应一体化预编译包、校验 `SHA256SUMS.txt` 与 `package.json`，并调用包内 `z2o install` 将 12 个技能的 `.md` 文档、`literature-zotero2obsidian/runtime/z2o[.exe]` 以及内置 PP-OCRv6 / 版面 / 表格 ONNX 运行时（`runtime/ocr/`）一次性原子安装到目标 Skills 目录（同时按 [dependencies.lock.json](dependencies.lock.json) 拉取 `obsidian-cli` 与 `zotero-skills`），**开箱即用，无首次运行额外模型下载弹窗**。
+
+内置纯 Rust 全格式解析（PDF / DOCX / HTML / EPUB / ODT / TXT / MD / arXiv TeX 自动编码转码）与 4 层零乱码防火墙（`pdf-inspector` + `lopdf` 字体 CMap 审计 + 300 DPI PP-OCRv6 自动修复 / `ocr-verify-sheet.png` 视觉拼图 + 写库硬门禁），杜绝乱码流入最终 Obsidian 笔记。
 
 ```powershell
 # Windows

@@ -115,6 +115,81 @@ fn actual_offline_install_reuse_backup_and_tamper_protection(){
 }
 
 #[test]
+fn all_in_one_package_with_bundled_ocr_installs_discovers_and_detects_tamper(){
+    let root=tempfile::tempdir().unwrap();let base=root.path();
+    let source=base.join("source");fs::create_dir(&source).unwrap();
+    for &name in SKILLS{
+        let p=source.join(name);fs::create_dir(&p).unwrap();
+        fs::write(p.join("SKILL.md"),format!("---\nname: {name}\nversion: v{ENGINE_VERSION}\ndescription: test\n---\n\n# Bundled test skill\n")).unwrap();
+    }
+    let ocr_dir=base.join("ocr-fixture");fs::create_dir(&ocr_dir).unwrap();
+    let write_asset=|rel:&str,data:&[u8]|->Value{
+        let p=ocr_dir.join(rel);
+        fs::write(&p,data).unwrap();
+        json!({"path":rel,"sha256":files::digest(data)})
+    };
+    let ocr_manifest=json!({
+        "schema_version":1,
+        "engine":"ppocr-v6",
+        "runtime":{
+            "platform":std::env::consts::OS,
+            "architecture":std::env::consts::ARCH,
+            "version":"1.32.0",
+            "execution_provider":"CPUExecutionProvider",
+            "file":write_asset("onnxruntime.bin",b"fixture-ort-runtime-bytes")
+        },
+        "profiles":{
+            "medium":{
+                "detector":write_asset("det.onnx",b"fixture-det-onnx"),
+                "recognizer":write_asset("rec.onnx",b"fixture-rec-onnx"),
+                "dictionary":write_asset("dict.txt",b"a\nb\nc\n")
+            }
+        },
+        "auxiliary":{
+            "layout":write_asset("layout.onnx",b"fixture-layout-onnx"),
+            "orientation":write_asset("ori.onnx",b"fixture-ori-onnx"),
+            "table_structure":{
+                "architecture":"SLANet_plus",
+                "model":write_asset("table.onnx",b"fixture-table-onnx"),
+                "dictionary":write_asset("table_dict.txt",b"<td>\n</td>\n")
+            }
+        }
+    });
+    let ocr_bytes=serde_json::to_vec_pretty(&ocr_manifest).unwrap();
+    let ocr_sha=files::digest(&ocr_bytes);
+    fs::write(ocr_dir.join("package.json"),&ocr_bytes).unwrap();
+    fs::write(ocr_dir.join("package.sha256"),format!("{ocr_sha}\n")).unwrap();
+
+    let exe=Path::new(env!("CARGO_BIN_EXE_z2o"));
+    let bundle=base.join("bundle");
+    let pkg=success(run(exe,&["package",path(&source),path(&bundle),"--ocr-bundle",path(&ocr_dir)]));
+    assert_eq!(pkg["ocr_bundled"],true);
+    assert_eq!(pkg["ocr_manifest_sha256"],ocr_sha);
+    let manifest=bundle.join("package.json");
+    let sha=files::snapshot(&manifest).unwrap()["sha256"].as_str().unwrap().to_owned();
+
+    let installed=base.join("skills");fs::create_dir(&installed).unwrap();
+    let receipt=success(run(exe,&["install",path(&manifest),&sha,path(&installed)]));
+    assert_eq!(receipt["ocr_bundled"],true);
+
+    let installed_exe=installed.join(SKILLS[0]).join("runtime").join(if cfg!(windows){"z2o.exe"}else{"z2o"});
+    let desc=success(run(&installed_exe,&["describe"]));
+    assert_eq!(desc["ocr_backend"]["qualification"],"bundled_package");
+    assert_eq!(desc["ocr_backend"]["bundled_status"]["available"],true);
+    assert_eq!(desc["ocr_backend"]["bundled_status"]["source"],"exe_adjacent");
+    assert_eq!(desc["ocr_backend"]["bundled_status"]["manifest_sha256"],ocr_sha);
+
+    let verified=success(run(&installed_exe,&["verify-install",path(&manifest),&sha,path(&installed)]));
+    assert_eq!(verified["ocr_bundled"],true);
+
+    let det=installed.join(SKILLS[0]).join("runtime").join("ocr").join("det.onnx");
+    fs::write(&det,b"tampered-det-onnx").unwrap();
+    let mismatch=run(&installed_exe,&["verify-install",path(&manifest),&sha,path(&installed)]);
+    assert!(!mismatch.status.success());
+    assert!(String::from_utf8_lossy(&mismatch.stderr).contains("NATIVE_INSTALLED_FILE_MISMATCH"));
+}
+
+#[test]
 fn repository_skill_entrypoints_are_rust_only(){
     let root=Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let repo_ver=fs::read_to_string(root.join("VERSION")).unwrap().trim().to_owned();

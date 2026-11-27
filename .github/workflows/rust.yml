@@ -6,6 +6,12 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      bundle_ocr:
+        description: 'Bundle pinned PP-OCRv6 + ORT 1.32.0 runtime into platform release archives'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -71,7 +77,7 @@ jobs:
           - runner: macos-15
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     defaults:
       run:
         working-directory: rust
@@ -103,6 +109,191 @@ jobs:
         run: cargo +1.95.0 test --locked --target ${{ matrix.target }}
       - name: Build release executable for the exact target
         run: cargo +1.95.0 build --locked --release --target ${{ matrix.target }}
+      - name: Stage pinned PP-OCRv6 + ONNX Runtime bundle (releases and workflow_dispatch)
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.bundle_ocr != false)
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          PY_BIN=""
+          for cand in python3 python; do
+            if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import sys; assert sys.version_info >= (3, 8)" >/dev/null 2>&1; then
+              PY_BIN="$(command -v "$cand")"
+              break
+            fi
+          done
+          if [[ -z "$PY_BIN" ]]; then
+            echo "Python 3.8+ required on CI runner to stage OCR bundle" >&2
+            exit 1
+          fi
+          ocr_bundle="$RUNNER_TEMP/z2o-ocr-bundle-${TARGET_TRIPLE}"
+          rm -rf "$ocr_bundle"
+          mkdir -p "$ocr_bundle"
+          "$PY_BIN" - "$ocr_bundle" "$TARGET_TRIPLE" <<'PY'
+          import hashlib, io, json, pathlib, re, sys, time, urllib.request, zipfile
+
+          out_dir = pathlib.Path(sys.argv[1])
+          target = sys.argv[2]
+          cpu_assets = json.loads(pathlib.Path("ocr-cpu-assets.json").read_text(encoding="utf-8"))
+          bundle_assets = json.loads(pathlib.Path("ocr-bundle-assets.json").read_text(encoding="utf-8"))
+          tinfo = cpu_assets["targets"][target]
+
+          def sha256_bytes(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+
+          def read_url_with_retry(url: str, timeout: int) -> bytes:
+              for attempt in range(1, 4):
+                  try:
+                      req = urllib.request.Request(url, headers={"User-Agent": "z2o-release-builder/1.0"})
+                      with urllib.request.urlopen(req, timeout=timeout) as resp:
+                          return resp.read()
+                  except Exception as exc:
+                      if attempt == 3:
+                          raise
+                      print(f"Transient download error ({url}, attempt {attempt}): {exc}", file=sys.stderr, flush=True)
+                      time.sleep(2 * attempt)
+              raise RuntimeError(f"Unreachable retry state for {url}")
+
+          def fetch_verified(url: str, expected_sha: str, expected_size=None) -> bytes:
+              data = read_url_with_retry(url, timeout=180)
+              actual_sha = sha256_bytes(data)
+              if actual_sha != expected_sha:
+                  raise RuntimeError(f"SHA-256 mismatch for {url}: expected {expected_sha}, got {actual_sha}")
+              if expected_size is not None and len(data) != expected_size:
+                  raise RuntimeError(f"Size mismatch for {url}: expected {expected_size}, got {len(data)}")
+              return data
+
+          def write_asset(filename: str, data: bytes) -> dict:
+              dest = out_dir / filename
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              dest.write_bytes(data)
+              return {"path": filename, "sha256": sha256_bytes(data)}
+
+          def extract_character_dict(yml_bytes: bytes) -> bytes:
+              text = yml_bytes.decode("utf-8")
+              try:
+                  import yaml  # type: ignore
+                  doc = yaml.safe_load(text)
+                  chars = doc["PostProcess"]["character_dict"]
+                  if not chars:
+                      raise RuntimeError("Empty PostProcess.character_dict")
+                  return ("\n".join(str(c) for c in chars) + "\n").encode("utf-8")
+              except ImportError:
+                  pass
+              out = []
+              in_pp = False
+              in_dict = False
+              dict_indent = None
+              for raw_line in text.splitlines():
+                  if not raw_line.strip():
+                      continue
+                  indent = len(raw_line) - len(raw_line.lstrip(" "))
+                  stripped = raw_line.strip()
+                  if indent == 0:
+                      in_pp = (stripped == "PostProcess:")
+                      in_dict = False
+                      continue
+                  if in_pp and stripped == "character_dict:":
+                      in_dict = True
+                      dict_indent = indent
+                      continue
+                  if in_dict:
+                      if stripped.startswith("- ") and indent >= dict_indent:
+                          val = stripped[2:]
+                          if len(val) >= 2 and val[0] == "'" and val[-1] == "'":
+                              val = val[1:-1].replace("''", "'")
+                          elif len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+                              val = json.loads(re.sub(r'\\x([0-9a-fA-F]{2})', r'\\u00\1', val))
+                          out.append(val)
+                      elif indent <= dict_indent:
+                          break
+              if not out:
+                  raise RuntimeError("Could not extract PostProcess.character_dict from YAML")
+              return ("\n".join(out) + "\n").encode("utf-8")
+
+          # 1. Download and verify pinned ONNX Runtime wheel for this target
+          rt_ver = cpu_assets["version"]
+          pypi_meta = json.loads(
+              read_url_with_retry(f"https://pypi.org/pypi/onnxruntime/{rt_ver}/json", timeout=60).decode("utf-8")
+          )
+          wheel_url = next((u["url"] for u in pypi_meta["urls"] if u["filename"] == tinfo["wheel"]), None)
+          if not wheel_url:
+              raise RuntimeError(f"Wheel {tinfo['wheel']} not found on PyPI for onnxruntime {rt_ver}")
+          wheel_bytes = fetch_verified(wheel_url, tinfo["sha256"])
+
+          runtime_file_rec = None
+          dep_recs = []
+          with zipfile.ZipFile(io.BytesIO(wheel_bytes)) as zf:
+              members_by_name = {}
+              for info in zf.infolist():
+                  if info.is_dir():
+                      continue
+                  base = pathlib.PurePosixPath(info.filename).name
+                  members_by_name.setdefault(base, info.filename)
+              for cand in tinfo["runtime_names"]:
+                  if cand in members_by_name:
+                      runtime_file_rec = write_asset(cand, zf.read(members_by_name[cand]))
+                      break
+              if runtime_file_rec is None:
+                  raise RuntimeError(f"Missing runtime binary {tinfo['runtime_names']} in {tinfo['wheel']}")
+              for dep in tinfo.get("dependencies", []):
+                  if dep in members_by_name:
+                      dep_recs.append(write_asset(dep, zf.read(members_by_name[dep])))
+
+          # 2. Download and verify pinned PaddlePaddle ONNX models
+          profiles_manifest = {}
+          for prof_name in bundle_assets["default_bundled_profiles"]:
+              prof = bundle_assets["profiles"][prof_name]
+              det_bytes = fetch_verified(prof["detector"]["url"], prof["detector"]["sha256"], prof["detector"]["size"])
+              rec_bytes = fetch_verified(prof["recognizer"]["url"], prof["recognizer"]["sha256"], prof["recognizer"]["size"])
+              yml_bytes = fetch_verified(prof["dictionary_yaml"]["url"], prof["dictionary_yaml"]["sha256"], prof["dictionary_yaml"]["size"])
+              dict_bytes = extract_character_dict(yml_bytes)
+              profiles_manifest[prof_name] = {
+                  "detector": write_asset(prof["detector"]["filename"], det_bytes),
+                  "recognizer": write_asset(prof["recognizer"]["filename"], rec_bytes),
+                  "dictionary": write_asset(prof["dictionary_yaml"]["extracted_dictionary"], dict_bytes),
+              }
+
+          aux = bundle_assets["auxiliary"]
+          layout_bytes = fetch_verified(aux["layout"]["url"], aux["layout"]["sha256"], aux["layout"]["size"])
+          ori_bytes = fetch_verified(aux["orientation"]["url"], aux["orientation"]["sha256"], aux["orientation"]["size"])
+          tbl = aux["table_structure"]
+          tbl_model_bytes = fetch_verified(tbl["model"]["url"], tbl["model"]["sha256"], tbl["model"]["size"])
+          tbl_yml_bytes = fetch_verified(tbl["dictionary_yaml"]["url"], tbl["dictionary_yaml"]["sha256"], tbl["dictionary_yaml"]["size"])
+          tbl_dict_bytes = extract_character_dict(tbl_yml_bytes)
+
+          runtime_obj = {
+              "platform": tinfo["platform"],
+              "architecture": tinfo["architecture"],
+              "version": rt_ver,
+              "execution_provider": "CPUExecutionProvider",
+              "file": runtime_file_rec,
+          }
+          if dep_recs:
+              runtime_obj["dependencies"] = dep_recs
+
+          pkg = {
+              "schema_version": 1,
+              "engine": "ppocr-v6",
+              "runtime": runtime_obj,
+              "profiles": profiles_manifest,
+              "auxiliary": {
+                  "layout": write_asset(aux["layout"]["filename"], layout_bytes),
+                  "orientation": write_asset(aux["orientation"]["filename"], ori_bytes),
+                  "table_structure": {
+                      "architecture": tbl["architecture"],
+                      "model": write_asset(tbl["model"]["filename"], tbl_model_bytes),
+                      "dictionary": write_asset(tbl["dictionary_yaml"]["extracted_dictionary"], tbl_dict_bytes),
+                  },
+              },
+          }
+          pkg_bytes = (json.dumps(pkg, indent=2) + "\n").encode("utf-8")
+          pkg_sha = sha256_bytes(pkg_bytes)
+          (out_dir / "package.json").write_bytes(pkg_bytes)
+          (out_dir / "package.sha256").write_text(pkg_sha + "\n", encoding="utf-8")
+          print(f"Staged OCR bundle for {target}: sha256={pkg_sha}, profiles={list(profiles_manifest.keys())}")
+          PY
       - name: Package skill bundle, verify installation, and stage release archives
         shell: bash
         run: |
@@ -111,13 +302,18 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then suffix=".exe"; fi
           exe="$(pwd)/target/${{ matrix.target }}/release/z2o${suffix}"
           bundle="$RUNNER_TEMP/z2o-rust-bundle-${{ matrix.target }}"
+          ocr_bundle="$RUNNER_TEMP/z2o-ocr-bundle-${{ matrix.target }}"
           installed="$RUNNER_TEMP/z2o rust installed 中文"
           dist="$RUNNER_TEMP/release-dist-${{ matrix.target }}"
           rm -rf "$bundle" "$installed" "$dist"
           mkdir -p "$dist"
 
           "$exe" describe > "$RUNNER_TEMP/z2o-describe.json"
-          "$exe" package .. "$bundle"
+          if [[ -f "$ocr_bundle/package.json" ]]; then
+            "$exe" package .. "$bundle" --ocr-bundle "$ocr_bundle"
+          else
+            "$exe" package .. "$bundle"
+          fi
           if command -v sha256sum >/dev/null 2>&1; then
             digest="$(sha256sum < "$bundle/package.json" | awk '{print $1}' | tr -d '\r')"
           else
@@ -125,6 +321,10 @@ jobs:
           fi
           [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
           PATH="" "$exe" install "$bundle/package.json" "$digest" "$installed" > "$RUNNER_TEMP/z2o-install-receipt.json"
+          if [[ -f "$ocr_bundle/package.json" ]]; then
+            installed_exe="$installed/literature-zotero2obsidian/runtime/z2o${suffix}"
+            "$installed_exe" describe | grep -q '"source":"exe_adjacent"'
+          fi
           export Z2O_INSTALLED_SKILLS="$installed"
           export Z2O_INSTALL_MANIFEST="$bundle/package.json"
           export Z2O_INSTALL_RECEIPT="$RUNNER_TEMP/z2o-install-receipt.json"
@@ -162,7 +362,7 @@ jobs:
     needs: [rust]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: write
     env:

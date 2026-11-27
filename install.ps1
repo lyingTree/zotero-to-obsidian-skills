@@ -1,8 +1,9 @@
 #Requires -Version 5.1
 <#
-  Install the 12 literature-* skills (with precompiled Rust runtime/z2o.exe)
+  All-in-one installer for the 12 literature-* skills, precompiled Rust runtime/z2o.exe,
+  and bundled PP-OCRv6 OCR/layout/table runtime (when included in the release bundle)
   from GitHub Releases, plus optional external dependency skills (obsidian-cli, zotero-skills).
-  No local compilation required.
+  No local compilation and no first-run OCR download prompts required.
 
   Usage:
     ./install.ps1 [-SkillsRoot <dir>] [-Version <tag>] [-Repo <owner/repo>] [-SkipExternalDependencies]
@@ -109,7 +110,7 @@ try {
   }
   $resolvedSkillsRoot = (Resolve-Path $SkillsRoot).Path
 
-  Write-Host "==> Installing 12 literature-* skills into $resolvedSkillsRoot ..."
+  Write-Host "==> Installing 12 literature-* skills, runtime/z2o.exe, and any bundled OCR runtime into $resolvedSkillsRoot ..."
   $installOutput = & $z2oExe install $manifestPath $manifestSha $resolvedSkillsRoot
   if ($LASTEXITCODE -ne 0) {
     throw "z2o install failed with exit code $LASTEXITCODE"
@@ -117,10 +118,11 @@ try {
   Write-Host $installOutput
 
   $installedZ2o = Join-Path $resolvedSkillsRoot "literature-zotero2obsidian\runtime\z2o.exe"
-  & $installedZ2o verify-install $manifestPath $manifestSha $resolvedSkillsRoot | Out-Null
+  $verifyOutput = & $installedZ2o verify-install $manifestPath $manifestSha $resolvedSkillsRoot
   if ($LASTEXITCODE -ne 0) {
     throw "z2o verify-install failed with exit code $LASTEXITCODE"
   }
+  Write-Host $verifyOutput
 
   if (-not $SkipExternalDependencies) {
     $lockFile = Join-Path $PSScriptRoot "dependencies.lock.json"

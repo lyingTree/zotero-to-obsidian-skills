@@ -46,7 +46,7 @@ pub fn defaults()->Value{
         "zotero_library":null,
         "templates":{},
         "preferences":{
-            "formula_table_enhancement":"unasked",
+            "formula_table_enhancement":"bundled",
             "arxiv_tex_auto":true,
             "transparent_figure":"preserve_original"
         },
@@ -125,7 +125,7 @@ fn validate(profile:&Value)->Result<()>{
     }
     let preferences=m.get("preferences").and_then(Value::as_object).context("profile preferences must be an object")?;
     ensure!(preferences.get("formula_table_enhancement").and_then(Value::as_str)
-        .is_some_and(|s|matches!(s,"unasked"|"native"|"ocr")),"formula_table_enhancement must be unasked, native or ocr");
+        .is_some_and(|s|matches!(s,"bundled"|"unasked"|"native"|"ocr")),"formula_table_enhancement must be bundled, unasked, native or ocr");
     ensure!(preferences.get("arxiv_tex_auto").is_none_or(Value::is_boolean),"arxiv_tex_auto must be boolean");
     ensure!(preferences.get("transparent_figure").and_then(Value::as_str)
         .is_none_or(|s|matches!(s,"preserve_original"|"white")),"transparent_figure must be preserve_original or white");
@@ -454,11 +454,12 @@ pub fn locate(skill_root:Option<&Path>)->Result<Value>{
 pub fn load(skill_root:Option<&Path>,verify_paths:bool)->Result<Value>{
     let loc=locate(skill_root)?;
     let p=path(&loc["profile_path"])?;
+    let ocr_bundled=crate::ocr_backend::bundled_status();
     if !p.is_file(){
-        let mut profile=defaults();
-        profile["onboarding"]=json!({"formula_table_enhancement_question":"pending"});
+        let profile=defaults();
         return Ok(json!({"schema_version":1,"status":"uninitialized","profile":profile,
-            "profile_path":loc["profile_path"],"onboarding_pending":true,"generic_user_directory_used":false}));
+            "profile_path":loc["profile_path"],"onboarding_pending":false,"ocr_bundled_status":ocr_bundled,
+            "generic_user_directory_used":false}));
     }
     check_write::no_link(&p)?;
     ensure!(fs::metadata(&p)?.len()<=MAX_BYTES,"profile exceeds size budget");
@@ -471,11 +472,10 @@ pub fn load(skill_root:Option<&Path>,verify_paths:bool)->Result<Value>{
         if k!="updated_at"&&profile.get(k).is_none(){profile[k]=v.clone();}
     }
     let validation=if verify_paths{validate_paths(&profile)?}else{json!({"valid":null,"paths":{}})};
-    let pending=profile["preferences"]["formula_table_enhancement"]=="unasked";
     Ok(json!({"schema_version":1,"status":if validation["valid"]==false{"stale_paths"}else{"configured"},
         "profile":profile,"profile_binding":b,"profile_path":loc["profile_path"],
-        "validation":validation,"onboarding_pending":pending,
-        "next_step":if pending{"Ask once whether to install optional formula/table OCR enhancement; otherwise use the built-in PDF path."}else{"Reuse the recorded paths; do not search again unless a recorded path is missing or the user changes it."},
+        "validation":validation,"onboarding_pending":false,"ocr_bundled_status":ocr_bundled,
+        "next_step":"Reuse the recorded paths; do not search again unless a recorded path is missing or the user changes it.",
         "generic_user_directory_used":false}))
 }
 pub fn save(profile:Value,skill_root:Option<&Path>)->Result<Value>{
@@ -513,7 +513,7 @@ pub fn arxiv_tex_enabled(profile:Option<&Value>)->bool{
     profile.and_then(|p|p["preferences"]["arxiv_tex_auto"].as_bool()).unwrap_or(true)
 }
 pub fn formula_table_mode(profile:Option<&Value>)->&str{
-    profile.and_then(|p|p["preferences"]["formula_table_enhancement"].as_str()).unwrap_or("unasked")
+    profile.and_then(|p|p["preferences"]["formula_table_enhancement"].as_str()).unwrap_or("bundled")
 }
 pub fn ensure_profile_binding(profile:&Value)->Result<()>{
     validate(profile).map_err(|e|anyhow!("invalid persisted profile: {e:#}"))
@@ -711,8 +711,19 @@ mod tests{
         let d=root();let skill=d.path();
         let canonical_skill=files::canonical(skill).unwrap();
         let first=load(Some(skill),true).unwrap();
-        assert_eq!(first["status"],"uninitialized");assert_eq!(first["onboarding_pending"],true);
+        assert_eq!(first["status"],"uninitialized");
+        assert_eq!(first["onboarding_pending"],false);
+        assert_eq!(first["profile"]["preferences"]["formula_table_enhancement"],"bundled");
+        assert!(first["ocr_bundled_status"].is_object());
         assert!(first["profile_path"].as_str().unwrap().starts_with(&path_text(&canonical_skill).unwrap()));
+        let mut legacy=first["profile"].clone();
+        legacy["paths"]["obsidian_vault_root"]=json!(path_text(&canonical_skill).unwrap());
+        legacy["preferences"]["formula_table_enhancement"]=json!("unasked");
+        save(legacy,Some(skill)).unwrap();
+        let legacy_loaded=load(Some(skill),true).unwrap();
+        assert_eq!(legacy_loaded["status"],"configured");
+        assert_eq!(legacy_loaded["onboarding_pending"],false);
+        assert_eq!(legacy_loaded["profile"]["preferences"]["formula_table_enhancement"],"unasked");
         let mut profile=first["profile"].clone();
         profile["paths"]["obsidian_vault_root"]=json!(path_text(&canonical_skill).unwrap());
         profile["preferences"]["formula_table_enhancement"]=json!("native");

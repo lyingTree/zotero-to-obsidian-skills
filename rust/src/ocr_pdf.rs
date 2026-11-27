@@ -74,8 +74,9 @@ pub fn classify(native:&Value,structure:&Value)->Value{
     let text=native["plain_text"].as_str().unwrap_or("");
     let count=text.chars().filter(|c|!c.is_whitespace()&&!c.is_control()).count();
     let unknown=text.chars().filter(|c|*c=='\u{fffd}'||*c=='\0').count();
+    let quality=crate::mojibake::analyze_text(text);
     let text_uncertain=native["status"]=="unavailable"||native["truncated"]==true||
-        native["warnings"].as_array().is_some_and(|a|!a.is_empty())||unknown>0;
+        native["warnings"].as_array().is_some_and(|a|!a.is_empty())||unknown>0||quality.is_garbled;
     let calls=structure["occurrences"].as_array();
     let structure_uncertain=structure["status"]!="structurally_indexed"||calls.is_none();
     let images=calls.map_or(0,Vec::len);
@@ -96,6 +97,7 @@ pub fn classify(native:&Value,structure:&Value)->Value{
     }else{("native_text_candidate",false,false)};
     json!({"kind":kind,"ocr_whole_page":ocr_whole,"region_review_required":review,
         "nonspace_character_count":count,"replacement_character_count":unknown,
+        "mojibake_reasons":quality.reasons,
         "native_text_uncertain":text_uncertain,"structure_uncertain":structure_uncertain,
         "image_occurrence_count":images,"largest_image_page_area_fraction":coverage,
         "classification_is_heuristic":true,"source_fidelity":"not_assessed"})
@@ -177,15 +179,23 @@ fn regions(v:&Value,coord_system:&Value,pages:usize)->Result<BTreeMap<u64,Vec<[f
 }
 
 struct Lazy<'a>{
-    options:&'a Options<'a>,engine:Option<ocr_backend::Engine>,init_error:Option<String>,
+    options:&'a Options<'a>,
+    bundled_manifest:Option<(PathBuf,String)>,
+    engine:Option<ocr_backend::Engine>,
+    init_error:Option<String>,
 }
 impl Lazy<'_>{
     fn get(&mut self)->Result<&mut ocr_backend::Engine>{
         if let Some(e)=self.init_error.as_ref(){anyhow::bail!("{e}");}
         if self.engine.is_none(){
             let result=(||->Result<ocr_backend::Engine>{
-                let package=self.options.package_manifest.context("OCR_RESOURCES_REQUIRED: install the verified CPU OCR package")?;
-                let hash=self.options.package_sha.context("OCR package hash is required")?;
+                let (package,hash)=if let (Some(p),Some(h))=(self.options.package_manifest,self.options.package_sha){
+                    (p,h)
+                }else if let Some((p,h))=self.bundled_manifest.as_ref(){
+                    (p.as_path(),h.as_str())
+                }else{
+                    anyhow::bail!("OCR_RESOURCES_REQUIRED: install the verified CPU OCR package");
+                };
                 let p=ocr_backend::Package::load(package,hash,self.options.profile,self.options.layout)?;
                 ocr_backend::Engine::open(p)
             })();
@@ -209,7 +219,16 @@ pub fn prepare_with_accelerator(source:&Path,output:&Path,opt:Options<'_>,accele
     ensure!(opt.package_manifest.is_some()==opt.package_sha.is_some(),"Supply both the verified package manifest and its trusted SHA-256, or neither");
     let mut pdf=Backend::open(source,opt.expected_source_sha)?;
     let selected=regions(opt.regions,opt.coordinate_system,pdf.len())?;
-    let package=if let (Some(p),Some(hash))=(opt.package_manifest,opt.package_sha){
+    let bundled_manifest=if opt.package_manifest.is_none()&&opt.package_sha.is_none(){
+        ocr_backend::discover_bundled_package()
+    }else{
+        None
+    };
+    let effective_manifest:Option<(&Path,&str)>=match (opt.package_manifest,opt.package_sha){
+        (Some(p),Some(hash))=>Some((p,hash)),
+        _=>bundled_manifest.as_ref().map(|(p,h)|(p.as_path(),h.as_str())),
+    };
+    let package=if let Some((p,hash))=effective_manifest{
         check_write::no_link(p)?;
         let b=check_ledger::bind_file(p)?;
         ensure!(b["sha256"]==hash,"OCR_PACKAGE_MANIFEST_HASH_MISMATCH");b
@@ -227,7 +246,7 @@ pub fn prepare_with_accelerator(source:&Path,output:&Path,opt:Options<'_>,accele
         ensure!(old==specification,"OCR job input/configuration changed; preserve this directory and start a new job");b
     }else{fresh(&job_path,&specification)?};
     let pages=pdf.len();
-    let mut lazy=Lazy{options:&opt,engine:None,init_error:None};
+    let mut lazy=Lazy{options:&opt,bundled_manifest:bundled_manifest.clone(),engine:None,init_error:None};
     let mut accelerated=crate::ocr_acceleration::JobState::default();
     let mut results=Vec::with_capacity(pages);
     for n in 1..=pages{
@@ -266,8 +285,7 @@ pub fn prepare_with_accelerator(source:&Path,output:&Path,opt:Options<'_>,accele
                     let render_file=fresh(&attempt.join(format!("region-{i:03}-render.json")),&raster)?;
                     files.push(raster["asset"].clone());files.push(render_file.clone());
                     let mut result=if let Some(cfg)=accelerator{
-                        let package=opt.package_manifest.context("OCR_RESOURCES_REQUIRED: install the verified CPU fallback package")?;
-                        let hash=opt.package_sha.context("Actual OCR package hash required")?;
+                        let (package,hash)=effective_manifest.context("OCR_RESOURCES_REQUIRED: install the verified CPU fallback package")?;
                         accelerated.run(&png,raster["asset"]["sha256"].as_str().context("Actual raster hash required")?,
                             package,hash,opt.profile,opt.layout,cfg)?
                     }else{lazy.get()?.recognize_png(&png,raster["asset"]["sha256"].as_str())?};
@@ -304,7 +322,7 @@ pub fn prepare_with_accelerator(source:&Path,output:&Path,opt:Options<'_>,accele
     }
     pdf.verify()?;
     ensure!(check_ledger::bind_file(&job_path)?==job,"OCR job record changed");
-    if let Some(p)=opt.package_manifest{
+    if let Some((p,_))=effective_manifest{
         ensure!(check_ledger::bind_file(p)?==package,"OCR package manifest changed during job");
     }
     if let Some(cfg)=accelerator{ensure!(cfg.binding()?==specification["accelerator"],"Acceleration configuration changed during job");}
@@ -337,29 +355,6 @@ pub fn recognize_table_region(source:&Path,output:&Path,opt:TableOptions<'_>)->R
     bind_pdf_coordinates(&mut result,&render)?;
     pdf.verify()?;
     let destination=attempt.join("table-candidate.json");
-    fresh(&destination,&result)?;Ok(destination)
-}
-
-pub struct FormulaOptions<'a>{
-    pub page:u64,pub bbox:&'a Value,pub coordinate_system:&'a Value,pub dpi:u64,
-    pub package:&'a Path,pub package_sha:&'a str,pub expected_source_sha:Option<&'a str>,
-}
-pub fn recognize_formula_region(source:&Path,output:&Path,opt:FormulaOptions<'_>)->Result<PathBuf>{
-    ensure!(*opt.coordinate_system==coord(),"Declare unrotated PDF-point coordinates");
-    ensure!((72..=600).contains(&opt.dpi),"Formula OCR dpi must be between 72 and 600");
-    let region=box4(opt.bbox)?;
-    let mut pdf=Backend::open(source,opt.expected_source_sha)?;
-    let root=safe_root(output)?;
-    let attempt=tempfile::Builder::new().prefix("formula-ocr-").tempdir_in(&root)?.keep();
-    let png=attempt.join("formula.png");
-    let render=pdf.render(opt.page,Some(region),opt.dpi,&png)?;
-    fresh(&attempt.join("render.json"),&render)?;
-    let mut result=ocr_backend::recognize_formula_png(&png,opt.package,opt.package_sha,render["asset"]["sha256"].as_str())?;
-    ensure!(result["source_image"]==render["asset"]&&result["source_image_size"]==json!([render["width"],render["height"]]),"Formula evidence differs from the source raster");
-    result["source_pdf"]=render["source_file"].clone();
-    result["page"]=json!(opt.page);result["bbox"]=json!(region);result["coordinate_system"]=coord();
-    result["render"]=render;pdf.verify()?;
-    let destination=attempt.join("formula-candidate.json");
     fresh(&destination,&result)?;Ok(destination)
 }
 

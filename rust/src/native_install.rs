@@ -13,7 +13,7 @@ pub const SKILLS:&[&str]=&[
 ];
 const MAX_FILES:usize=50_000;
 const MAX_TOTAL:u64=2*1024*1024*1024;
-const BOUNDARY:&str="Offline Rust skill bundle. The twelve local skills and Rust executable are installed and qualified. External integrations and optional OCR resource distribution remain separate.";
+const BOUNDARY:&str="All-in-one offline Rust skill bundle. The twelve local skills, Rust executable, and bundled PP-OCRv6 OCR runtime (when packaged) are hash-verified and ready out of the box. External integrations remain separate.";
 const GUARD:&str="\n\n> **Rust runtime only**\n>\n> 机械操作统一使用主技能目录 literature-zotero2obsidian/runtime/z2o（Windows: z2o.exe）的 describe / invoke JSON 协议；参考 literature-zotero2obsidian/references/rust-entrypoints.md。\n\n";
 type FileMap=BTreeMap<String,Value>;
 fn exe_name()->&'static str{if cfg!(windows){"z2o.exe"}else{"z2o"}}
@@ -134,7 +134,10 @@ fn json_new(p:&Path,v:&Value)->Result<Value>{
     ensure!(binding["sha256"]==files::digest(&bytes),"Receipt changed");Ok(binding)
 }
 fn valid_hash(s:&str)->bool{s.len()==64&&s.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b))}
-pub fn package(source:&Path,destination:&Path,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+pub fn package(source:&Path,destination:&Path,progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    package_with_ocr(source,destination,None,progress)
+}
+pub fn package_with_ocr(source:&Path,destination:&Path,ocr_bundle:Option<&Path>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
     let source=dir(source,false)?;
     ensure!(!destination.exists()&&!destination.is_symlink(),"Use a new bundle destination");
     let parent=dir(destination.parent().filter(|p|!p.as_os_str().is_empty()).unwrap_or(Path::new(".")),true)?;
@@ -160,11 +163,37 @@ pub fn package(source:&Path,destination:&Path,mut progress:impl FnMut(usize,usiz
     ensure!(executable["size"].as_u64().is_some_and(|n|n>0),"Missing actual executable");
     copy_file(&exe,&target,&executable)?;
     #[cfg(unix)]ensure!(executable["executable"]==true,"Packaged binary is not executable");
+    let mut ocr_bundled=false;
+    let mut ocr_manifest_sha256=Value::Null;
+    if let Some(ocr_dir)=ocr_bundle{
+        let (ocr_manifest_path,ocr_sha,ocr_raw,ocr_assets)=crate::ocr_backend::verify_package_directory(ocr_dir)?;
+        let ocr_dest=payload.join("literature-zotero2obsidian/runtime/ocr");
+        fs::create_dir_all(&ocr_dest)?;
+        for (rel_name,bound) in &ocr_assets{
+            let src_file=path(&bound["path"])?;
+            let expected_rec=record(&src_file)?;
+            ensure!(expected_rec["sha256"]==bound["sha256"],"OCR bundle asset hash changed during packaging: {rel_name}");
+            copy_file(&src_file,&ocr_dest.join(relative(rel_name)?),&expected_rec)?;
+        }
+        ensure!(files::digest(&ocr_raw)==ocr_sha,"OCR manifest digest mismatch during packaging");
+        {
+            let mut f=fs::OpenOptions::new().write(true).create_new(true).open(ocr_dest.join("package.json"))?;
+            f.write_all(&ocr_raw)?;f.sync_all()?;
+        }
+        {
+            let mut f=fs::OpenOptions::new().write(true).create_new(true).open(ocr_dest.join("package.sha256"))?;
+            f.write_all(format!("{ocr_sha}\n").as_bytes())?;f.sync_all()?;
+        }
+        ensure!(check_ledger::bind_file(&ocr_manifest_path)?["sha256"]==ocr_sha,"Source OCR manifest changed during packaging");
+        ocr_bundled=true;
+        ocr_manifest_sha256=json!(ocr_sha);
+    }
     let payload_files=scan(&payload,false)?;
     ensure!(payload_files.keys().all(|p|!disallowed_script_path(p)),"Disallowed script file in skill payload");
     let manifest=json!({"schema_version":1,"bundle_kind":"rust_skill_bundle","qualified":true,
         "version":format!("v{ENGINE_VERSION}"),"engine_version":ENGINE_VERSION,"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,
-        "skills":SKILLS,"runtime":exe_relative(),"files":payload_files,"script_files_included":false,"boundary":BOUNDARY});
+        "skills":SKILLS,"runtime":exe_relative(),"ocr_bundled":ocr_bundled,"ocr_manifest_sha256":ocr_manifest_sha256,
+        "files":payload_files,"script_files_included":false,"boundary":BOUNDARY});
     let m=json_new(&stage.path().join("package.json"),&manifest)?;
     ensure!(!destination.exists()&&!destination.is_symlink(),"Bundle destination appeared during preparation");
     fs::rename(stage.path(),&destination).context("Cannot publish bundle directory")?;
@@ -172,7 +201,7 @@ pub fn package(source:&Path,destination:&Path,mut progress:impl FnMut(usize,usiz
     let checked=load_bundle(&p,m["sha256"].as_str().unwrap())?;
     ensure!(checked.files==payload_files,"Published bundle differs");
     Ok(json!({"package_manifest":checked.binding,"package_root":path_text(&destination)?,"file_count":payload_files.len(),
-        "skill_count":SKILLS.len(),"qualified":true,"boundary":BOUNDARY}))
+        "skill_count":SKILLS.len(),"ocr_bundled":ocr_bundled,"ocr_manifest_sha256":ocr_manifest_sha256,"qualified":true,"boundary":BOUNDARY}))
 }
 struct Bundle{binding:Value,payload:PathBuf,files:FileMap}
 fn load_manifest(manifest:&Path,expected:&str)->Result<(Value,FileMap)>{
@@ -214,7 +243,8 @@ fn load_bundle(manifest:&Path,expected:&str)->Result<Bundle>{
 }
 pub fn inspect_bundle(manifest:&Path,expected:&str)->Result<Value>{
     let b=load_bundle(manifest,expected)?;
-    Ok(json!({"package_manifest":b.binding,"file_count":b.files.len(),"skill_count":SKILLS.len(),"qualified":true,"boundary":BOUNDARY}))
+    let ocr_bundled=b.files.contains_key("literature-zotero2obsidian/runtime/ocr/package.json");
+    Ok(json!({"package_manifest":b.binding,"file_count":b.files.len(),"skill_count":SKILLS.len(),"ocr_bundled":ocr_bundled,"qualified":true,"boundary":BOUNDARY}))
 }
 fn skill_files(files:&FileMap,name:&str)->FileMap{
     let prefix=format!("{name}/");files.iter().filter_map(|(p,r)|p.strip_prefix(&prefix).map(|x|(x.to_owned(),r.clone()))).collect()
@@ -239,14 +269,16 @@ pub fn verify_install(manifest:&Path,expected:&str,skills_root:&Path)->Result<Va
             "NATIVE_INSTALLED_FILE_MISMATCH: missing, added or changed skill file in {name}");
     }
     ensure!(check_ledger::bind_file(manifest)?==binding,"Bundle manifest changed during verification");
+    let ocr_bundled=installed.contains_key("literature-zotero2obsidian/runtime/ocr/package.json");
     Ok(json!({"schema_version":1,"status":"installed_candidate_files_verified","skills_root":path_text(&root)?,
         "package_manifest":binding,"runtime_path":path_text(&runtime)?,
         "runtime_sha256":installed[&exe_relative()]["sha256"],"skill_count":SKILLS.len(),
-        "file_count":installed.len(),"qualified":true,
-        "boundary":"Read-only comparison of the installed files against this manifest. Other skills are outside scope. External integrations, OCR model packages, and source-content fidelity remain separate."}))
+        "file_count":installed.len(),"ocr_bundled":ocr_bundled,"qualified":true,
+        "boundary":"Read-only comparison of the installed files (including any bundled OCR runtime under literature-zotero2obsidian/runtime/ocr/) against this manifest. Other skills are outside scope."}))
 }
 pub fn install(manifest:&Path,expected:&str,skills_root:&Path,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
     let b=load_bundle(manifest,expected)?;
+    let ocr_bundled=b.files.contains_key("literature-zotero2obsidian/runtime/ocr/package.json");
     let root=dir(skills_root,true)?;
     ensure!(!root.starts_with(&b.payload)&&!b.payload.starts_with(&root),"Install destination overlaps source bundle");
     let _lock=check_write::lock_target(&root.join("rust-install"))?;
@@ -257,7 +289,7 @@ pub fn install(manifest:&Path,expected:&str,skills_root:&Path,mut progress:impl 
         before.insert(name,old);
     }
     if changed.is_empty(){return Ok(json!({"installed":[],"skipped":skipped,"backup_root":null,
-        "package_manifest":b.binding,"qualified":true,"boundary":BOUNDARY}));}
+        "package_manifest":b.binding,"ocr_bundled":ocr_bundled,"qualified":true,"boundary":BOUNDARY}));}
     let stage=tempfile::Builder::new().prefix(".z2o-rust-stage-").tempdir_in(&root)?;
     let staged=stage.path().join("skills");fs::create_dir(&staged)?;
     for &name in &changed{
@@ -313,7 +345,7 @@ pub fn install(manifest:&Path,expected:&str,skills_root:&Path,mut progress:impl 
         bail!("Native installation failed: {e:#}; recovery evidence: {}; rollback errors: {rollback:?}",recovery.display());
     }
     let receipt=json!({"schema_version":1,"status":"completed_install","installed":changed,"skipped":skipped,
-        "backup_root":path_text(&recovery)?,"package_manifest":b.binding,"qualified":true,
+        "backup_root":path_text(&recovery)?,"package_manifest":b.binding,"ocr_bundled":ocr_bundled,"qualified":true,
         "external_integrations":"not_installed_or_qualified","boundary":BOUNDARY});
     json_new(&recovery.join("completed.json"),&receipt)?;Ok(receipt)
 }

@@ -20,7 +20,7 @@ fn usage_json()->serde_json::Value{
             "describe_all":"z2o describe --all            Include schemas for every registered operation",
             "invoke_file":"z2o invoke <request.json> [--output <response.json>]     Execute an operation from a UTF-8 JSON file",
             "invoke_stdin":"z2o invoke - [--output <response.json>]                  Execute an operation reading UTF-8 JSON from stdin",
-            "package":"z2o package <source_root> <destination>",
+            "package":"z2o package <source_root> <destination> [--ocr-bundle <ocr_dir>]",
             "install":"z2o install <package.json> <trusted_sha256> <skills_root>",
             "verify_install":"z2o verify-install <package.json> <trusted_sha256> <skills_root>",
             "version":"z2o --version",
@@ -52,7 +52,7 @@ fn describe_help_json()->serde_json::Value{
 }
 fn run()->Result<serde_json::Value>{
     let mut args=env::args_os().skip(1);
-    let cmd=args.next().ok_or_else(||anyhow!("use describe [operation|--all], invoke <request.json|->, package <source_root> <destination>, install <package.json> <trusted_sha256> <skills_root>, verify-install <package.json> <trusted_sha256> <skills_root>, --version, or --help"))?;
+    let cmd=args.next().ok_or_else(||anyhow!("use describe [operation|--all], invoke <request.json|->, package <source_root> <destination> [--ocr-bundle <ocr_dir>], install <package.json> <trusted_sha256> <skills_root>, verify-install <package.json> <trusted_sha256> <skills_root>, --version, or --help"))?;
     match cmd.to_str(){
         Some("--help"|"-h"|"help")=>{
             ensure!(args.next().is_none(),"unexpected argument; run `z2o --help` for usage");
@@ -74,10 +74,32 @@ fn run()->Result<serde_json::Value>{
         }
         Some("--version")=>{ensure!(args.next().is_none(),"unexpected argument");Ok(json!({"engine":"rust","version":format!("v{ENGINE_VERSION}"),"engine_version":ENGINE_VERSION}))}
         Some("package")=>{
-            let source=PathBuf::from(args.next().ok_or_else(||anyhow!("source root required"))?);
-            let dest=PathBuf::from(args.next().ok_or_else(||anyhow!("new package destination required"))?);
-            ensure!(args.next().is_none(),"unexpected argument");
-            native_install::package(&source,&dest,runtime_reports::progress_line)
+            let rest:Vec<_>=args.collect();
+            let mut pos:Vec<PathBuf>=Vec::new();
+            let mut ocr_bundle:Option<PathBuf>=None;
+            let mut i=0usize;
+            while i<rest.len(){
+                let cur=&rest[i];
+                if cur.to_str()==Some("--ocr-bundle"){
+                    ensure!(ocr_bundle.is_none(),"duplicate --ocr-bundle flag");
+                    let val=rest.get(i+1).ok_or_else(||anyhow!("--ocr-bundle requires an OCR package directory"))?;
+                    ocr_bundle=Some(PathBuf::from(val));
+                    i+=2;
+                    continue;
+                }
+                if let Some(val)=cur.to_str().and_then(|s|s.strip_prefix("--ocr-bundle=")){
+                    ensure!(ocr_bundle.is_none(),"duplicate --ocr-bundle flag");
+                    ensure!(!val.is_empty(),"--ocr-bundle requires a nonempty directory path");
+                    ocr_bundle=Some(PathBuf::from(val));
+                    i+=1;
+                    continue;
+                }
+                ensure!(cur.to_str().is_none_or(|s|!s.starts_with('-')),"unexpected option in package; usage: z2o package <source_root> <destination> [--ocr-bundle <ocr_dir>]");
+                pos.push(PathBuf::from(cur));
+                i+=1;
+            }
+            ensure!(pos.len()==2,"usage: z2o package <source_root> <destination> [--ocr-bundle <ocr_dir>]");
+            native_install::package_with_ocr(&pos[0],&pos[1],ocr_bundle.as_deref(),runtime_reports::progress_line)
         }
         Some("install"|"verify-install")=>{
             let manifest=PathBuf::from(args.next().ok_or_else(||anyhow!("package manifest required"))?);

@@ -251,21 +251,3 @@ fn ocr_quality_uses_actual_bound_raster_and_never_grants_acceptance(){
     fs::write(&png,b"changed").unwrap();
     assert!(ocr_quality::audit(&p,&ph,Some((&q,&qh))).is_err());
 }
-
-#[test]
-fn formula_package_is_opt_in_and_all_assets_are_hash_checked(){
-    let root=tempfile::tempdir().unwrap();let (manifest,_)=fixture(root.path());
-    let mut data:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-    fs::write(root.path().join("formula.onnx"),b"formula fixture").unwrap();
-    fs::write(root.path().join("tokenizer.json"),b"tokenizer fixture").unwrap();
-    data["auxiliary"]["formula"]=json!({"architecture":"PP-FormulaNet_plus-L",
-        "model":{"path":"formula.onnx","sha256":files::digest(b"formula fixture")},
-        "tokenizer":{"path":"tokenizer.json","sha256":files::digest(b"tokenizer fixture")}});
-    let bytes=serde_json::to_vec(&data).unwrap();fs::write(&manifest,&bytes).unwrap();
-    let installed=ocr_backend::install_package(&manifest,&files::digest(&bytes),&root.path().join("store"),|_,_,_|{}).unwrap();
-    assert_eq!(installed["resource_count"],6);
-    let inspected=ocr_backend::inspect_package(&manifest,&files::digest(&bytes),"tiny","off").unwrap();
-    assert_eq!(inspected["resources"].as_object().unwrap().len(),4);
-    fs::write(root.path().join("tokenizer.json"),b"changed").unwrap();
-    assert!(ocr_backend::install_package(&manifest,&files::digest(&bytes),&root.path().join("other"),|_,_,_|{}).is_err());
-}

@@ -1,113 +1,67 @@
-# OCR、表格/公式识别与 MiniCPM / Jev 运行指南
+# PDF 质量预检、内置 PP-OCRv6 与零乱码视觉核对指南
 
-本文记录 `z2o` Rust 运行时已注册的 15 个 OCR、表格/公式识别、OCR 质量审计与 MiniCPM / Jev 推理操作、Schema 1 清单绑定、离线安装与 GPU/CPU 回退策略及证据边界。所有操作统一通过 `z2o invoke request.json` 执行，先用 `z2o describe` 确认注册状态。
+本文记录 `z2o` Rust 运行时内置的 **4 层零乱码防火墙**（`pdf-inspector` + `lopdf` 字体 CMap 诊断 + `mojibake` 乱码审计 + `validate_note` 硬门禁）、开箱即用的内置 PP-OCRv6 OCR / 版面 / 表格识别能力，以及已注册的 10 个 `prepare_source_inventory.*` PDF 质量与 OCR 操作。所有操作统一通过 `z2o invoke request.json` 执行，先用 `z2o describe` 确认注册状态。
 
-## 证据边界与能力状态
+## 开箱即用（无首次安装询问）
 
-## 首次运行的选择
+- 发行版通过 `install.ps1` / `install.sh` 与 `z2o package --ocr-bundle` 一体化安装：12 个 `literature-*` 技能、预编译 `z2o[.exe]` 与内置 PP-OCRv6 + ONNX Runtime（位于 `literature-zotero2obsidian/runtime/ocr/`，含 `package.json` 与 `package.sha256`）一次落盘并通过 SHA-256 完整性校验，**不存在首次运行“是否下载可选 OCR”弹窗**。
+- `z2o describe` 中的 `ocr_backend` 字段报告 `"qualification": "bundled_package"` 与实时自动发现结果 `bundled_status`（`available`、`source: "exe_adjacent" | "env" | "absent"`、`manifest_path`、`manifest_sha256`）。
+- 历史遗留的 `user/profile.json` 中若仍存有 `formula_table_enhancement: "unasked"`，运行时自动向后兼容为开箱即用模式，不触发任何阻断或询问。
+- 所有 OCR 与表格结构识别结果均仅作**候选识别草稿**，固定携带 `"source_fidelity": "not_assessed"` 与 `"acceptance_ready": false`，绝不跳过对原页的独立视觉核对。
 
-复杂公式与表格有两条路径，由技能内 `user/profile.json` 的 `preferences.formula_table_enhancement` 记录：
+## 4 层零乱码防火墙（禁止输出乱码）
 
-- **选项 A：直接执行**。使用 PDF 原生文字层、PdfCraft 页图/区域渲染、模型视觉核对，以及可用的 arXiv TeX 源。不要求下载模型，不因缺少 OCR 包阻断。
-- **选项 B：可选 OCR 增强**。首次运行且记录为 `unasked` 时询问一次是否下载安装 `ocr-cpu-assets.json` 绑定的公式/表格资源。用户同意后调用 `install_ocr_package`；拒绝或失败保持选项 A，后续不重复询问。
+1. **Layer 1 — 纯 Rust `pdf-inspector` 结构预检**：`prepare_source_inventory.inspect_pdf_quality` 与 `prepare_pdf_layout` 在解析 PDF 前自动分类文档类型（`TextBased` / `Scanned` / `ImageBased` / `Mixed`）、定位需 OCR 页面、检测多栏与表格页以及 CMap 映射缺口。
+2. **Layer 2 — `lopdf` 字体与 CMap 审计**：逐页扫描 `/Resources /Font`，捕获缺少 `/ToUnicode` 的 Type 3 字体与 Identity-H/V Type 0 CID 字体，自动标为整页视觉核对与 OCR 路由。
+3. **Layer 3 — 内置 300 DPI PP-OCRv6 自动修复 + `<!-- VISUAL_REQUIRED: ... -->` + 拼图**：
+   - `prepare_pdf_layout` 对检出乱码（`U+FFFD`、控制符、私用区 PUA `U+E000..=U+F8FF` 或误解码字节序列）的文本块，若已内置 OCR 包则自动在 300 DPI 下运行 PP-OCRv6 修复；**仅当修复文本零乱码且全部行置信度 `text_score >= 0.92`、`box_score >= 0.60`、`location_valid == true` 时采纳**。
+   - 未能高置信修复的乱码块**严禁原样写入 `clean-layout.md`**，而是替换为显式 `<!-- VISUAL_REQUIRED: <id> | reason=<原因> | page=<页码> | bbox=[x0,y0,x1,y1] -->` 占位标记；同时对 2D 显示公式、第 1 页作者/单位块及缺字/扫描页生成 300 DPI 裁剪与编号拼图 `ocr-verify-sheet.png`（最多 32 块/张）。
+4. **Layer 4 — 写库硬门禁（`validate_note` / `accept_note` / `vault_publish`）**：
+   - 发布前强制扫描整篇笔记，任何残留的 `U+FFFD`、`NUL`/非法控制符、PUA 字符、GBK/UTF-8 典型乱码片段或尚未消解的 `<!-- VISUAL_REQUIRED: ... -->` 标记均直接阻断发布（`error` 级）。
+   - TeX 源码（`.tex` / `.zip` / `.tar.gz`）与纯 Rust 多格式文档（HTML/XHTML、EPUB、ODT、TXT/MD）均经过 `encoding_rs` + `chardetng` 自动转码为干净 UTF-8，杜绝 GBK/Latin-1/Shift-JIS 乱码。
 
-已记录为 `native` 或 `ocr` 后直接沿用。安装位置仍须位于当前技能内的持久化 `store`，不得写入通用用户目录。
-
-- `ocr_backend`（`ppocr-rs`，pinned revision `b87550b775206655acf84d7fc421ca5bdf745fd3`）在 `z2o describe` 中的定位为 `"qualification": "optional_package"`、`"policy": "cpu_first"`、`"gpu_required": false`。
-- 所有 OCR、表格、公式识别与 MiniCPM 转录结果均仅作**候选识别草稿**；输出固定包含 `"source_fidelity": "not_assessed"`（MiniCPM/Jev 另附 `"acceptance_ready": false`）。自信度或 Jev 概率分数均不替代对源文件的独立核对与视觉比较，也不自动覆盖正文或授予验收。
-
-## 15 个已注册操作清单
+## 10 个已注册 PDF 质量与 OCR 操作清单
 
 | Rust operation | positional args（依序） | kwargs（必填与常用可选项） |
 |---|---|---|
+| `prepare_source_inventory.inspect_pdf_quality` | `source_pdf` | `expected_source_sha256`（可选；返回 `pdf-inspector` + `lopdf` 字体/CMap/乱码/表格/多栏诊断报告） |
 | `prepare_source_inventory.ocr_hardware_plan` | 无 | `profile`（可选，默认 `"auto"`；支持 `"auto"` / `"tiny"` / `"small"` / `"medium"`） |
-| `prepare_source_inventory.install_ocr_package` | `package_manifest` | `expected_package_sha256`（必填）、`store`（必填，目标安装目录） |
+| `prepare_source_inventory.install_ocr_package` | `package_manifest` | `expected_package_sha256`（必填）、`store`（必填，目标安装目录；用于离线手工更新或自定义模型包导入） |
 | `prepare_source_inventory.inspect_ocr_package` | 无 | `package_manifest`（必填）、`expected_package_sha256`（必填）、`profile`（`"auto"`）、`layout`（`"auto"` / `"on"` / `"off"`） |
-| `prepare_source_inventory.recognize_ocr_png` | `image_path` | `package_manifest`（必填）、`expected_package_sha256`（必填）、`profile`（`"auto"`）、`layout`（`"auto"`）、`expected_image_sha256`（可选） |
+| `prepare_source_inventory.recognize_ocr_png` | `image_path` | `package_manifest`（必填）、`expected_package_sha256`（必填）、`profile`（`"auto"`）、`layout`（`"auto"`）、`expected_image_sha256`（可选；返回含 `mojibake_audit` 与 `< 0.92` 复核提示） |
 | `prepare_source_inventory.recognize_ocr_png_accelerated` | `image_path` | `expected_image_sha256`（必填）、`package_manifest`（必填，CPU 清单）、`expected_package_sha256`（必填）、`gpu_package_manifest`（可选，需与 `expected_gpu_package_sha256` 成对）、`profile`（`"auto"`）、`layout`（`"auto"`）、`acceleration`（`"auto"` / `"cpu"` / `"gpu_required"`）、`timeout_seconds`（默认 `180`） |
-| `prepare_source_inventory.prepare_pdf_ocr_evidence` | `source_pdf` | `destination`（必填）、`package_manifest`（可选）、`expected_package_sha256`（可选）、`expected_source_sha256`（可选）、`profile`（`"auto"`）、`layout`（`"auto"`）、`mode`（`"auto"`）、`dpi`（默认 `200`）、`regions`（默认 `{}`）、`coordinate_system`（可选）、`accelerator`（可选对象） |
+| `prepare_source_inventory.prepare_pdf_ocr_evidence` | `source_pdf` | `destination`（必填）、`package_manifest`（可选；留空自动发现内置 `<exe_dir>/ocr/`）、`expected_package_sha256`（可选）、`expected_source_sha256`（可选）、`profile`（`"auto"`）、`layout`（`"auto"`）、`mode`（`"auto"`）、`dpi`（默认 `200`）、`regions`（默认 `{}`）、`coordinate_system`（可选）、`accelerator`（可选对象） |
 | `prepare_source_inventory.recognize_ocr_table_png` | `image_path` | `package_manifest`（必填）、`expected_package_sha256`（必填）、`profile`（`"auto"`）、`cell_mode`（默认 `"off"`）、`expected_image_sha256`（可选） |
 | `prepare_source_inventory.recognize_pdf_table_region` | `source_pdf` | `destination`（必填）、`page_number`（必填整数）、`bbox`（必填四元数）、`coordinate_system`（必填）、`dpi`（默认 `200`）、`package_manifest`（必填）、`expected_package_sha256`（必填）、`profile`（`"auto"`）、`cell_mode`（`"off"`）、`expected_source_sha256`（可选） |
-| `prepare_source_inventory.recognize_ocr_formula_png` | `image_path` | `package_manifest`（必填）、`expected_package_sha256`（必填）、`expected_image_sha256`（可选） |
-| `prepare_source_inventory.recognize_pdf_formula_region` | `source_pdf` | `destination`（必填）、`page_number`（必填整数）、`bbox`（必填四元数）、`coordinate_system`（必填）、`dpi`（默认 `200`）、`package_manifest`（必填）、`expected_package_sha256`（必填）、`expected_source_sha256`（可选） |
 | `prepare_source_inventory.audit_ocr_evidence` | `primary_record` | `expected_primary_sha256`（必填）、`comparison_record`（可选，需与 `expected_comparison_sha256` 成对） |
-| `prepare_source_inventory.inspect_minicpm_package` | `package_manifest` | `expected_package_sha256`（必填）、`model_kind`（必填：`"minicpm-ocr"` 或 `"jev"`） |
-| `prepare_source_inventory.recognize_minicpm_region` | `image_path` | `expected_image_sha256`（必填）、`package_manifest`（必填）、`expected_package_sha256`（必填）、`category`（必填：`"text"` / `"table"` / `"formula"`）、`acceleration`（`"auto"` / `"cpu"` / `"gpu_required"`）、`timeout_seconds`（默认 `300`，范围 `5..=1800`）、`max_tokens`（默认 `2048`，范围 `1..=4096`） |
-| `prepare_source_inventory.recognize_minicpm_pdf_region` | `source_pdf` | `destination`（必填）、`page_number`（必填整数）、`bbox`（必填四元数）、`coordinate_system`（必填未旋转 PDF 点坐标）、`dpi`（默认 `200`，范围 `72..=600`）、`expected_source_sha256`（必填）、`package_manifest`（必填）、`expected_package_sha256`（必填）、`category`（必填）、`acceleration`（`"auto"`）、`timeout_seconds`（默认 `300`，范围 `5..=1800`）、`max_tokens`（默认 `2048`，范围 `1..=4096`） |
-| `prepare_source_inventory.score_jev_region` | `image_path` | `expected_image_sha256`（必填）、`render_image_path`（必填）、`expected_render_sha256`（必填）、`candidate_text_path`（必填）、`expected_candidate_sha256`（必填）、`package_manifest`（必填）、`expected_package_sha256`（必填）、`category`（必填）、`acceleration`（`"auto"`）、`timeout_seconds`（默认 `300`，范围 `5..=1800`） |
 
-## Schema 1 资产清单与离线包安装
+> 注：实验性重型模块（MiniCPM、Jev 及 `PP-FormulaNet_plus-L`）已彻底移除；复杂 2D 数学公式统一通过 arXiv TeX 源或 300 DPI `ocr-verify-sheet.png` 裁剪由宿主多模态视觉直接核对，准确度更高且无需数 GB 额外权重。
 
-仓库 `rust/` 目录下维护 3 份固定资产清单，均要求 `schema_version: 1` 及完整小写 SHA-256 绑定：
+## 硬件自适应调度阈值（CPU-first）
 
-- `rust/ocr-cpu-assets.json`：PP-OCRv6 CPU 模型与 ONNX Runtime 动态库清单，支持按硬件预算自动/手动选择 `tiny` / `small` / `medium` 配置，可选版面识别（`layout`: `auto` / `on` / `off`）、表格识别与公式识别资源。使用 `prepare_source_inventory.install_ocr_package` 将清单校验后安装到持久化 `store` 目录，禁止符号链接或 name-surrogate reparse point；`install_ocr_package` 可安全复用已核验资源并拒绝未登记或篡改文件。
-- `rust/minicpm-runtime-assets.json`：`model_kind: "minicpm-ocr"`，`engine: "llama.cpp"`，锁定 `LLAMA_RELEASE` 为 `b11901`（上游提交 `c21a3ca524263ef8166cb6d350864b10c3056b61`），主模型仅限 `MiniCPM-OCR-1_0-Q8_0.gguf` 或 `MiniCPM-OCR-1_0-Q4_K_M.gguf`，多模态投影仅限 `mmproj-model-f16-4x.gguf`（选用 Q8 时可配 `dspark-MiniCPM-OCR-1_0-Q8_0.gguf` 草稿模型）。
-- `rust/jev-runtime-assets.json`：`model_kind: "jev"`，`engine: "llama.cpp"`，锁定 `JEV_LLAMA_RELEASE` 为 `b11928`，模型仅限 `MiniCPM-OCR-Jev-Q4_K_M.gguf` / `Q8_0` / `F16` 与 `mmproj-model-f16.gguf`。
+`ocr_hardware_plan` 按本机总内存与可用内存自动选择档位，不依赖独立显卡：
 
-## GPU / CPU 回退与 `max_tokens` 参数说明
+| 内存条件（总内存 / 可用内存） | 自动档位 | 最大检测边长 | 线程上限 | 版面分析（`PP-DocLayoutV3`） |
+|---|---|---|---|---|
+| `>= 8 GiB` 且 `>= 2 GiB` | `medium`（默认随发行版内置） | `2048 px` | `8` | 允许（`auto` 启用） |
+| `>= 4 GiB` 且 `>= 1 GiB` | `small` | `1600 px` | `4` | 关闭 |
+| `< 4 GiB` 或 `< 1 GiB` | `tiny` | `1280 px` | `2` | 关闭 |
 
-1. **硬件调度与路径隔离**：
-   - `recognize_ocr_png_accelerated` 与 MiniCPM / Jev 操作均支持 `acceleration: "auto" | "cpu" | "gpu_required"`。
-   - 在 `"auto"` 模式下，仅当清单提供已校验 `gpu` 运行时包时先在子进程尝试 GPU（Windows `DmlExecutionProvider` / llama CUDA 或 Vulkan；macOS `CoreMLExecutionProvider` / Metal；Linux `CUDAExecutionProvider` / CUDA 或 Vulkan），失败、超时或未报告实际 GPU 层卸载时记录诊断并自动回退 CPU 尝试。指定 `"gpu_required"` 时若未提供或无法完成 GPU 卸载则返回 `status: "blocked"` 而不静默降级。
-   - 子进程启动时将运行目录**前置拼接**到 `PATH`（Linux 同时前置 `LD_LIBRARY_PATH`，macOS 前置 `DYLD_LIBRARY_PATH`），既优先加载绑定运行时库，也保留系统与显卡驱动 DLL/SO 搜索路径。
-2. **MiniCPM 生成长度限制（`max_tokens`）**：
-   - `recognize_minicpm_region` 与 `recognize_minicpm_pdf_region` 均接收可选整数 `max_tokens`，默认 `2048`（对应 `--ctx-size 4096`），允许范围 `1..=4096`；长表格或整段公式若出现截断，返回中将包含 `"truncated": true` 及 `"status": "truncated_review_required"`，此时可在上下文限制内调大 `max_tokens` 或拆分区域重新识别。
+## 锁定资产清单与 GPU/CPU 回退
 
-## MiniCPM / Jev 调用示例骨架
+仓库 `rust/` 目录下维护两份 SHA-256 锁定清单（Apache-2.0 / MIT）：
 
-```json
-{
-  "schema_version": 1,
-  "operation": "prepare_source_inventory.recognize_minicpm_region",
-  "args": ["/本次任务的绝对路径/work/region.png"],
-  "kwargs": {
-    "expected_image_sha256": "<实际 region.png SHA-256>",
-    "package_manifest": "/运行目录/minicpm-runtime-assets.json",
-    "expected_package_sha256": "<实际清单 SHA-256>",
-    "category": "table",
-    "acceleration": "auto",
-    "timeout_seconds": 300,
-    "max_tokens": 2048
-  }
-}
-```
+- `rust/ocr-cpu-assets.json`：5 大目标平台的 ONNX Runtime `1.32.0` 动态库清单。
+- `rust/ocr-bundle-assets.json`：官方 `PaddlePaddle` ONNX 模型清单（`PP-OCRv6_medium`、`PP-DocLayoutV3`、`PP-LCNet_x1_0_doc_ori`、`SLANet_plus` 及备选 `small`/`tiny` 档位），每个权重文件均绑定精确字节大小与 SHA-256，供 CI 发行流水线打包为 `z2o package --ocr-bundle`。
+- `recognize_ocr_png_accelerated` 支持 `acceleration: "auto" | "cpu" | "gpu_required"`；在 `"auto"` 下若提供已校验 GPU 包则优先在隔离 worker 子进程尝试（Windows DirectML / macOS CoreML / Linux CUDA），失败或超时自动回退 CPU，绝不污染主进程。
 
-PDF 区域直接裁剪识别使用 `prepare_source_inventory.recognize_minicpm_pdf_region`：
+## 本地验证命令
 
-```json
-{
-  "schema_version": 1,
-  "operation": "prepare_source_inventory.recognize_minicpm_pdf_region",
-  "args": ["/本次任务的绝对路径/input/article.pdf"],
-  "kwargs": {
-    "destination": "/本次任务的绝对路径/work/minicpm-region",
-    "page_number": 3,
-    "bbox": [72.0, 140.0, 520.0, 420.0],
-    "coordinate_system": {
-      "space": "pdf_page",
-      "unit": "pt",
-      "origin": "top_left",
-      "x_axis": "right",
-      "y_axis": "down",
-      "rotation": "unrotated"
-    },
-    "dpi": 200,
-    "expected_source_sha256": "<实际 PDF SHA-256>",
-    "package_manifest": "/运行目录/minicpm-runtime-assets.json",
-    "expected_package_sha256": "<实际清单 SHA-256>",
-    "category": "formula",
-    "acceleration": "auto",
-    "timeout_seconds": 300,
-    "max_tokens": 2048
-  }
-}
-```
-
-## CI 与本地夹具烟雾验证
-
-无需下载外部大权重即可运行仓库内确定性夹具测试，验证包校验、旋转逆变换、内存预算、诊断脱敏、`max_tokens` 边界及失败隔离逻辑：
+无需联网下载外部大权重即可运行仓库内全套确定性夹具与防火墙单测：
 
 ```bash
 cargo test --manifest-path rust/Cargo.toml --locked --test ocr
-cargo test --manifest-path rust/Cargo.toml --locked --lib minicpm::tests
+cargo test --manifest-path rust/Cargo.toml --locked --lib mojibake::tests
+cargo test --manifest-path rust/Cargo.toml --locked --lib pdf_inspector_bridge::tests
+cargo test --manifest-path rust/Cargo.toml --locked --lib pdf_layout::tests
 ```

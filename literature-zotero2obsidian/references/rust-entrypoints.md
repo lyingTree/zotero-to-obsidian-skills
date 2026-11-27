@@ -25,10 +25,11 @@
 | Rust operation | args（依序） | kwargs |
 |---|---|---|
 | `user_profile.preflight` | 无 | `skill_root`（支持仓库根目录自动钻取）、`query`、`item_key`、`zotero_storage_dir`、`create_work_dirs`（默认 `false`；单次返回档案+Zotero+模板骨架+`naming_plan`+工作目录） |
-| `prepare_source_inventory.prepare_paper` | `work_dir` | `pdf_path`、`tex_target`、`glossary_path`、`render_pages`（默认 `"auto"`）、`dpi`、`expected_pdf_sha256`、`arxiv_timeout_seconds`（一站式 TeX+PDF 版面+`figure_candidates`+`matched-glossary.md`） |
+| `prepare_source_inventory.prepare_paper` | `work_dir` | `pdf_path`、`tex_target`、`glossary_path`、`render_pages`（默认 `"auto"`）、`dpi`、`expected_pdf_sha256`、`arxiv_timeout_seconds`（一站式 TeX+`pdf-inspector` 预检+PDF 版面+`ocr-verify-sheet.png`+`figure_candidates`+`matched-glossary.md`） |
+| `prepare_source_inventory.inspect_pdf_quality` | `source_pdf` | `expected_source_sha256`（纯 Rust `pdf-inspector` + `lopdf` Type-3/CMap/乱码/表格/多栏诊断） |
 | `prepare_source_inventory.fetch_arxiv_tex` | `target`（arXiv ID/URL/DOI/item JSON）、`destination` | `source_id`（默认 `"main"`）、`pdf_path`、`timeout_seconds`、`compact`（默认 `true`） |
-| `prepare_source_inventory.prepare_pdf_layout` | `source_path`、`destination` | `source_id`、`render_pages`（`selective`\|`all`\|`none`，默认 `selective`）、`dpi`、`expected_source_sha256`（含 `figure_candidates`） |
-| `prepare_source_inventory.prepare_sources` | `source_pdfs` 映射对象（如 `{"main": "<文件路径>"}`）、`work_directory` | `source_roles`、`glossary_path`、`dpi`、`ocr`（按实际需要） |
+| `prepare_source_inventory.prepare_pdf_layout` | `source_path`、`destination` | `source_id`、`render_pages`（`selective`\|`all`\|`none`，默认 `selective`）、`dpi`、`expected_source_sha256`（含 `pdf_quality`、`visual_required_items`、`ocr_verify_sheet`、`figure_candidates`） |
+| `prepare_source_inventory.prepare_sources` | `source_pdfs` 映射对象（支持 PDF/DOCX/HTML/EPUB/ODT/TXT/MD，如 `{"main": "<文件路径>"}`）、`work_directory` | `source_roles`、`glossary_path`、`dpi`、`ocr`（按实际需要） |
 | `pdf_image_objects.render_page_regions_batch` | `source_pdf` | `regions`（数组，含 `page_number`/`bbox`/`destination`/`transparent`/`auto_trim`/`label`）、`overwrite`、`contact_sheet_destination`、`contact_sheet_columns`（单会话批量裁图并输出序号拼图） |
 | `pdf_image_objects.render_page_region` / `inspect_crop_boundaries` | `source_pdf` | `page_number`、`bbox`、`coordinate_system`、`destination` / `context_destination`、可选 `overwrite`、`transparent`（默认 `true`） |
 | `pdf_image_objects.render_pdfcraft_region` | `source_pdf` | `page_number`、`bbox`、`coordinate_system`、`destination`；`transparent` 默认 `true`，保留透明背景，不合成白底 |
@@ -65,7 +66,7 @@
 | 文件名 | `format_helpers.build_naming_plan`、`format_helpers.validate_naming_plan` |
 | 属性、来源绑定和回读 | `deterministic_stage_checks.*` |
 | 来源、草稿队列与图件 | `prepare_source_inventory.*`、`docx_source_inventory.*`、`pdf_image_objects.*`、`draft_queue.*` |
-| OCR、表格/公式识别与 MiniCPM/Jev | 见[OCR、表格/公式识别与 MiniCPM/Jev 指南](ocr-and-minicpm.md)（15 个 `prepare_source_inventory.*` 操作） |
+| PDF 质量预检、内置 PP-OCRv6 与零乱码核对 | 见[PDF 质量预检、内置 PP-OCRv6 与零乱码视觉核对指南](ocr-and-minicpm.md)（10 个 `prepare_source_inventory.*` 操作） |
 | 表格、图件与篇内锚 | `format_helpers.build_rich_table_block`、`format_helpers.new_figure_table_anchor`、`format_helpers.plan_supplement_figure_caption` |
 | 库内链接身份 | `vault_library.index`（支持 `use_cache: true` 目录指纹缓存与 `output_path`）、`vault_library.match_reference`、`vault_library.match_references_batch`（批量 O(N+M) 匹配） |
 | 写库与恢复 | `vault_publish.publish_standalone`（一步预检+`asset_source_dir` 扁平资产查找+冲突消歧+事务写入+生成 `report.md`）、`vault_publish.plan_standalone`、`vault_publish.plan`（legacy）、`vault_publish.commit_markdown`、`vault_publish.rollback` |

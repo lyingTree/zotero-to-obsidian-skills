@@ -49,7 +49,6 @@ mod pdf_legacy_images;
 pub mod pdf_legacy_text;
 pub mod ocr_backend;
 pub mod ocr_acceleration;
-pub mod minicpm;
 pub mod ocr_pdf;
 pub mod ocr_table;
 pub mod ocr_quality;
@@ -60,6 +59,9 @@ pub mod schema;
 pub mod pdf_layout;
 pub mod tex_source;
 pub mod user_profile;
+pub mod mojibake;
+pub mod pdf_inspector_bridge;
+pub mod text_formats;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -154,15 +156,9 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_source_inventory.install_ocr_package",
     "prepare_source_inventory.recognize_ocr_png",
     "prepare_source_inventory.recognize_ocr_png_accelerated",
-    "prepare_source_inventory.recognize_minicpm_region",
-    "prepare_source_inventory.recognize_minicpm_pdf_region",
-    "prepare_source_inventory.inspect_minicpm_package",
-    "prepare_source_inventory.score_jev_region",
     "prepare_source_inventory.recognize_ocr_table_png",
     "prepare_source_inventory.recognize_pdf_table_region",
     "prepare_source_inventory.audit_ocr_evidence",
-    "prepare_source_inventory.recognize_ocr_formula_png",
-    "prepare_source_inventory.recognize_pdf_formula_region",
     "prepare_source_inventory.prepare_pdf_ocr_evidence",
     "prepare_source_inventory.prepare_pdfcraft_evidence",
     "validate_delivery.replay_native_pdf_inventory",
@@ -260,6 +256,7 @@ pub const OPERATIONS: &[&str] = &[
     "prepare_source_inventory.inspect_tex_source",
     "prepare_source_inventory.prepare_tex_source",
     "prepare_source_inventory.fetch_arxiv_tex",
+    "prepare_source_inventory.inspect_pdf_quality",
     "prepare_source_inventory.prepare_pdf_layout",
     "prepare_source_inventory.prepare_paper",
     "pdf_image_objects.render_page_regions_batch",
@@ -399,7 +396,10 @@ pub fn describe() -> Value {
         "schema_version": SCHEMA_VERSION, "engine": "rust", "version": format!("v{ENGINE_VERSION}"), "engine_version": ENGINE_VERSION,
         "reference_version": REFERENCE_VERSION, "platform": std::env::consts::OS,
         "architecture": std::env::consts::ARCH,
-        "pdf_backend": {"name":"pdfcraft-render","revision":pdfcraft_backend::PDFCRAFT_REV,"qualification":"qualified"}, "ocr_backend":{"name":"ppocr-rs","revision":ocr_backend::OCR_REV,"policy":"cpu_first","dynamic_runtime":"ONNX API 28; 1.28.3 or 1.32.0 candidate","gpu_required":false,"qualification":"optional_package"}, "full_workflow_ready": blockers.is_empty(), "operations": OPERATIONS,
+        "pdf_backend": {"name":"pdfcraft-render","revision":pdfcraft_backend::PDFCRAFT_REV,"qualification":"qualified"},
+        "pdf_inspector": {"name":"pdf-inspector","version":pdf_inspector_bridge::PDF_INSPECTOR_VERSION,"features":"pure_rust_no_pdfium","qualification":"qualified"},
+        "ocr_backend":{"name":"ppocr-rs","revision":ocr_backend::OCR_REV,"policy":"cpu_first","dynamic_runtime":"ONNX API 28; 1.28.3 or 1.32.0 candidate","gpu_required":false,"qualification":"bundled_package","bundled_status":ocr_backend::bundled_status()},
+        "full_workflow_ready": blockers.is_empty(), "operations": OPERATIONS,
         "release_target": manifest["release_target"], "module_status": modules,
         "required_targets": manifest["required_targets"], "release_blockers": blockers,
     })
@@ -1063,28 +1063,6 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             ocr_quality::audit(&primary,&sha,comparison.as_deref().zip(comparison_sha.as_deref()))?
         }
-        "prepare_source_inventory.recognize_ocr_formula_png" | "prepare_source_inventory.recognize_pdf_formula_region" => {
-            let package=path(&c.required("package_manifest")?)?;
-            let sha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
-            if op.ends_with("recognize_ocr_formula_png"){
-                let png=path(&c.positional("image_path")?)?;
-                let expected=c.option("expected_image_sha256",Value::Null);
-                let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_image_sha256")?)};
-                c.finish()?;
-                ocr_backend::recognize_formula_png(&png,&package,&sha,expected.as_deref())?
-            }else{
-                let source=path(&c.positional("source_pdf")?)?;
-                let dest=path(&c.required("destination")?)?;
-                let page=c.required("page_number")?.as_u64().context("page_number must be an integer")?;
-                let bbox=c.required("bbox")?;let coords=c.required("coordinate_system")?;
-                let dpi=c.option("dpi",json!(200)).as_u64().context("dpi must be an integer")?;
-                let expected=c.option("expected_source_sha256",Value::Null);
-                let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
-                c.finish()?;
-                let opt=ocr_pdf::FormulaOptions{page,bbox:&bbox,coordinate_system:&coords,dpi,package:&package,package_sha:&sha,expected_source_sha:expected.as_deref()};
-                json!(path_text(&ocr_pdf::recognize_formula_region(&source,&dest,opt)?)?)
-            }
-        }
         "prepare_source_inventory.recognize_ocr_table_png" | "prepare_source_inventory.recognize_pdf_table_region" => {
             let package=path(&c.required("package_manifest")?)?;
             let sha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
@@ -1157,52 +1135,6 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             ocr_acceleration::recognize(ocr_acceleration::Options{image:&png,image_sha:&image_sha,cpu:&cpu,cpu_sha:&cpu_sha,
                 gpu:gpu.as_deref().zip(gsha.as_deref()),profile:&profile,layout:&layout,acceleration:&mode,timeout})?
-        }
-        "prepare_source_inventory.inspect_minicpm_package" => {
-            let p=path(&c.positional("package_manifest")?)?;
-            let sha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
-            let kind=string(&c.required("model_kind")?,"model_kind")?;
-            c.finish()?;minicpm::inspect(&p,&sha,&kind)?
-        }
-        "prepare_source_inventory.recognize_minicpm_pdf_region" => {
-            let source=path(&c.positional("source_pdf")?)?;
-            let output=path(&c.required("destination")?)?;
-            let page=c.required("page_number")?.as_u64().context("page number required")?;
-            let bbox=c.required("bbox")?;let coords=c.required("coordinate_system")?;
-            let dpi=c.option("dpi",json!(200)).as_u64().context("dpi required")?;
-            let source_sha=string(&c.required("expected_source_sha256")?,"expected_source_sha256")?;
-            let manifest=path(&c.required("package_manifest")?)?;
-            let sha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
-            let category=string(&c.required("category")?,"category")?;
-            let mode=string(&c.option("acceleration",json!("auto")),"acceleration")?;
-            let timeout=c.option("timeout_seconds",json!(300)).as_u64().context("timeout required")?;
-            let max_tokens=c.option("max_tokens",json!(minicpm::DEFAULT_MAX_TOKENS)).as_u64().context("max_tokens must be integer")?;
-            c.finish()?;
-            minicpm::recognize_pdf_region(&source,&output,minicpm::RegionOptions{page,bbox:&bbox,coordinates:&coords,dpi,source_sha:&source_sha,
-                manifest:&manifest,manifest_sha:&sha,category:&category,acceleration:&mode,timeout,max_tokens})?
-        }
-        "prepare_source_inventory.recognize_minicpm_region" | "prepare_source_inventory.score_jev_region" => {
-            let png=path(&c.positional("image_path")?)?;
-            let image_sha=string(&c.required("expected_image_sha256")?,"expected_image_sha256")?;
-            let manifest=path(&c.required("package_manifest")?)?;
-            let msha=string(&c.required("expected_package_sha256")?,"expected_package_sha256")?;
-            let category=string(&c.required("category")?,"category")?;
-            let mode=string(&c.option("acceleration",json!("auto")),"acceleration")?;
-            let timeout=c.option("timeout_seconds",json!(300)).as_u64().context("timeout must be integer")?;
-            if op.ends_with("score_jev_region"){
-                let render=path(&c.required("render_image_path")?)?;
-                let render_sha=string(&c.required("expected_render_sha256")?,"expected_render_sha256")?;
-                let candidate=path(&c.required("candidate_text_path")?)?;
-                let candidate_sha=string(&c.required("expected_candidate_sha256")?,"expected_candidate_sha256")?;
-                c.finish()?;
-                minicpm::score(&png,minicpm::ScoreOptions{original_sha:&image_sha,render:&render,render_sha:&render_sha,
-                    candidate:&candidate,candidate_sha:&candidate_sha,manifest:&manifest,manifest_sha:&msha,category:&category,acceleration:&mode,timeout})?
-            }else{
-                let max_tokens=c.option("max_tokens",json!(minicpm::DEFAULT_MAX_TOKENS)).as_u64().context("max_tokens must be integer")?;
-                c.finish()?;
-                minicpm::recognize(&png,minicpm::RecognizeOptions{image_sha:&image_sha,manifest:&manifest,manifest_sha:&msha,
-                    category:&category,acceleration:&mode,timeout,max_tokens})?
-            }
         }
         "prepare_source_inventory.inspect_ocr_package" | "prepare_source_inventory.recognize_ocr_png" => {
             let png=if op.ends_with("recognize_ocr_png"){Some(path(&c.positional("image_path")?)?)}else{None};
@@ -1533,6 +1465,13 @@ pub fn invoke(request: Value) -> Result<Value> {
             c.finish()?;
             tex_source::fetch_and_prepare(&target,&destination,&id,pdf.as_deref(),timeout,compact)?
         }
+        "prepare_source_inventory.inspect_pdf_quality" => {
+            let source=path(&c.positional("source_pdf")?)?;
+            let expected=c.option("expected_source_sha256",Value::Null);
+            let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
+            c.finish()?;
+            pdf_inspector_bridge::inspect_pdf_file(&source,expected.as_deref())?
+        }
         "prepare_source_inventory.prepare_pdf_layout" => {
             let source=path(&c.positional("source_path")?)?;
             let destination=path(&c.positional("destination")?)?;
@@ -1706,7 +1645,9 @@ pub fn invoke(request: Value) -> Result<Value> {
         }
         "native_runtime.package" => {
             let source=path(&c.positional("source_root")?)?;let dest=path(&c.positional("destination")?)?;
-            c.finish()?;native_install::package(&source,&dest,runtime_reports::progress_line)?
+            let ocr_bundle=c.option("ocr_bundle",Value::Null);
+            let ocr_bundle=if ocr_bundle.is_null(){None}else{Some(path(&ocr_bundle)?)};
+            c.finish()?;native_install::package_with_ocr(&source,&dest,ocr_bundle.as_deref(),runtime_reports::progress_line)?
         }
         "native_runtime.inspect_bundle" | "native_runtime.install" | "native_runtime.verify_install" => {
             let manifest=path(&c.positional("package_manifest")?)?;

@@ -297,6 +297,9 @@ pub(crate) fn indentation(line:&str)->usize{
 pub fn inspect(text:&str)->Inspection{
     let text=text.strip_prefix('\u{feff}').unwrap_or(text).replace("\r\n","\n").replace('\r',"\n");
     let lines:Vec<_>=text.split('\n').collect();let mut findings=vec![];let mut tables=vec![];
+    for hit in crate::mojibake::scan_note_lines(&lines){
+        finding(&mut findings,"error",hit.code,hit.line,hit.message);
+    }
     let first=frontmatter(&lines,&mut findings);
     let mut visible=vec![String::new();lines.len()];let mut local_links:Vec<LocalLink>=vec![];
     let mut active_fence:Option<(u8,usize,&str,usize)>=None;let mut fence_content=vec![];
@@ -401,5 +404,24 @@ pub fn validate_file(path:&Path)->Vec<Finding>{
     match fs::read_to_string(path){
         Ok(text)=>validate_note(&text),
         Err(error)=>vec![Finding{level:"error",code:"FILE_READ",line:1,message:format!("无法读取文件：{error}")}],
+    }
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test]
+    fn hard_publish_gate_blocks_mojibake_and_unresolved_visual_required(){
+        let note="---\n类型: 期刊论文\n年份: 2025\n---\n\n# 正常标题\n\n含乱码 \u{FFFD} 字符\n含私用区 \u{E001} 字形\n含编码错解 锟斤拷\n<!-- VISUAL_REQUIRED: main-p1-b2 | reason=garbled_glyphs | page=1 | bbox=[10,20,100,40] -->\n";
+        let findings=validate_note(note);
+        let codes:Vec<&str>=findings.iter().filter(|f|f.level=="error").map(|f|f.code).collect();
+        assert!(codes.contains(&"MOJIBAKE_REPLACEMENT_CHAR"),"{findings:?}");
+        assert!(codes.contains(&"MOJIBAKE_PUA_GLYPH"),"{findings:?}");
+        assert!(codes.contains(&"MOJIBAKE_ENCODING_ARTIFACT"),"{findings:?}");
+        assert!(codes.contains(&"UNRESOLVED_VISUAL_REQUIRED"),"{findings:?}");
+
+        let clean="---\n类型: 期刊论文\n年份: 2025\n---\n\n# 正常标题\n\nSchröder 与 Müller 的方程满足 $\\alpha + \\beta \\le \\gamma$。\n";
+        let clean_findings=validate_note(clean);
+        assert!(clean_findings.iter().all(|f|f.level!="error"),"{clean_findings:?}");
     }
 }

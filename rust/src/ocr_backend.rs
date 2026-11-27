@@ -4,11 +4,12 @@
 use anyhow::{anyhow,bail,ensure,Context,Result};
 use serde_json::{json,Map,Value};
 use std::{collections::HashSet,fs,io::Cursor,path::{Path,PathBuf},sync::Mutex,panic::{catch_unwind,AssertUnwindSafe}};
-use ppocr_rs::{OcrLite,OcrOptions,LayoutAnalyzer,DocOrientationClassifier,Point,TextBlock,TableStructureRecognizer,CellDetector,FormulaRecognizer};
+use ppocr_rs::{OcrLite,OcrOptions,LayoutAnalyzer,DocOrientationClassifier,Point,TextBlock,TableStructureRecognizer,CellDetector};
 use crate::{check_ledger,check_write,files,path,path_text,parse_json};
 
 pub const OCR_REV:&str="b87550b775206655acf84d7fc421ca5bdf745fd3";
 const GIB:u64=1024*1024*1024;
+const MAX_ASSET_BYTES:u64=2*GIB;
 const MAX_PIXELS:u64=20_000_000;
 const MAX_PNG_BYTES:u64=128*1024*1024;
 const MAX_MANIFEST_BYTES:u64=2*1024*1024;
@@ -39,12 +40,12 @@ enum Tier{Tiny,Small,Medium}
 impl Tier{
     fn parse(v:&str)->Result<Self>{match v{"tiny"=>Ok(Self::Tiny),"small"=>Ok(Self::Small),"medium"=>Ok(Self::Medium),_=>bail!("profile must be auto, tiny, small, or medium")}}
     fn name(self)->&'static str{match self{Self::Tiny=>"tiny",Self::Small=>"small",Self::Medium=>"medium"}}
-    fn max_side(self)->u32{match self{Self::Tiny=>1280,Self::Small=>1600,Self::Medium=>1920}}
+    fn max_side(self)->u32{match self{Self::Tiny=>1280,Self::Small=>1600,Self::Medium=>2048}}
     fn threads(self)->usize{match self{Self::Tiny=>2,Self::Small=>4,Self::Medium=>8}}
 }
 fn ceiling(total:u64,free:u64)->Tier{
-    if total>=16*GIB&&free>=6*GIB{Tier::Medium}
-    else if total>=8*GIB&&free>=3*GIB{Tier::Small}
+    if total>=8*GIB&&free>=2*GIB{Tier::Medium}
+    else if total>=4*GIB&&free>=GIB{Tier::Small}
     else{Tier::Tiny}
 }
 fn plan(total:u64,free:u64,cores:usize,requested:&str,profiles:Option<&Map<String,Value>>,layout:&str,layout_installed:bool)->Result<Value>{
@@ -60,7 +61,7 @@ fn plan(total:u64,free:u64,cores:usize,requested:&str,profiles:Option<&Map<Strin
         ensure!(t<=max,"Insufficient memory for explicitly requested OCR profile; select a smaller profile or free memory");
         t
     };
-    let layout_allowed=total>=8*GIB&&free>=3*GIB;
+    let layout_allowed=total>=8*GIB&&free>=2*GIB;
     let use_layout=match layout{
         "on"=>{ensure!(layout_allowed&&layout_installed,"Explicit layout requested but model or memory budget is unavailable");true},
         "auto"=>layout_allowed&&layout_installed,
@@ -105,9 +106,10 @@ fn resource(root:&Path,v:&Value,label:&str)->Result<Value>{
     ensure!(v.is_object(),"{label}: missing resource binding");
     let p=local(root,&v["path"])?;
     let expected=sha(&v["sha256"])?;
-    let record=binding(&p)?;
-    ensure!(record["sha256"]==expected,"OCR_RESOURCE_HASH_MISMATCH: {label}");
-    ensure!(fs::metadata(p)?.len()>0,"Empty OCR resource: {label}");Ok(record)
+    let snap=files::snapshot_model_weight(&p,MAX_ASSET_BYTES)?;
+    ensure!(snap["sha256"]==expected,"OCR_RESOURCE_HASH_MISMATCH: {label}");
+    ensure!(snap["size"].as_u64().is_some_and(|n|n>0),"Empty OCR resource: {label}");
+    Ok(json!({"path":snap["path"],"sha256":snap["sha256"]}))
 }
 fn package_records(data:&Value)->Result<Vec<(&str,&Value)>>{
     ensure!(data.is_object()&&data["schema_version"].as_u64()==Some(1)&&data["engine"]=="ppocr-v6",
@@ -141,14 +143,6 @@ fn package_records(data:&Value)->Result<Vec<(&str,&Value)>>{
                     }
                 },
                 "table_cells_wired"|"table_cells_wireless"=>{if !v.is_null(){result.push(("table_cell_detector",v));}},
-                "formula"=>{
-                    if !v.is_null(){
-                        ensure!(v["architecture"]=="PP-FormulaNet_plus-L","Unsupported experimental formula model architecture");
-                        result.push(("formula_model",&v["model"]));
-                        result.push(("formula_tokenizer",&v["tokenizer"]));
-                    }
-                },
-
                 _=>bail!("Unknown OCR auxiliary model: {name}"),
             }
         }
@@ -202,6 +196,92 @@ fn check_installed_contents(root:&Path,expected:&std::collections::BTreeMap<Stri
         }
     }
     ensure!(seen.len()==expected.len(),"Installed OCR package lost a resource");Ok(())
+}
+
+pub type VerifiedPackageDir=(PathBuf,String,Vec<u8>,std::collections::BTreeMap<String,Value>);
+
+/// Verify an OCR package directory (`package.json`, optional `package.sha256`,
+/// and every declared runtime/model/dictionary resource) without loading ORT.
+pub fn verify_package_directory(dir:&Path)->Result<VerifiedPackageDir>{
+    real_directory(dir)?;
+    let root=files::canonical(dir)?;
+    let manifest_path=root.join("package.json");
+    let (raw,manifest)=read_small(&manifest_path,MAX_MANIFEST_BYTES)?;
+    let manifest_sha=manifest["sha256"].as_str().context("OCR manifest sha256")?.to_owned();
+    let sha_file=root.join("package.sha256");
+    if sha_file.exists()||sha_file.is_symlink(){
+        let (sha_raw,_)=read_small(&sha_file,4096)?;
+        let expected=std::str::from_utf8(&sha_raw)?.trim();
+        ensure!(sha(&json!(expected))?==manifest_sha,"OCR_PACKAGE_MANIFEST_HASH_MISMATCH");
+    }
+    let data=parse_json(std::str::from_utf8(&raw)?)?;
+    let assets=all_package_files(&data,&root,&manifest)?;
+    ensure!(!assets.is_empty(),"Empty OCR package");
+    Ok((manifest_path,manifest_sha,raw,assets))
+}
+
+fn probe_bundled_dir(dir:&Path)->Option<(PathBuf,String)>{
+    real_directory(dir).ok()?;
+    let root=files::canonical(dir).ok()?;
+    let manifest_path=root.join("package.json");
+    let sha_path=root.join("package.sha256");
+    let (sha_raw,_)=read_small(&sha_path,4096).ok()?;
+    let expected=std::str::from_utf8(&sha_raw).ok()?.trim().to_owned();
+    let expected_sha=sha(&json!(&expected)).ok()?.to_owned();
+    let (_,manifest)=read_small(&manifest_path,MAX_MANIFEST_BYTES).ok()?;
+    if manifest["sha256"].as_str()!=Some(expected_sha.as_str()){return None;}
+    Some((manifest_path,expected_sha))
+}
+
+/// Auto-discover the bundled PP-OCRv6 runtime package shipped alongside `z2o`
+/// (`<exe_dir>/ocr/`) or overridden via `Z2O_OCR_PACKAGE_DIR`.
+pub fn discover_bundled_package_with_source()->Option<(PathBuf,String,&'static str)>{
+    if let Some(env_dir)=std::env::var_os("Z2O_OCR_PACKAGE_DIR"){
+        if !env_dir.is_empty(){
+            if let Some((m,s))=probe_bundled_dir(Path::new(&env_dir)){
+                return Some((m,s,"env"));
+            }
+        }
+    }
+    if let Ok(exe)=std::env::current_exe(){
+        if let Ok(canon)=files::canonical(&exe){
+            if let Some(exe_dir)=canon.parent(){
+                if let Some((m,s))=probe_bundled_dir(&exe_dir.join("ocr")){
+                    return Some((m,s,"exe_adjacent"));
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn discover_bundled_package()->Option<(PathBuf,String)>{
+    discover_bundled_package_with_source().map(|(m,s,_)|(m,s))
+}
+
+pub fn bundled_status()->Value{
+    match discover_bundled_package_with_source(){
+        Some((manifest_path,manifest_sha,source))=>json!({
+            "available":true,
+            "source":source,
+            "manifest_path":path_text(&manifest_path).ok(),
+            "manifest_sha256":manifest_sha,
+        }),
+        None=>json!({
+            "available":false,
+            "source":"absent",
+            "manifest_path":Value::Null,
+            "manifest_sha256":Value::Null,
+        }),
+    }
+}
+
+pub fn open_bundled_engine(layout:&str)->Result<Option<Engine>>{
+    let Some((manifest_path,manifest_sha))=discover_bundled_package() else{
+        return Ok(None);
+    };
+    let pkg=Package::load(&manifest_path,&manifest_sha,"auto",layout)?;
+    Ok(Some(Engine::open(pkg)?))
 }
 
 /// Import only explicitly declared resources from an already trusted package.
@@ -359,50 +439,6 @@ impl Package{
         p.resources.remove("orientation");p.policy["table_cell_mode"]=json!(cell_mode);
         p.verify()?;Ok(p)
     }
-    fn for_formula(manifest_path:&Path,expected_sha:&str)->Result<Self>{
-        let (_,manifest,data,root)=verified_manifest(manifest_path,expected_sha)?;
-        // The experimental formula decoder is expensive. Never load the
-        // ordinary detector/recognizer, layout, or GPU for a formula crop.
-        package_records(&data)?;
-        let (total,free,cores)=available();
-        ensure!(total>=16*GIB&&free>=6*GIB,"Experimental formula recognition requires the conservative 16 GiB / 6 GiB available memory budget");
-        let runtime=&data["runtime"];
-        ensure!(runtime["execution_provider"].as_str().unwrap_or("CPUExecutionProvider")=="CPUExecutionProvider","Formula path requires CPU package");
-        let model=&data["auxiliary"]["formula"];
-        ensure!(model["architecture"]=="PP-FormulaNet_plus-L","Install an explicitly bound PP-FormulaNet_plus-L formula model");
-        let mut resources=Map::new();
-        resources.insert("runtime".into(),resource(&root,&runtime["file"],"runtime")?);
-        if let Some(rows)=runtime.get("dependencies"){
-            for (i,row) in rows.as_array().context("Invalid runtime dependency list")?.iter().enumerate(){
-                resources.insert(format!("runtime_dependency_{i}"),resource(&root,row,"runtime dependency")?);
-            }
-        }
-        for (name,key) in [("formula_model","model"),("formula_tokenizer","tokenizer")]{
-            let b=resource(&root,&model[key],name)?;
-            ensure!(resources.values().all(|v|v["path"]!=b["path"]),"Formula model resources must be distinct");
-            resources.insert(name.into(),b);
-        }
-        // Avoid upstream fallback tokenizer and unbounded vocabulary IDs.
-        let tokenizer=path(&resources["formula_tokenizer"]["path"])?;
-        let (raw,bound)=read_small(&tokenizer,32*1024*1024)?;
-        ensure!(bound==resources["formula_tokenizer"],"Formula tokenizer changed");
-        let tok=parse_json(std::str::from_utf8(&raw)?)?;
-        let vocab=tok["model"]["vocab"].as_object().or_else(||tok["vocab"].as_object())
-            .filter(|v|!v.is_empty()&&v.len()<=100_000).context("Require the actual supported BPE formula vocabulary")?;
-        let mut ids=HashSet::new();
-        for id in vocab.values(){
-            let id=id.as_u64().filter(|i|*i<100_000).context("Invalid formula tokenizer ID")?;
-            ensure!(ids.insert(id),"Duplicate formula tokenizer ID");
-        }
-        for id in [0,1,2]{ensure!(ids.contains(&id),"Missing formula special-token IDs");}
-        let model_path=path(&resources["formula_model"]["path"])?;
-        ensure!(fs::metadata(&model_path)?.len()<=2*GIB,"Formula model exceeds explicit resource budget");
-        let policy=json!({"policy":"cpu_first","execution_provider":"CPUExecutionProvider","gpu_required":false,
-            "profile":"experimental_formula_only","total_memory_bytes":total,"available_memory_bytes":free,
-            "logical_parallelism":cores,"memory_budget_available":true,"page_parallelism":1,
-            "boundary":"Opt-in experimental crop inference, not qualified minimum hardware; the upstream decoder may run up to 2560 steps."});
-        let p=Self{manifest,resources,policy};p.verify()?;Ok(p)
-    }
     fn verify(&self)->Result<()>{
         for b in std::iter::once(&self.manifest).chain(self.resources.values()){
             let p=path(&b["path"])?;check_write::no_link(&p)?;
@@ -544,9 +580,10 @@ impl Engine{
             ensure!(result.page_angle==0,"Unexpected second page rotation");
             blocks.extend(result.text_blocks.iter().enumerate().map(|(i,b)|block_record(b,i,angle,w,h)));
         }
-        let review:Vec<_>=blocks.iter().filter(|b|b["location_valid"]!=true||b["text_score"].as_f64().is_none_or(|s|s<0.90)
+        let review:Vec<_>=blocks.iter().filter(|b|b["location_valid"]!=true||b["text_score"].as_f64().is_none_or(|s|s<0.92)
             ||b["box_score"].as_f64().is_none_or(|s|s<0.60)).map(|b|b["index"].clone()).collect();
         let text=blocks.iter().filter_map(|b|b["text"].as_str()).collect::<Vec<_>>().join("\n");
+        let mojibake_audit=crate::mojibake::analyze_text(&text).to_json();
         self.package.verify()?;
         ensure!(binding(png)?==source,"OCR source image changed during inference");
         Ok(json!({"schema_version":1,"source_image":source,"source_image_size":[w,h],
@@ -554,6 +591,7 @@ impl Engine{
             "orientation_model_used":self.orientation.is_some(),"orientation_score":orientation_score,
             "orientation_coordinate_contract":"Original pixel-center points for OCR words/lines; pixel-edge points for layout regions",
             "model_package":self.package.report(),"layout_regions":regions,"blocks":blocks,"plain_text":text,
+            "mojibake_audit":mojibake_audit,
             "review_suggestion_indices":review,"status":if blocks.is_empty(){"no_text_detected_review_required"}else{"ocr_candidate"},
             "source_fidelity":"not_assessed","acceptance_ready":false,"evidence_boundary":BOUNDARY}))
     }
@@ -667,47 +705,46 @@ pub fn recognize_table_png(png:&Path,manifest:&Path,hash:&str,profile:&str,cell_
     })
 }
 
-/// Optional experimental native formula model, one explicitly selected crop.
-/// The pinned ppocr-rs decoder is disabled by default upstream. We enable it
-/// only here, never during ordinary OCR, and never write a final equation.
-pub fn recognize_formula_png(png:&Path,manifest:&Path,hash:&str,expected:Option<&str>)->Result<Value>{
-    guarded(||{
-        let package=Package::for_formula(manifest,hash)?;
-        let (img,source)=read_rgb(png,expected)?;
-        let (w,h)=img.dimensions();
-        ensure!(u64::from(w)*u64::from(h)<=4_000_000,"Formula crop exceeds the explicit four-million-pixel budget");
-        package.verify()?;
-        init_cpu(&package)?;
-        let model=package.get("formula_model")?;
-        let tokenizer=package.get("formula_tokenizer")?;
-        let mut recognizer=FormulaRecognizer::from_paths(&model,Some(&tokenizer))?;
-        recognizer.decoder_enabled=true;
-        let result=recognizer.recognize(&img)?;
-        drop(recognizer);
-        let text=result.latex;
-        ensure!(text.len()<=256*1024,"Formula hypothesis exceeds text budget");
-        package.verify()?;ensure!(binding(png)?==source,"Formula crop changed during inference");
-        Ok(json!({"schema_version":1,"status":if text.trim().is_empty(){"formula_unresolved"}else{"formula_candidate_review_required"},
-            "source_image":source,"source_image_size":[w,h],"model_package":package.report(),
-            "backend":"PP-FormulaNet_plus-L (experimental ppocr-rs decoder)","latex_candidate":text,"raw_model_score":finite_score(result.score),
-            "decoder_completion_verified":false,"latex_semantics_verified":false,"source_fidelity":"not_assessed","acceptance_ready":false,
-            "evidence_boundary":"Actual experimental formula inference, not a validated equation. Upstream token decoding and termination are unqualified; the candidate may omit, reorder or hallucinate mathematical symbols. Do not execute LaTeX or write it into the final note before independent source review."}))
-    })
-}
-
 #[cfg(test)]
 mod tests{
     use super::*;
     #[test]
     fn conservative_cpu_policy(){
-        assert_eq!(plan(4*GIB,2*GIB,64,"auto",None,"auto",true).unwrap()["profile"],"tiny");
-        let p=plan(8*GIB,4*GIB,12,"auto",None,"auto",true).unwrap();
-        assert_eq!(p["profile"],"small");assert_eq!(p["threads"],4);assert_eq!(p["gpu_required"],false);assert_eq!(p["layout_enabled"],true);
+        assert_eq!(plan(2*GIB,512*1024*1024,64,"auto",None,"auto",true).unwrap()["profile"],"tiny");
+        let p=plan(4*GIB,GIB,12,"auto",None,"auto",true).unwrap();
+        assert_eq!(p["profile"],"small");assert_eq!(p["threads"],4);assert_eq!(p["gpu_required"],false);assert_eq!(p["layout_enabled"],false);
+        let m_plan=plan(8*GIB,2*GIB,12,"auto",None,"auto",true).unwrap();
+        assert_eq!(m_plan["profile"],"medium");assert_eq!(m_plan["threads"],8);assert_eq!(m_plan["max_detection_side"],2048);assert_eq!(m_plan["layout_enabled"],true);
         assert_eq!(plan(32*GIB,12*GIB,32,"auto",None,"off",false).unwrap()["profile"],"medium");
-        assert!(plan(4*GIB,2*GIB,8,"medium",None,"off",false).is_err());
-        assert!(plan(8*GIB,2*GIB,8,"auto",None,"on",true).is_err());
+        assert!(plan(4*GIB,GIB,8,"medium",None,"off",false).is_err());
+        assert!(plan(4*GIB,GIB,8,"auto",None,"on",true).is_err());
         let m=Map::from_iter([("tiny".into(),json!({}))]);
         assert_eq!(plan(32*GIB,12*GIB,32,"auto",Some(&m),"off",false).unwrap()["profile"],"tiny");
+    }
+    #[test]
+    fn bundled_package_directory_verifies_and_detects_sha_mismatch(){
+        let dir=tempfile::tempdir().unwrap();
+        let write=|name:&str,data:&[u8]|->Value{
+            fs::write(dir.path().join(name),data).unwrap();
+            json!({"path":name,"sha256":files::digest(data)})
+        };
+        let manifest=json!({
+            "schema_version":1,"engine":"ppocr-v6",
+            "runtime":{"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,"version":"1.32.0",
+                "execution_provider":"CPUExecutionProvider","file":write("ort.bin",b"ort-bytes")},
+            "profiles":{"medium":{"detector":write("det.onnx",b"det"),"recognizer":write("rec.onnx",b"rec"),"dictionary":write("dict.txt",b"a\n")}}
+        });
+        let raw=serde_json::to_vec_pretty(&manifest).unwrap();
+        let digest=files::digest(&raw);
+        fs::write(dir.path().join("package.json"),&raw).unwrap();
+        fs::write(dir.path().join("package.sha256"),format!("{digest}\n")).unwrap();
+        let (_,sha_out,_,assets)=verify_package_directory(dir.path()).unwrap();
+        assert_eq!(sha_out,digest);
+        assert_eq!(assets.len(),4);
+        assert!(probe_bundled_dir(dir.path()).is_some());
+        fs::write(dir.path().join("package.sha256"),format!("{}\n","0".repeat(64))).unwrap();
+        assert!(verify_package_directory(dir.path()).is_err());
+        assert!(probe_bundled_dir(dir.path()).is_none());
     }
     #[test]
     fn rotation_inverse_keeps_source_coordinates(){

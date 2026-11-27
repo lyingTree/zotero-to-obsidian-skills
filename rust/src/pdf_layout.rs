@@ -52,7 +52,17 @@ fn intersect(a:Box4,b:Box4)->Option<Box4>{
 fn union(a:Box4,b:Box4)->Box4{[a[0].min(b[0]),a[1].min(b[1]),a[2].max(b[2]),a[3].max(b[3])]}
 
 fn is_garbled_str(s:&str)->bool{
-    s.chars().any(|c|c=='\u{FFFD}'||c=='\0'||('\u{E000}'..='\u{F8FF}').contains(&c))
+    crate::mojibake::analyze_text(s).is_garbled
+}
+
+fn is_page1_affiliation_block(page:u64,kind:&str,text:&str,bbox:Box4,bounds:Box4)->bool{
+    if page!=1 || kind!="paragraph"{return false;}
+    let trimmed=text.trim();
+    if trimmed.is_empty() || trimmed.len()>260{return false;}
+    let page_h=(bounds[3]-bounds[1]).max(1.0);
+    if bbox[1]>bounds[1]+0.45*page_h{return false;}
+    trimmed.contains('@')
+        || rx!(r"(?i)\b(?:University|Institute|Department|Laboratory|Academy|College|School|Center|Centre)\b|(?:大学|学院|研究所|实验室)").is_match(trimmed)
 }
 
 fn extract_lines(native:&Value,bounds:Box4)->Vec<LineItem>{
@@ -192,7 +202,20 @@ fn join_lines(prev:&mut String,next:&str,keep_newlines:bool){
     }
 }
 
+#[cfg(test)]
 pub(crate) fn analyze_page(source_id:&str,page:u64,bounds:Box4,native:&Value,structure:&Value,in_references:&mut bool)->Value{
+    analyze_page_with_quality(source_id,page,bounds,native,structure,in_references,None)
+}
+
+pub(crate) fn analyze_page_with_quality(
+    source_id:&str,
+    page:u64,
+    bounds:Box4,
+    native:&Value,
+    structure:&Value,
+    in_references:&mut bool,
+    page_quality:Option<&crate::pdf_inspector_bridge::PageQuality>,
+)->Value{
     let raw_lines=extract_lines(native,bounds);
     let mut heights:Vec<f64>=raw_lines.iter().filter(|l|l.text.len()>=20).map(|l|l.height).collect();
     if heights.is_empty(){heights=raw_lines.iter().map(|l|l.height).collect();}
@@ -250,6 +273,7 @@ pub(crate) fn analyze_page(source_id:&str,page:u64,bounds:Box4,native:&Value,str
         let same_block=if let Some(prev)=drafts.last(){
             prev.col==line.col
                 && prev.kind==target_kind
+                && prev.garbled==line.garbled
                 && role!=Role::Heading
                 && role!=Role::ReferenceStart
                 && !split_gap
@@ -327,15 +351,17 @@ fn extract_fig_id(caption:&str)->Option<String>{
 
     for (i,d) in drafts.iter().enumerate(){
         let id=format!("{source_id}-p{page}-b{}",i+1);
+        let mut visual_required=false;
+        let mut visual_reason:Option<&str>=None;
         if d.kind=="caption"{
             if rx!(r"^(?:Table|Tbl\.|表)").is_match(d.text.trim()){
                 has_table_caption=true;
                 let region=[bounds[0],(d.bbox[1]-18.0).max(bounds[1]),bounds[2],(d.bbox[3]+220.0).min(bounds[3])];
-                visual_regions.push(json!({"page":page,"block_id":id,"kind":"table_region","bbox":region,"reason":"table caption detected"}));
+                visual_regions.push(json!({"page":page,"block_id":id,"kind":"table_region","bbox":region,"reason":"table caption detected","visual_required":false}));
             }else{
                 has_figure_caption=true;
                 let region=[bounds[0],(d.bbox[1]-220.0).max(bounds[1]),bounds[2],(d.bbox[3]+20.0).min(bounds[3])];
-                visual_regions.push(json!({"page":page,"block_id":id,"kind":"figure_region","bbox":region,"reason":"figure caption detected"}));
+                visual_regions.push(json!({"page":page,"block_id":id,"kind":"figure_region","bbox":region,"reason":"figure caption detected","visual_required":false}));
 
                 let (col_x0,col_x1)=if two_column&&d.col==-1{
                     (bounds[0],(mid_x+0.04*page_w).min(bounds[2]))
@@ -423,10 +449,21 @@ fn extract_fig_id(caption:&str)->Option<String>{
                     "confidence":confidence,
                 }));
             }
-        }else if d.garbled{
-            visual_regions.push(json!({"page":page,"block_id":id,"kind":"garbled_glyphs","bbox":d.bbox,"reason":"replacement or private-use unicode glyph detected"}));
-        }else if d.kind=="display_math" && d.line_indices.len()>=2{
-            visual_regions.push(json!({"page":page,"block_id":id,"kind":"multiline_formula","bbox":d.bbox,"reason":"multi-line display math block"}));
+        }
+        if d.garbled{
+            visual_required=true;
+            visual_reason=Some("garbled_glyphs");
+            visual_regions.push(json!({"page":page,"block_id":id,"kind":"garbled_glyphs","bbox":d.bbox,"reason":"mojibake, replacement or private-use unicode glyph detected","visual_required":true}));
+        }else if d.kind=="display_math"{
+            let kind=if d.line_indices.len()>=2{"multiline_formula"}else{"display_formula"};
+            let reason=if d.line_indices.len()>=2{"multi-line display math block requires visual verification"}else{"2D display formula requires visual verification"};
+            visual_required=true;
+            visual_reason=Some(kind);
+            visual_regions.push(json!({"page":page,"block_id":id,"kind":kind,"bbox":d.bbox,"reason":reason,"visual_required":true}));
+        }else if is_page1_affiliation_block(page,d.kind,&d.text,d.bbox,bounds){
+            visual_required=true;
+            visual_reason=Some("page1_affiliation");
+            visual_regions.push(json!({"page":page,"block_id":id,"kind":"page1_affiliation","bbox":d.bbox,"reason":"page 1 author/affiliation header block requires visual check","visual_required":true}));
         }
         blocks.push(json!({
             "id":id,
@@ -437,13 +474,55 @@ fn extract_fig_id(caption:&str)->Option<String>{
             "text":d.text.clone(),
             "line_indices":d.line_indices.clone(),
             "garbled":d.garbled,
+            "visual_required":visual_required,
+            "visual_reason":visual_reason,
         }));
     }
 
     let image_count=structure["occurrences"].as_array().map_or(0,Vec::len);
     let classification=ocr_pdf::classify(native,structure);
+    let mut ocr_whole_page=classification["ocr_whole_page"]==true;
+    let mut page_visual_required=false;
+    let mut page_visual_reason:Option<String>=None;
+    let mut has_detected_table=false;
+    if let Some(pq)=page_quality{
+        if pq.has_table{has_detected_table=true;}
+        if pq.has_type3_or_unmapped_font{
+            ocr_whole_page=true;
+            page_visual_required=true;
+            let reason=format!("unmapped_font_page({})",pq.unmapped_fonts.join(","));
+            page_visual_reason=Some(reason.clone());
+            visual_regions.push(json!({"page":page,"block_id":format!("{source_id}-p{page}-page"),"kind":"unmapped_font_page","bbox":bounds,"reason":reason,"visual_required":true}));
+        }else if !pq.mojibake_reasons.is_empty(){
+            ocr_whole_page=true;
+            page_visual_required=true;
+            let reason=format!("mojibake_page({})",pq.mojibake_reasons.join(","));
+            page_visual_reason=Some(reason.clone());
+            visual_regions.push(json!({"page":page,"block_id":format!("{source_id}-p{page}-page"),"kind":"mojibake_page","bbox":bounds,"reason":reason,"visual_required":true}));
+        }else if pq.needs_ocr{
+            let substantive=image_count>0||raw_lines.is_empty()||pq.reasons.iter().any(|r|{
+                let rl=r.to_ascii_lowercase();
+                rl.contains("encoding")||rl.contains("cmap")||rl.contains("garbl")||rl.contains("mojibake")
+                    ||rl.contains("font")||rl.contains("vector")||rl.contains("invisible")
+            });
+            if substantive{
+                ocr_whole_page=true;
+                page_visual_required=true;
+                let reason=if pq.reasons.is_empty(){"scanned_or_ocr_page".to_owned()}else{format!("scanned_or_ocr_page({})",pq.reasons.join(","))};
+                page_visual_reason=Some(reason.clone());
+                visual_regions.push(json!({"page":page,"block_id":format!("{source_id}-p{page}-page"),"kind":"scanned_or_ocr_page","bbox":bounds,"reason":reason,"visual_required":true}));
+            }
+        }
+    }
+    if ocr_whole_page && !page_visual_required{
+        page_visual_required=true;
+        let reason=classification["kind"].as_str().unwrap_or("scan_or_unreliable_text_layer").to_owned();
+        page_visual_reason=Some(reason.clone());
+        visual_regions.push(json!({"page":page,"block_id":format!("{source_id}-p{page}-page"),"kind":"scanned_or_ocr_page","bbox":bounds,"reason":reason,"visual_required":true}));
+    }
     json!({
         "page":page,
+        "bounds":bounds,
         "two_column":two_column,
         "raw_line_count":raw_lines.len(),
         "margin_lines":margin_lines,
@@ -453,7 +532,10 @@ fn extract_fig_id(caption:&str)->Option<String>{
         "has_images":image_count>0,
         "has_figure_caption":has_figure_caption,
         "has_table_caption":has_table_caption,
-        "ocr_whole_page":classification["ocr_whole_page"],
+        "has_detected_table":has_detected_table,
+        "ocr_whole_page":ocr_whole_page,
+        "page_visual_required":page_visual_required,
+        "page_visual_reason":page_visual_reason,
         "classification":classification,
     })
 }
@@ -468,16 +550,59 @@ fn write_atomic_new(p:&Path,bytes:&[u8])->Result<Value>{
     Ok(b)
 }
 
-fn render_clean_layout_markdown(pages:&[Value])->String{
-    let mut out=String::from("<!-- Derived from pure-Rust PDF geometric layout clustering. Verify tables, complex formulas & cropped figures against rendered page/region images. -->\n\n");
+fn clamp_box(b:Box4,bounds:Box4)->Option<Box4>{
+    let c=[
+        b[0].max(bounds[0]).min(bounds[2]),
+        b[1].max(bounds[1]).min(bounds[3]),
+        b[2].max(bounds[0]).min(bounds[2]),
+        b[3].max(bounds[1]).min(bounds[3]),
+    ];
+    (c[0]<c[2]&&c[1]<c[3]).then_some(c)
+}
+
+fn expand_box(b:Box4,margin:f64,bounds:Box4)->Option<Box4>{
+    clamp_box([b[0]-margin,b[1]-margin,b[2]+margin,b[3]+margin],bounds)
+}
+
+fn format_bbox(v:&Value)->String{
+    if let Some(b)=box4(v){
+        format!("[{:.1},{:.1},{:.1},{:.1}]",b[0],b[1],b[2],b[3])
+    }else{
+        "[0.0,0.0,0.0,0.0]".into()
+    }
+}
+
+fn sanitize_stem(id:&str)->String{
+    id.chars().map(|c|if c.is_ascii_alphanumeric()||matches!(c,'_'|'-'){c}else{'_'}).collect()
+}
+
+fn render_clean_layout_markdown(source_id:&str,pages:&[Value])->String{
+    let mut out=String::from("<!-- Derived from pure-Rust PDF geometric layout clustering with pdf-inspector preflight & zero-Mojibake firewall. Resolve every VISUAL_REQUIRED marker against ocr-verify-sheet.png / rendered pages before publishing. -->\n\n");
     for p in pages{
         let page_num=p["page"].as_u64().unwrap_or(0);
         out.push_str(&format!("<!-- page {page_num} -->\n\n"));
+        if p["page_visual_required"]==true{
+            let reason=p["page_visual_reason"].as_str().unwrap_or("page_visual_review_required");
+            let bbox_str=format_bbox(&p["bounds"]);
+            out.push_str(&format!("<!-- VISUAL_REQUIRED: {source_id}-p{page_num}-page | reason={reason} | page={page_num} | bbox={bbox_str} -->\n\n"));
+        }
         for b in p["blocks"].as_array().into_iter().flatten(){
             let id=b["id"].as_str().unwrap_or("");
             let kind=b["kind"].as_str().unwrap_or("paragraph");
             let text=b["text"].as_str().unwrap_or("").trim();
+            let garbled=b["garbled"]==true;
+            let vis_req=b["visual_required"]==true;
+            let vis_reason=b["visual_reason"].as_str().unwrap_or("visual_review_required");
+            let bbox_str=format_bbox(&b["bbox"]);
+            if garbled{
+                // Zero-Mojibake Firewall: NEVER emit raw garbled/PUA/U+FFFD text into clean-layout.md.
+                out.push_str(&format!("<!-- VISUAL_REQUIRED: {id} | reason={vis_reason} | page={page_num} | bbox={bbox_str} -->\n\n"));
+                continue;
+            }
             if text.is_empty(){continue;}
+            if vis_req{
+                out.push_str(&format!("<!-- VISUAL_REQUIRED: {id} | reason={vis_reason} | page={page_num} | bbox={bbox_str} -->\n"));
+            }
             match kind{
                 "heading"=>out.push_str(&format!("## {text} <!-- {id} -->\n\n")),
                 "display_math"=>out.push_str(&format!("<!-- {id} (math) -->\n$$\n{text}\n$$\n\n")),
@@ -500,6 +625,8 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
     let mut backend=Backend::open(source_pdf,expected_sha)?;
     let source_binding=backend.source_binding().clone();
     if render_pages!="none"{backend.preflight_whole_pages(dpi)?;}
+    let pdf_quality_report=fs::read(source_pdf).ok()
+        .and_then(|raw|crate::pdf_inspector_bridge::inspect_pdf_bytes(&raw).ok());
 
     fs::create_dir_all(destination)?;
     let root=files::canonical(destination)?;
@@ -525,8 +652,10 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
     let mut image_pages=Vec::new();
     let mut all_regions=Vec::new();
     let mut all_figure_candidates=Vec::new();
+    let mut visual_required_items=Vec::new();
     let mut exported_objects=Vec::new();
     let mut seen_objects=BTreeSet::<(u32,u16)>::new();
+    let mut bundled_ocr:Option<Result<crate::ocr_backend::Engine,String>>=None;
 
     for n in 1..=total_pages{
         let page=n as u64;
@@ -536,13 +665,98 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
             "page":page,"plain_text":"","glyphs":[],"warnings":[],"truncated":true
         }));
         let structure=backend.structure(page)?;
-        let mut page_doc=analyze_page(source_id,page,bounds,&native,&structure,&mut in_references);
+        let pq=pdf_quality_report.as_ref().and_then(|r|r.pages.get(&page));
+        let mut page_doc=analyze_page_with_quality(source_id,page,bounds,&native,&structure,&mut in_references,pq);
+
+        let has_garbled_blocks=page_doc["blocks"].as_array().is_some_and(|arr|arr.iter().any(|b|b["garbled"]==true));
+        if has_garbled_blocks && crate::ocr_backend::discover_bundled_package().is_some(){
+            if bundled_ocr.is_none(){
+                bundled_ocr=Some(match crate::ocr_backend::open_bundled_engine("off"){
+                    Ok(Some(e))=>Ok(e),
+                    Ok(None)=>Err("bundled OCR package absent".into()),
+                    Err(e)=>Err(format!("{e:#}")),
+                });
+            }
+            if let Some(Ok(engine))=bundled_ocr.as_mut(){
+                let ocr_tmp=tempfile::Builder::new().prefix(".ocr-repair-").tempdir_in(&root)?;
+                if let Some(blocks_arr)=page_doc["blocks"].as_array_mut(){
+                    let mut repaired_ids=BTreeSet::<String>::new();
+                    for (idx,blk) in blocks_arr.iter_mut().enumerate(){
+                        if blk["garbled"]!=true{continue;}
+                        let Some(bbox)=box4(&blk["bbox"]).and_then(|b|expand_box(b,6.0,bounds)) else{continue;};
+                        let png=ocr_tmp.path().join(format!("p{page}-b{idx}.png"));
+                        let Ok(raster)=backend.render(page,Some(bbox),300,&png) else{continue;};
+                        match engine.recognize_png(&png,raster["asset"]["sha256"].as_str()){
+                            Ok(res)=>{
+                                let cand=res["plain_text"].as_str().unwrap_or("").trim().to_owned();
+                                let ocr_blocks=res["blocks"].as_array();
+                                let high_conf=ocr_blocks.is_some_and(|bs|!bs.is_empty()&&bs.iter().all(|ob|{
+                                    ob["location_valid"]==true
+                                        &&ob["text_score"].as_f64().is_some_and(|s|s>=0.92)
+                                        &&ob["box_score"].as_f64().is_some_and(|s|s>=0.60)
+                                }));
+                                let clean=!cand.is_empty()&&!crate::mojibake::analyze_text(&cand).is_garbled;
+                                if high_conf && clean{
+                                    let prev=blk["text"].clone();
+                                    blk["native_garbled_text"]=prev;
+                                    blk["text"]=json!(cand);
+                                    blk["garbled"]=json!(false);
+                                    blk["ocr_repaired"]=json!(true);
+                                    blk["visual_required"]=json!(false);
+                                    blk["visual_reason"]=Value::Null;
+                                    if let Some(id)=blk["id"].as_str(){repaired_ids.insert(id.to_owned());}
+                                }else{
+                                    blk["visual_required"]=json!(true);
+                                    blk["visual_reason"]=json!(if !clean{"bundled_ocr_garbled_or_empty"}else{"bundled_ocr_low_confidence_below_0.92"});
+                                    if !cand.is_empty(){blk["ocr_candidate"]=json!(cand);}
+                                }
+                            }
+                            Err(_)=>{
+                                blk["visual_required"]=json!(true);
+                                blk["visual_reason"]=json!("bundled_ocr_failed");
+                            }
+                        }
+                    }
+                    if !repaired_ids.is_empty(){
+                        if let Some(vr)=page_doc["visual_review_regions"].as_array_mut(){
+                            vr.retain(|r|!(r["kind"]=="garbled_glyphs"&&r["block_id"].as_str().is_some_and(|id|repaired_ids.contains(id))));
+                        }
+                    }
+                }
+            }
+        }
+
+        if page_doc["page_visual_required"]==true{
+            visual_required_items.push(json!({
+                "id":format!("{source_id}-p{page}-page"),
+                "page":page,
+                "kind":"page_visual_required",
+                "reason":page_doc["page_visual_reason"].as_str().unwrap_or("page_visual_review_required"),
+                "bbox":bounds,
+            }));
+        }
+        for blk in page_doc["blocks"].as_array().into_iter().flatten(){
+            if blk["visual_required"]==true{
+                if let Some(clamped)=box4(&blk["bbox"]).and_then(|b|clamp_box(b,bounds)){
+                    visual_required_items.push(json!({
+                        "id":blk["id"],
+                        "page":page,
+                        "kind":blk["kind"],
+                        "reason":blk["visual_reason"].as_str().unwrap_or("visual_review_required"),
+                        "bbox":clamped,
+                    }));
+                }
+            }
+        }
+
         raw_line_total+=page_doc["raw_line_count"].as_u64().unwrap_or(0) as usize;
         block_total+=page_doc["blocks"].as_array().map_or(0,Vec::len);
         let has_images=page_doc["has_images"]==true;
         let has_fig=page_doc["has_figure_caption"]==true;
-        let has_tbl=page_doc["has_table_caption"]==true;
+        let has_tbl=page_doc["has_table_caption"]==true||page_doc["has_detected_table"]==true;
         let ocr_needed=page_doc["ocr_whole_page"]==true;
+        let page_has_visual_required=page_doc["page_visual_required"]==true
+            ||page_doc["blocks"].as_array().is_some_and(|arr|arr.iter().any(|b|b["visual_required"]==true));
         if has_images{image_pages.push(page);}
         if has_fig{figure_pages.push(page);}
         if has_tbl{table_pages.push(page);}
@@ -570,7 +784,7 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
 
         let should_render=match render_pages{
             "all"=>true,
-            "selective"=>page==1 || has_images || has_fig || has_tbl || ocr_needed,
+            "selective"=>page==1 || has_images || has_fig || has_tbl || ocr_needed || page_has_visual_required,
             _=>false,
         };
         if should_render{
@@ -585,12 +799,57 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
     }
     backend.verify()?;
 
-    let clean_md=render_clean_layout_markdown(&analyzed);
+    let verify_sheet=if !visual_required_items.is_empty() && render_pages!="none"{
+        let verify_dir=root.join("verify-crops");
+        fs::create_dir_all(&verify_dir)?;
+        let sheet_path=root.join("ocr-verify-sheet.png");
+        let mut batch_regions=Vec::new();
+        for (idx,item) in visual_required_items.iter().take(32).enumerate(){
+            let id=item["id"].as_str().unwrap_or("region");
+            let reason=item["reason"].as_str().unwrap_or("visual_required");
+            let dest=verify_dir.join(format!("verify-{:02}-{}.png",idx+1,sanitize_stem(id)));
+            batch_regions.push(json!({
+                "page_number":item["page"],
+                "bbox":item["bbox"],
+                "destination":path_text(&dest)?,
+                "dpi":300,
+                "margin_pt":6.0,
+                "transparent":false,
+                "auto_trim":false,
+                "label":format!("{id} ({reason})"),
+            }));
+        }
+        let source_sha=source_binding["sha256"].as_str();
+        let rendered=crate::pdf_boundary::render_page_regions_batch(
+            source_pdf,
+            &Value::Array(batch_regions),
+            crate::pdf_boundary::BatchRegionOptions{
+                expected:source_sha,
+                overwrite:false,
+                contact_sheet_destination:Some(&sheet_path),
+                contact_sheet_columns:None,
+            },
+        )?;
+        json!({
+            "contact_sheet":rendered["contact_sheet"],
+            "cropped_count":rendered["count"],
+            "total_visual_required":visual_required_items.len(),
+            "truncated_at_32":visual_required_items.len()>32,
+            "items":rendered["items"],
+        })
+    }else{Value::Null};
+
+    let pdf_quality_json=pdf_quality_report.as_ref().map(|r|r.to_json()).unwrap_or(Value::Null);
+    let clean_md=render_clean_layout_markdown(source_id,&analyzed);
     let clean_binding=write_atomic_new(&clean_file,clean_md.as_bytes())?;
     let layout_doc=json!({
         "schema_version":1,"backend":"pdfcraft-layout-v1","source_file":source_binding,"source_id":source_id,
         "page_count":total_pages,"render_mode":render_pages,"dpi":dpi,
-        "counts":{"raw_lines":raw_line_total,"clustered_blocks":block_total,"visual_review_regions":all_regions.len(),"rendered_pages":rendered_pages.len(),"exported_image_objects":exported_objects.len()},
+        "pdf_quality":pdf_quality_json,
+        "visual_required_count":visual_required_items.len(),
+        "visual_required_items":visual_required_items,
+        "ocr_verify_sheet":verify_sheet,
+        "counts":{"raw_lines":raw_line_total,"clustered_blocks":block_total,"visual_review_regions":all_regions.len(),"visual_required":visual_required_items.len(),"rendered_pages":rendered_pages.len(),"exported_image_objects":exported_objects.len()},
         "image_objects":exported_objects,"pages":analyzed,"boundary":BOUNDARY
     });
     let mut layout_bytes=serde_json::to_vec_pretty(&layout_doc)?;layout_bytes.push(b'\n');
@@ -599,6 +858,8 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
     let regions_doc=json!({
         "schema_version":1,"source_file":source_binding,"regions":all_regions,
         "figure_candidates":all_figure_candidates,
+        "visual_required_items":visual_required_items,
+        "ocr_verify_sheet":verify_sheet,
         "rendered_pages":rendered_pages,"figure_pages":figure_pages,"table_pages":table_pages
     });
     let mut region_bytes=serde_json::to_vec_pretty(&regions_doc)?;region_bytes.push(b'\n');
@@ -614,6 +875,10 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
         "page_count":total_pages,
         "render_mode":render_pages,
         "dpi":dpi,
+        "pdf_quality":layout_doc["pdf_quality"],
+        "visual_required_count":visual_required_items.len(),
+        "visual_required_items":visual_required_items,
+        "ocr_verify_sheet":verify_sheet,
         "counts":layout_doc["counts"],
         "figure_pages":figure_pages,
         "table_pages":table_pages,
@@ -623,7 +888,7 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
         "clean_markdown":clean_binding,
         "layout_blocks":layout_binding,
         "visual_review_regions":region_binding,
-        "next_action":"Read clean-layout.md; inspect only rendered Page 1 and figure/table/visual_review_regions pages instead of prose pages.",
+        "next_action":"Read clean-layout.md; resolve every VISUAL_REQUIRED marker using ocr-verify-sheet.png (when generated) and rendered Page 1 / figure / table pages.",
         "source_fidelity":"not_assessed",
         "boundary":BOUNDARY,
     }))
@@ -665,6 +930,10 @@ fn load_cached_layout(layout_dir:&Path,pdf_path:&Path,expected_sha:Option<&str>)
         "page_count":blocks["page_count"],
         "render_mode":blocks["render_mode"],
         "dpi":blocks["dpi"],
+        "pdf_quality":blocks.get("pdf_quality").cloned().unwrap_or(Value::Null),
+        "visual_required_count":blocks.get("visual_required_count").cloned().unwrap_or(json!(0)),
+        "visual_required_items":blocks.get("visual_required_items").cloned().unwrap_or(json!([])),
+        "ocr_verify_sheet":blocks.get("ocr_verify_sheet").cloned().unwrap_or(Value::Null),
         "counts":blocks["counts"],
         "figure_pages":regions["figure_pages"],
         "table_pages":regions["table_pages"],
@@ -950,5 +1219,60 @@ mod tests{
         let b2=fc2[0]["suggested_bbox"].as_array().unwrap();
         let h2=b2[3].as_f64().unwrap()-b2[1].as_f64().unwrap();
         assert!(h2>=100.0,"expected >=100pt height above subfigure row, got {h2} ({b2:?})");
+    }
+
+    #[test]
+    fn garbled_pua_and_display_math_emit_visual_required_and_verify_sheet(){
+        // 1. Unit check: garbled PUA/U+FFFD text is NEVER emitted into clean-layout.md;
+        //    instead a VISUAL_REQUIRED marker is emitted.
+        let glyphs=json!([
+            {"glyph_index":0,"line_index":0,"text":"Clean introductory paragraph before formula.","space_before":false,"bbox":[72.0,100.0,480.0,112.0]},
+            {"glyph_index":1,"line_index":1,"text":"Corrupted \u{E001}\u{FFFD} math glyph line","space_before":false,"bbox":[72.0,140.0,320.0,152.0]},
+            {"glyph_index":2,"line_index":2,"text":"x = y + z (1)","space_before":false,"bbox":[220.0,190.0,340.0,202.0]},
+        ]);
+        let page=analyze_page_with_quality("main",2,[0.0,0.0,600.0,800.0],&json!({"glyphs":glyphs}),&json!({"occurrences":[]}),&mut false,None);
+        let md=render_clean_layout_markdown("main",&[page]);
+        assert!(md.contains("Clean introductory paragraph before formula."),"{md}");
+        assert!(md.contains("<!-- VISUAL_REQUIRED: main-p2-b2 | reason=garbled_glyphs"),"{md}");
+        assert!(md.contains("<!-- VISUAL_REQUIRED: main-p2-b3 | reason=display_formula"),"{md}");
+        assert!(!md.contains('\u{E001}')&&!md.contains('\u{FFFD}'),"garbled glyph leaked into clean-layout.md: {md}");
+
+        // 2. End-to-end PDF check: Page 1 affiliation + display formula + Page 2 Type-3 unmapped font
+        //    must generate ocr-verify-sheet.png and emit VISUAL_REQUIRED markers.
+        let tmp=tempfile::tempdir().unwrap();
+        let pdf=tmp.path().join("firewall.pdf");
+        let mut doc=Document::with_version("1.5");
+        let pages=doc.new_object_id();
+        let font=doc.add_object(dictionary!{"Type"=>"Font","Subtype"=>"Type1","BaseFont"=>"Helvetica"});
+        let res_p1=dictionary!{"Font"=>dictionary!{"F1"=>font}};
+        let c1=doc.add_object(Stream::new(dictionary!{},b"BT /F1 12 Tf 1 0 0 1 40 720 Tm (Department of Mathematics, Example University) Tj ET BT /F1 12 Tf 1 0 0 1 40 680 Tm (This full width sentence spans across the page margin to establish page column width cleanly.) Tj ET BT /F1 12 Tf 1 0 0 1 240 620 Tm (x = y + z \\(1\\)) Tj ET".to_vec()));
+        let p1=doc.add_object(dictionary!{"Type"=>"Page","Parent"=>pages,"Contents"=>c1,"Resources"=>res_p1});
+
+        let t3=doc.add_object(dictionary!{
+            "Type"=>"Font","Subtype"=>"Type3",
+            "FontBBox"=>vec![0.into(),0.into(),1000.into(),1000.into()],
+            "FontMatrix"=>vec![0.001.into(),0.into(),0.into(),0.001.into(),0.into(),0.into()],
+            "CharProcs"=>dictionary!{},"Encoding"=>"WinAnsiEncoding",
+            "FirstChar"=>32,"LastChar"=>32,"Widths"=>vec![500.into()],
+        });
+        let c2=doc.add_object(Stream::new(dictionary!{},b"BT /F3 12 Tf 40 700 Tm ( ) Tj ET".to_vec()));
+        let p2=doc.add_object(dictionary!{"Type"=>"Page","Parent"=>pages,"Contents"=>c2,"Resources"=>dictionary!{"Font"=>dictionary!{"F3"=>t3}}});
+        doc.objects.insert(pages,Object::Dictionary(dictionary!{
+            "Type"=>"Pages","Kids"=>vec![Object::Reference(p1),Object::Reference(p2)],
+            "Count"=>2,"MediaBox"=>vec![0.into(),0.into(),600.into(),800.into()]
+        }));
+        let catalog=doc.add_object(dictionary!{"Type"=>"Catalog","Pages"=>pages});
+        doc.trailer.set("Root",catalog);
+        doc.save(&pdf).unwrap();
+
+        let out=tmp.path().join("layout");
+        let res=prepare_pdf_layout(&pdf,&out,"main","selective",72,None).unwrap();
+        assert!(res["visual_required_count"].as_u64().unwrap()>=2,"{res}");
+        assert!(out.join("ocr-verify-sheet.png").is_file(),"expected ocr-verify-sheet.png");
+        assert!(res["ocr_verify_sheet"]["contact_sheet"]["asset"]["path"].as_str().unwrap().ends_with("ocr-verify-sheet.png"));
+        assert!(res["pdf_quality"]["type3_or_unmapped_font_pages"].as_array().unwrap().iter().any(|v|v==2),"{res}");
+        let clean=fs::read_to_string(res["clean_markdown"]["path"].as_str().unwrap()).unwrap();
+        assert!(clean.contains("<!-- VISUAL_REQUIRED:"),"{clean}");
+        assert!(!clean.contains('\u{FFFD}')&&!clean.contains('\u{E001}'),"{clean}");
     }
 }

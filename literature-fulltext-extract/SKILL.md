@@ -12,22 +12,22 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 
 - item.json 已确认的主全文及附件哈希。
 - 读取[交接约定](../literature-zotero2obsidian/references/pipeline-contract.md)；涉及项目路径、模板、工具或阻断级别时读取[项目配置](../literature-zotero2obsidian/references/project-profile.md)。
-- 如需本地 OCR、表格/公式识别或 MiniCPM/Jev，读取[OCR、表格/公式识别与 MiniCPM/Jev 指南](../literature-zotero2obsidian/references/ocr-and-minicpm.md)。
+- 如需了解 PDF 质量预检、内置 PP-OCRv6 与零乱码视觉核对，读取[PDF 质量预检、内置 PP-OCRv6 与零乱码视觉核对指南](../literature-zotero2obsidian/references/ocr-and-minicpm.md)。
 
 ## 执行步骤
 
 继续以现有逐页/结构清单与来源交付检查为机械证据；实际文件绑定使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md)。页图内容是否正确与源单元是否完整仍须核对。
 
 1. 核对每份附件的来源身份。
-2. 优先调用复合入口 `prepare_source_inventory.prepare_paper`（传 `work_dir`、`pdf_path`、`tex_target`、`glossary_path`），一站完成 arXiv TeX 获取、选择性 PDF 版面聚类、行末连字符愈合、生成 `clean-layout.md`、`figure_candidates` 与本篇 `matched-glossary.md`（若独立运行 PDF 阶段可调用 `prepare_pdf_layout`，默认 `render_pages: "selective"`；TeX 已成功时严禁全量渲染 `render_pages: "all"`）。
-3. 先在 `source-map.json`（或 `layout-blocks.json` / `tex-structure.json`）登记原文章节及对象清单。
+2. 优先调用复合入口 `prepare_source_inventory.prepare_paper`（传 `work_dir`、`pdf_path`、`tex_target`、`glossary_path`），一站完成 arXiv TeX 获取（自动转码非 UTF-8 源码）、`pdf-inspector` + `lopdf` 字体 CMap 质量预检、选择性 PDF 版面聚类、行末连字符愈合、内置 PP-OCRv6 乱码自动修复、生成 `clean-layout.md`、`ocr-verify-sheet.png`（如有 `<!-- VISUAL_REQUIRED: ... -->` 区域）、`figure_candidates` 与本篇 `matched-glossary.md`（若独立运行 PDF 阶段可调用 `prepare_pdf_layout`，默认 `render_pages: "selective"`；TeX 已成功时严禁全量渲染 `render_pages: "all"`）。
+3. 先在 `source-map.json`（或 `layout-blocks.json` / `tex-structure.json`）登记原文章节及对象清单；若 `clean-layout.md` 中存在 `<!-- VISUAL_REQUIRED: ... -->` 标记，必须对照 `ocr-verify-sheet.png` 或对应页图逐处核实并替换为核定原文，禁止残留该标记进入发布校验。
 4. 对照 `figure_candidates` 调用 `pdf_image_objects.render_page_regions_batch` 批量裁剪多个图件（支持 `auto_trim` 与 `contact_sheet_destination` 拼图）；仅在异常区域或边界有疑问时再单独调用 `render_page_region` / `inspect_crop_boundaries` 微调。
 5. 对照页图或 TeX 源码复核需要精确转录的字段与公式。
 6. 回查清单中尚无提取结果的对象。
 
-## DOCX 结构入口
+## DOCX 与多格式结构入口
 
-正文或 SI 为 `.docx` 时，将原文件直接传给 `prepare_source_inventory.prepare_sources()` 或总入口 `initialize_workflow()`；同一调用可以混合 PDF 与 DOCX。读取返回清单的 `native_blocks`、`media_calls` 和 `native_media`，具体字段见[DOCX 结构证据](../literature-zotero2obsidian/references/delivery-checks.md#docx-结构证据)。结构定位使用 XML 部件及子元素路径，没有推定页码。
+正文或 SI 为 `.docx`、`.html`/`.xhtml`、`.epub`、`.odt`、`.txt`/`.md` 时，将原文件直接传给 `prepare_source_inventory.prepare_sources()` 或总入口 `initialize_workflow()`；同一调用可以混合 PDF 与上述格式，非 UTF-8 文本自动通过 `encoding_rs`/`chardetng` 无乱码解码。DOCX 读取返回清单的 `native_blocks`、`media_calls` 和 `native_media`，具体字段见[DOCX 结构证据](../literature-zotero2obsidian/references/delivery-checks.md#docx-结构证据)。结构定位使用 XML 部件及子元素路径，没有推定页码。
 
 先按 `native_blocks` 的顺序提取正文与表格。再按 `media_calls` 的实际 relationship 找原图，并结合前后题注确认逻辑图号。同一图可以对应多个媒体调用；ZIP 中的图片文件名和媒体序号不代表图号。原图文件绑定位于 `native_media[].file`。
 

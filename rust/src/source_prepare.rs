@@ -43,7 +43,7 @@ fn prepare_impl(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dp
     no_existing(&root.join("source-inventory.json"))?;
     if glossary.is_some(){no_existing(&root.join("terminology.json"))?;}
     #[derive(Clone, Copy)]
-    enum Format { Docx, Pdf }
+    enum Format { Docx, Pdf, Html, Epub, Odt, Text }
     let mut portable_ids=std::collections::BTreeSet::new();
     let mut actual_sources=std::collections::BTreeSet::new();
     if let Some(roles)=roles.as_object(){ensure!(roles.keys().all(|id|map.contains_key(id)),"Source role names an absent source");}
@@ -57,6 +57,10 @@ fn prepare_impl(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dp
             "docx"=>Format::Docx,
             "pdf" if docx_only=>anyhow::bail!("UNMIGRATED_PDF_INVENTORY: {id}; this entrypoint is DOCX-only"),
             "pdf"=>Format::Pdf,
+            "html"|"htm"|"xhtml" if !docx_only=>Format::Html,
+            "epub" if !docx_only=>Format::Epub,
+            "odt" if !docx_only=>Format::Odt,
+            "txt"|"md"|"markdown" if !docx_only=>Format::Text,
             _=>anyhow::bail!("Unsupported source format: {id}"),
         };
         let role=roles.get(id).cloned().unwrap_or(json!("pending"));
@@ -84,6 +88,22 @@ fn prepare_impl(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dp
                 pdf.preflight_whole_pages(dpi)
                     .with_context(||format!("{id}: PDF page raster preflight failed"))?;
             }
+            Format::Html=>{
+                crate::text_formats::read_bound_document(p,id,crate::text_formats::FormatKind::Html,Some(sha))
+                    .with_context(||format!("{id}: accessible HTML required"))?;
+            }
+            Format::Epub=>{
+                crate::text_formats::read_bound_document(p,id,crate::text_formats::FormatKind::Epub,Some(sha))
+                    .with_context(||format!("{id}: accessible EPUB required"))?;
+            }
+            Format::Odt=>{
+                crate::text_formats::read_bound_document(p,id,crate::text_formats::FormatKind::Odt,Some(sha))
+                    .with_context(||format!("{id}: accessible ODT required"))?;
+            }
+            Format::Text=>{
+                crate::text_formats::read_bound_document(p,id,crate::text_formats::FormatKind::Text,Some(sha))
+                    .with_context(||format!("{id}: accessible text/Markdown source required"))?;
+            }
         }
     }
     let root=safe_dir(root)?;
@@ -110,6 +130,10 @@ fn prepare_impl(sources:&Value,root:&Path,roles:&Value,glossary:Option<&Path>,dp
         let mut native=match format{
             Format::Docx=>docx::prepare_bound_docx_source(p,id,&destination,Some(sha),&mut progress),
             Format::Pdf=>crate::pdf_inventory::prepare_bound_source(p,id,&destination,dpi,ocr,Some(sha),&mut progress),
+            Format::Html=>crate::text_formats::prepare_bound_document(p,id,&destination,crate::text_formats::FormatKind::Html,Some(sha)),
+            Format::Epub=>crate::text_formats::prepare_bound_document(p,id,&destination,crate::text_formats::FormatKind::Epub,Some(sha)),
+            Format::Odt=>crate::text_formats::prepare_bound_document(p,id,&destination,crate::text_formats::FormatKind::Odt,Some(sha)),
+            Format::Text=>crate::text_formats::prepare_bound_document(p,id,&destination,crate::text_formats::FormatKind::Text,Some(sha)),
         }.with_context(||format!("{id}: source evidence preparation failed"))?;
         ensure!(binding(p)?==*record,"{id}: source changed during evidence preparation");
         native["id"]=json!(id);native["role"]=role.clone();

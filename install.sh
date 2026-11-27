@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Install the 12 literature-* skills (with precompiled Rust runtime/z2o)
+# All-in-one installer for the 12 literature-* skills, precompiled Rust runtime/z2o,
+# and bundled PP-OCRv6 OCR/layout/table runtime (when included in the release bundle)
 # from GitHub Releases, plus optional external dependency skills (obsidian-cli, zotero-skills).
-# No local compilation required.
+# No local compilation and no first-run OCR download prompts required.
 #
 # Usage: ./install.sh [skills-root] [version-tag] [obsidian-ref] [zotero-ref]
 set -euo pipefail
@@ -120,9 +121,9 @@ chmod +x "$Z2O_BIN"
 MANIFEST_SHA="$(sha256_file "$MANIFEST")"
 
 mkdir -p "$SKILLS_ROOT"
-echo "==> Installing 12 literature-* skills into ${SKILLS_ROOT} ..."
+echo "==> Installing 12 literature-* skills, runtime/z2o, and any bundled OCR runtime into ${SKILLS_ROOT} ..."
 "$Z2O_BIN" install "$MANIFEST" "$MANIFEST_SHA" "$SKILLS_ROOT"
-"${SKILLS_ROOT}/literature-zotero2obsidian/runtime/z2o" verify-install "$MANIFEST" "$MANIFEST_SHA" "$SKILLS_ROOT" >/dev/null
+"${SKILLS_ROOT}/literature-zotero2obsidian/runtime/z2o" verify-install "$MANIFEST" "$MANIFEST_SHA" "$SKILLS_ROOT"
 
 if [ "${Z2O_SKIP_EXTERNAL_DEPENDENCIES:-0}" != "1" ] && command -v git >/dev/null 2>&1; then
   echo "==> Fetching pinned external skills (obsidian-cli@${OBSIDIAN_REF}, zotero-skills@${ZOTERO_REF}) ..."

@@ -24,13 +24,7 @@ const TABLE_ENVS:&[&str]=&["table","table*","longtable","tabular","tabular*","ta
 const FIGURE_ENVS:&[&str]=&["figure","figure*","wrapfigure","subfigure","subfigure*"];
 
 fn decode_tex_text(bytes:&[u8],name:&str)->Result<String>{
-    match std::str::from_utf8(bytes){
-        Ok(s)=>Ok(s.to_owned()),
-        Err(_)=>{
-            ensure!(!bytes.starts_with(b"%PDF-")&&!bytes.contains(&0),"TeX archive member is binary or corrupted: {name}");
-            Ok(bytes.iter().map(|&b|char::from(b)).collect())
-        }
-    }
+    Ok(crate::mojibake::decode_text_bytes(bytes,name)?.text)
 }
 fn gunzip_bounded(raw:&[u8])->Result<Vec<u8>>{
     let mut decoded=Vec::new();
@@ -73,7 +67,7 @@ fn zip_files(raw:&[u8])->Result<BTreeMap<String,String>>{
         let mut bytes=Vec::with_capacity(f.size() as usize);
         f.read_to_end(&mut bytes)?;
         ensure!(bytes.len() as u64<=MAX_MEMBER,"TeX archive member exceeds size budget: {name}");
-        let text=String::from_utf8(bytes).with_context(||format!("TeX archive member is not UTF-8: {name}"))?;
+        let text=decode_tex_text(&bytes,&name)?;
         out.insert(name,text);
     }
     Ok(out)
@@ -128,11 +122,11 @@ fn source_files(name:&str,raw:&[u8])->Result<BTreeMap<String,String>>{
         let tex_name=if stem.to_ascii_lowercase().ends_with(".tex")||stem.to_ascii_lowercase().ends_with(".ltx"){
             safe_name(stem)?
         }else{"main.tex".to_owned()};
-        return Ok(BTreeMap::from([(tex_name,decode_tex_text(&decoded,&stem)?)]));
+        return Ok(BTreeMap::from([(tex_name,decode_tex_text(&decoded,stem)?)]));
     }
     if lower.ends_with(".tar")||looks_like_tar(raw){return tar_files(raw);}
     if lower.ends_with(".tex")||lower.ends_with(".ltx")||head.contains("\\documentclass")||head.contains("\\begin{"){
-        let text=String::from_utf8(raw.to_vec()).context("TeX source must be UTF-8")?;
+        let text=decode_tex_text(raw,name)?;
         return Ok(BTreeMap::from([(safe_name(name)?,text)]));
     }
     Err(anyhow!("Unsupported arXiv/TeX source format; use .tex, .zip, .tar, .tar.gz or .gz"))
@@ -766,5 +760,33 @@ a & b \\
         let cached=fetch_and_prepare(&json!("2611.26982"),&out2,"main",None,10,true).unwrap();
         assert_eq!(cached["status"],"ok");
         assert_eq!(cached["counts"]["references"],1);
+    }
+    #[test]
+    fn decodes_gbk_tex_and_zip_sources_without_mojibake(){
+        use zip::write::SimpleFileOptions;
+        let dir=tempfile::tempdir().unwrap();
+        let src="\\documentclass{article}\n\\begin{document}\n\\section{海洋内波动力学的非线性数值模拟}\n本文研究不同层结下内孤立波的能量耗散特征。\n\\end{document}\n";
+        let (gbk,_,err)=encoding_rs::GB18030.encode(src);
+        assert!(!err);
+
+        let tex_path=dir.path().join("gbk-paper.tex");
+        fs::write(&tex_path,&gbk).unwrap();
+        let r=inspect(&tex_path,"gbk",None).unwrap();
+        let joined:String=r["blocks"].as_array().unwrap().iter().filter_map(|b|b["text"].as_str()).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("海洋内波动力学的非线性数值模拟"),"{joined}");
+        assert!(!crate::mojibake::analyze_text(&joined).is_garbled);
+
+        let zip_path=dir.path().join("gbk-paper.zip");
+        {
+            let f=fs::File::create(&zip_path).unwrap();
+            let mut z=zip::ZipWriter::new(f);
+            z.start_file("main.tex",SimpleFileOptions::default()).unwrap();
+            z.write_all(&gbk).unwrap();
+            z.finish().unwrap();
+        }
+        let rz=inspect(&zip_path,"gbkzip",None).unwrap();
+        let zjoined:String=rz["blocks"].as_array().unwrap().iter().filter_map(|b|b["text"].as_str()).collect::<Vec<_>>().join("\n");
+        assert!(zjoined.contains("内孤立波的能量耗散特征"),"{zjoined}");
+        assert!(!crate::mojibake::analyze_text(&zjoined).is_garbled);
     }
 }

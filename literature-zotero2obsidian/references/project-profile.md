@@ -32,18 +32,16 @@
 
 | 键 | 默认 | 含义 |
 |---|---|---|
-| `formula_table_enhancement` | `unasked` | 首次询问后写 `native` 或 `ocr` |
+| `formula_table_enhancement` | `bundled` | 默认开箱使用内置 PP-OCRv6 + 视觉核对（兼容历史 `native` / `ocr` / `unasked` 值，不再首次弹窗询问） |
 | `arxiv_tex_auto` | `true` | 预印本默认尝试 TeX 源辅助 |
 | `transparent_figure` | `preserve_original` | 透明插图保留原图/alpha，不合成白底 |
 
-### 首次询问：复杂公式与表格增强
+### 内置 OCR 与零乱码视觉核对（开箱即用）
 
-只有 `formula_table_enhancement: "unasked"` 时询问一次，并把选择写入 profile：
+发行版在安装技能时已通过 `z2o package --ocr-bundle` 一并随 `runtime/z2o[.exe]` 落盘内置 PP-OCRv6（含版面与表格模型）至 `literature-zotero2obsidian/runtime/ocr/`，首次运行**不再询问**是否下载可选增强包：
 
-- 选项 A（默认直接执行，不提问、不下载）：使用 PDF 原生文字层、PdfCraft 页图/区域渲染与模型视觉核对；复杂公式与表格按区域放大、必要时用 TeX 源辅助。没有安装 OCR 包不阻断本条路径。
-- 选项 B（仅首次询问是否下载安装）：可选 PP-OCR/表格结构/公式模型包。用户同意后才调用 `prepare_source_inventory.install_ocr_package`，安装到技能内持久化 `store`；拒绝或安装失败保持选项 A，不反复询问。
-
-已写入 `native` 或 `ocr` 后，后续运行直接沿用，除非用户主动要求修改。
+- 文本质量正常的原生 PDF 直接使用纯 Rust `pdf-inspector` + PdfCraft 几何聚类与 arXiv TeX 辅助；遇到扫描页、缺字/Type 3 字体或乱码块时自动调用内置 PP-OCRv6（置信度阈值 `>= 0.92`）。
+- 对 2D 复杂公式、第 1 页作者/单位块及低置信/无法修复的乱码区域，自动生成 300 DPI `ocr-verify-sheet.png` 并在 `clean-layout.md` 中插入 `<!-- VISUAL_REQUIRED: ... -->` 标记，由宿主直接看图核对；未消解标记或任何乱码字符在写库校验阶段将被硬阻断。
 
 ### arXiv 预印本 TeX 源
 
