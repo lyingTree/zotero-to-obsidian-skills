@@ -709,11 +709,12 @@ mod tests{
     #[test]
     fn profile_is_skill_local_atomic_and_round_trips(){
         let d=root();let skill=d.path();
+        let canonical_skill=files::canonical(skill).unwrap();
         let first=load(Some(skill),true).unwrap();
         assert_eq!(first["status"],"uninitialized");assert_eq!(first["onboarding_pending"],true);
-        assert!(first["profile_path"].as_str().unwrap().starts_with(&path_text(skill).unwrap()));
+        assert!(first["profile_path"].as_str().unwrap().starts_with(&path_text(&canonical_skill).unwrap()));
         let mut profile=first["profile"].clone();
-        profile["paths"]["obsidian_vault_root"]=json!(path_text(skill).unwrap());
+        profile["paths"]["obsidian_vault_root"]=json!(path_text(&canonical_skill).unwrap());
         profile["preferences"]["formula_table_enhancement"]=json!("native");
         let saved=save(profile,Some(skill)).unwrap();
         assert_eq!(saved["status"],"saved");
