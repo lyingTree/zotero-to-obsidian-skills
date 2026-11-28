@@ -684,14 +684,14 @@ pub fn invoke(request: Value) -> Result<Value> {
             let convert_tables=c.option("convert_markdown_tables",json!(false)).as_bool().context("convert_markdown_tables must be boolean")?;
             let compact=c.option("compact",json!(false)).as_bool().context("compact must be boolean")?;
             c.finish()?;
-            let result=pipeline::process_with_options(source.as_deref(),&plan,&content,&output,&contract,root.as_deref(),
+            let (result,timings)=pipeline::process_with_timings(source.as_deref(),&plan,&content,&output,&contract,root.as_deref(),
                 pipeline::ProcessOptions{write_normalized_to:write_to.as_deref(),strip_display_trailing_punctuation:strip_punct,
                     force_lf,convert_markdown_tables:convert_tables},
                 runtime_reports::throttled_progress)?;
             if compact {
                 json!({"schema_version":result["schema_version"],"status":result["status"],
                     "source_fidelity":result["source_fidelity"],"summary":result["summary"],
-                    "published_candidate":result["published_candidate"],"timings_ms":result["timings_ms"],
+                    "published_candidate":result["published_candidate"],"timings_ms":timings,
                     "receipt":path_text(&path(&result["directory"])?.join("result.json"))?})
             } else { result }
         }

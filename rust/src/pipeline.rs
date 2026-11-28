@@ -347,7 +347,11 @@ pub fn process(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,cont
     process_with_options(source,plan,content,output,contract,resource_root,ProcessOptions::default(),progress)
 }
 pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,contract:&Value,
-                            resource_root:Option<&Path>,options:ProcessOptions<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+                            resource_root:Option<&Path>,options:ProcessOptions<'_>,progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    Ok(process_with_timings(source,plan,content,output,contract,resource_root,options,progress)?.0)
+}
+pub(crate) fn process_with_timings(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,contract:&Value,
+                                   resource_root:Option<&Path>,options:ProcessOptions<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<(Value,Value)>{
     let started=std::time::Instant::now();
     if let Some(dest)=options.write_normalized_to{ensure_outside_vault(dest)?;}
     let eng=engine()?;
@@ -472,7 +476,7 @@ pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,outp
             result["published_candidate"]=json!({"written":false,"path":path_text(dest)?,"reason":"unsafe_parse"});
         }
     }
-    result["timings_ms"]=json!({
+    let timings=json!({
         "input_and_render":conversion_started.duration_since(started).as_millis(),
         "convert_tables":normalization_started.duration_since(conversion_started).as_millis(),
         "normalize_and_replay":mapping_started.duration_since(normalization_started).as_millis(),
@@ -481,5 +485,5 @@ pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,outp
         "readback_and_save":readback_started.elapsed().as_millis(),
         "total":started.elapsed().as_millis()
     });
-    Ok(result)
+    Ok((result,timings))
 }
