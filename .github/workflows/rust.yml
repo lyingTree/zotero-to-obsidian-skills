@@ -135,6 +135,8 @@ jobs:
             exit 1
           fi
           ocr_bundle="$RUNNER_TEMP/z2o-ocr-bundle-${TARGET_TRIPLE}"
+          "$PY_BIN" -m pip install --disable-pip-version-check --target "$RUNNER_TEMP/z2o-yaml" PyYAML==6.0.3
+          export PYTHONPATH="$("$PY_BIN" -c 'import os; print(os.path.join(os.environ["RUNNER_TEMP"], "z2o-yaml"))')"
           rm -rf "$ocr_bundle"
           mkdir -p "$ocr_bundle"
           "$PY_BIN" - "$ocr_bundle" "$TARGET_TRIPLE" <<'PY'
@@ -178,46 +180,11 @@ jobs:
               return {"path": filename, "sha256": sha256_bytes(data)}
 
           def extract_character_dict(yml_bytes: bytes) -> bytes:
-              text = yml_bytes.decode("utf-8")
-              try:
-                  import yaml  # type: ignore
-                  doc = yaml.safe_load(text)
-                  chars = doc["PostProcess"]["character_dict"]
-                  if not chars:
-                      raise RuntimeError("Empty PostProcess.character_dict")
-                  return ("\n".join(str(c) for c in chars) + "\n").encode("utf-8")
-              except ImportError:
-                  pass
-              out = []
-              in_pp = False
-              in_dict = False
-              dict_indent = None
-              for raw_line in text.splitlines():
-                  if not raw_line.strip():
-                      continue
-                  indent = len(raw_line) - len(raw_line.lstrip(" "))
-                  stripped = raw_line.strip()
-                  if indent == 0:
-                      in_pp = (stripped == "PostProcess:")
-                      in_dict = False
-                      continue
-                  if in_pp and stripped == "character_dict:":
-                      in_dict = True
-                      dict_indent = indent
-                      continue
-                  if in_dict:
-                      if stripped.startswith("- ") and indent >= dict_indent:
-                          val = stripped[2:]
-                          if len(val) >= 2 and val[0] == "'" and val[-1] == "'":
-                              val = val[1:-1].replace("''", "'")
-                          elif len(val) >= 2 and val[0] == '"' and val[-1] == '"':
-                              val = json.loads(re.sub(r'\\x([0-9a-fA-F]{2})', r'\\u00\1', val))
-                          out.append(val)
-                      elif indent <= dict_indent:
-                          break
-              if not out:
-                  raise RuntimeError("Could not extract PostProcess.character_dict from YAML")
-              return ("\n".join(out) + "\n").encode("utf-8")
+              import yaml
+              chars = yaml.load(yml_bytes, Loader=yaml.BaseLoader)["PostProcess"]["character_dict"]
+              if not isinstance(chars, list) or not chars or not all(isinstance(c, str) for c in chars):
+                  raise ValueError("Invalid PostProcess.character_dict")
+              return ("\n".join(chars) + "\n").encode("utf-8")
 
           # 1. Download and verify pinned ONNX Runtime wheel for this target
           rt_ver = cpu_assets["version"]
@@ -256,6 +223,11 @@ jobs:
               rec_bytes = fetch_verified(prof["recognizer"]["url"], prof["recognizer"]["sha256"], prof["recognizer"]["size"])
               yml_bytes = fetch_verified(prof["dictionary_yaml"]["url"], prof["dictionary_yaml"]["sha256"], prof["dictionary_yaml"]["size"])
               dict_bytes = extract_character_dict(yml_bytes)
+              import gzip
+              reference = pathlib.Path("ocr-dictionaries") / (prof_name + ".txt.gz")
+              if reference.exists() and dict_bytes != gzip.decompress(reference.read_bytes()):
+                  raise RuntimeError(f"{prof_name} dictionary differs from pinned model vocabulary")
+
               profiles_manifest[prof_name] = {
                   "detector": write_asset(prof["detector"]["filename"], det_bytes),
                   "recognizer": write_asset(prof["recognizer"]["filename"], rec_bytes),

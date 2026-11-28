@@ -622,11 +622,11 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
     ensure!((72..=600).contains(&dpi),"dpi must be between 72 and 600");
     ensure!(!destination.is_symlink(),"Refusing a symlink layout directory");
 
+    let layout_started=std::time::Instant::now();
     let mut backend=Backend::open(source_pdf,expected_sha)?;
     let source_binding=backend.source_binding().clone();
     if render_pages!="none"{backend.preflight_whole_pages(dpi)?;}
-    let pdf_quality_report=fs::read(source_pdf).ok()
-        .and_then(|raw|crate::pdf_inspector_bridge::inspect_pdf_bytes(&raw).ok());
+    let pdf_quality_report=crate::pdf_inspector_bridge::inspect_pdf_bytes(backend.source_bytes()).ok();
 
     fs::create_dir_all(destination)?;
     let root=files::canonical(destination)?;
@@ -657,6 +657,12 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
     let mut seen_objects=BTreeSet::<(u32,u16)>::new();
     let mut bundled_ocr:Option<Result<crate::ocr_backend::Engine,String>>=None;
 
+    let setup_ms=layout_started.elapsed().as_millis();
+    let pages_started=std::time::Instant::now();
+    let mut ocr_pages=BTreeSet::new();
+    let mut ocr_attempts=0usize;
+    let mut ocr_time=std::time::Duration::ZERO;
+    let mut render_time=std::time::Duration::ZERO;
     for n in 1..=total_pages{
         let page=n as u64;
         let (_,_,bounds,_)=backend.geometry(page)?;
@@ -686,7 +692,12 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
                         let Some(bbox)=box4(&blk["bbox"]).and_then(|b|expand_box(b,6.0,bounds)) else{continue;};
                         let png=ocr_tmp.path().join(format!("p{page}-b{idx}.png"));
                         let Ok(raster)=backend.render(page,Some(bbox),300,&png) else{continue;};
-                        match engine.recognize_png(&png,raster["asset"]["sha256"].as_str()){
+                        let started=std::time::Instant::now();
+                        ocr_pages.insert(page);
+                        ocr_attempts+=1;
+                        let recognition=engine.recognize_batch_image(&png,raster["asset"]["sha256"].as_str());
+                        ocr_time+=started.elapsed();
+                        match recognition{
                             Ok(res)=>{
                                 let cand=res["plain_text"].as_str().unwrap_or("").trim().to_owned();
                                 let ocr_blocks=res["blocks"].as_array();
@@ -789,8 +800,10 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
         };
         if should_render{
             let dest=pages_dir.join(format!("page-{n:04}.png"));
+            let render_started=std::time::Instant::now();
             let r=backend.render(page,None,dpi,&dest)?;
             page_doc["render"]=r["asset"].clone();
+            render_time+=render_started.elapsed();
             rendered_pages.push(json!({"page":page,"path":r["asset"]["path"],"sha256":r["asset"]["sha256"]}));
         }else{
             page_doc["render"]=Value::Null;
@@ -799,6 +812,9 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
     }
     backend.verify()?;
 
+    if let Some(Ok(engine))=&bundled_ocr{engine.verify_batch()?;}
+    let pages_ms=pages_started.elapsed().as_millis();
+    let sheet_started=std::time::Instant::now();
     let verify_sheet=if !visual_required_items.is_empty() && render_pages!="none"{
         let verify_dir=root.join("verify-crops");
         fs::create_dir_all(&verify_dir)?;
@@ -820,8 +836,8 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
             }));
         }
         let source_sha=source_binding["sha256"].as_str();
-        let rendered=crate::pdf_boundary::render_page_regions_batch(
-            source_pdf,
+        let rendered=crate::pdf_boundary::render_regions_with_backend(
+            &mut backend,
             &Value::Array(batch_regions),
             crate::pdf_boundary::BatchRegionOptions{
                 expected:source_sha,
@@ -839,6 +855,8 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
         })
     }else{Value::Null};
 
+    let sheet_ms=sheet_started.elapsed().as_millis();
+    backend.verify()?;
     let pdf_quality_json=pdf_quality_report.as_ref().map(|r|r.to_json()).unwrap_or(Value::Null);
     let clean_md=render_clean_layout_markdown(source_id,&analyzed);
     let clean_binding=write_atomic_new(&clean_file,clean_md.as_bytes())?;
@@ -849,7 +867,7 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
         "visual_required_count":visual_required_items.len(),
         "visual_required_items":visual_required_items,
         "ocr_verify_sheet":verify_sheet,
-        "counts":{"raw_lines":raw_line_total,"clustered_blocks":block_total,"visual_review_regions":all_regions.len(),"visual_required":visual_required_items.len(),"rendered_pages":rendered_pages.len(),"exported_image_objects":exported_objects.len()},
+        "counts":{"ocr_pages":ocr_pages.len(),"ocr_calls":ocr_attempts,"raw_lines":raw_line_total,"clustered_blocks":block_total,"visual_review_regions":all_regions.len(),"visual_required":visual_required_items.len(),"rendered_pages":rendered_pages.len(),"exported_image_objects":exported_objects.len()},
         "image_objects":exported_objects,"pages":analyzed,"boundary":BOUNDARY
     });
     let mut layout_bytes=serde_json::to_vec_pretty(&layout_doc)?;layout_bytes.push(b'\n');
@@ -880,6 +898,8 @@ pub fn prepare_pdf_layout(source_pdf:&Path,destination:&Path,source_id:&str,rend
         "visual_required_items":visual_required_items,
         "ocr_verify_sheet":verify_sheet,
         "counts":layout_doc["counts"],
+        "timings_ms":{"setup":setup_ms,"pages":pages_ms,"page_png_render":render_time.as_millis(),
+            "ocr_inference":ocr_time.as_millis(),"visual_review_sheet":sheet_ms},
         "figure_pages":figure_pages,
         "table_pages":table_pages,
         "image_pages":image_pages,
@@ -905,17 +925,12 @@ pub struct PreparePaperOptions<'a>{
     pub arxiv_timeout_seconds:u64,
 }
 
-fn load_cached_layout(layout_dir:&Path,pdf_path:&Path,expected_sha:Option<&str>)->Result<Option<Value>>{
+fn load_cached_layout(layout_dir:&Path,pdf_sha:&str)->Result<Option<Value>>{
     let blocks_file=layout_dir.join("layout-blocks.json");
     let regions_file=layout_dir.join("visual-review-regions.json");
     let clean_file=layout_dir.join("clean-layout.md");
     if !(blocks_file.is_file()&&regions_file.is_file()&&clean_file.is_file()){
         return Ok(None);
-    }
-    let pdf_snap=files::snapshot(pdf_path)?;
-    let pdf_sha=pdf_snap["sha256"].as_str().context("pdf sha256")?;
-    if let Some(exp)=expected_sha{
-        ensure!(pdf_sha==exp,"Source PDF SHA-256 mismatch against expected_pdf_sha256");
     }
     let blocks:Value=crate::parse_json(&fs::read_to_string(&blocks_file)?)?;
     if blocks["source_file"]["sha256"]!=pdf_sha{
@@ -946,7 +961,9 @@ fn load_cached_layout(layout_dir:&Path,pdf_path:&Path,expected_sha:Option<&str>)
     })))
 }
 
-pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{
+pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{prepare_paper_with_output(opt,false)}
+pub fn prepare_paper_with_output(opt:PreparePaperOptions<'_>,compact:bool)->Result<Value>{
+    let started=std::time::Instant::now();
     ensure!(opt.pdf_path.is_some()||opt.tex_target.is_some(),"Provide at least one of pdf_path or tex_target");
     ensure!(matches!(opt.render_pages,"auto"|"selective"|"all"|"none"),"render_pages must be auto, selective, all or none");
     ensure!((72..=600).contains(&opt.dpi),"dpi must be between 72 and 600");
@@ -955,11 +972,22 @@ pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{
     fs::create_dir_all(opt.work_dir)?;
     let work=files::canonical(opt.work_dir)?;
     let evidence=work.join("evidence");
-    let tex_dir=evidence.join("tex");
-    let layout_dir=evidence.join("pdf-layout");
+    // Include source identity and rendering options in each evidence namespace.
+    let pdf_binding=opt.pdf_path.map(check_ledger::bind_file).transpose()?;
+    let pdf_sha=pdf_binding.as_ref().and_then(|v|v["sha256"].as_str());
+    if let Some(expected)=opt.expected_pdf_sha256{ensure!(pdf_sha==Some(expected),"Source PDF SHA-256 mismatch");}
+    let render=if opt.render_pages=="auto"{"selective"}else{opt.render_pages};
+    let ocr_package=opt.pdf_path.and_then(|_|crate::ocr_backend::discover_bundled_package()).map(|(_,sha)|sha);
+    let layout_key=files::digest(&serde_json::to_vec(&json!([crate::ENGINE_VERSION,pdf_binding,render,opt.dpi,ocr_package]))?);
+    let layout_dir=evidence.join("pdf-layout").join(layout_key);
+    let local_tex=opt.tex_target.and_then(Value::as_str).map(str::trim).map(Path::new).filter(|p|p.is_file());
+    let tex_binding=local_tex.map(check_ledger::bind_file).transpose()?;
+    let tex_key=files::digest(&serde_json::to_vec(&json!([crate::ENGINE_VERSION,opt.tex_target,tex_binding,pdf_sha]))?);
+    let tex_dir=evidence.join("tex").join(tex_key);
     let matched_glossary_file=evidence.join("matched-glossary.md");
     fs::create_dir_all(&evidence)?;
 
+    let tex_started=std::time::Instant::now();
     let mut tex_summary=Value::Null;
     let mut tex_ok=false;
     if let Some(target)=opt.tex_target{
@@ -973,7 +1001,7 @@ pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{
                 "clean_markdown":check_ledger::bind_file(&cached_tex_clean)?,
             });
         }else if let Some(raw_path)=target.as_str().map(str::trim).filter(|s|Path::new(s).is_file()){
-            let r=tex_source::prepare(Path::new(raw_path),"main",&tex_dir,None)?;
+            let r=tex_source::prepare(Path::new(raw_path),"main",&tex_dir,tex_binding.as_ref().and_then(|v|v["sha256"].as_str()))?;
             tex_ok=true;
             tex_summary=json!({
                 "status":"ok",
@@ -996,27 +1024,30 @@ pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{
         }
     }
 
+    let tex_ms=tex_started.elapsed().as_millis();
+    let pdf_started=std::time::Instant::now();
     let mut pdf_summary=Value::Null;
     let mut figure_candidates=Value::Array(vec![]);
     if let Some(pdf)=opt.pdf_path{
-        let eff_render=if opt.render_pages=="auto"{"selective"}else{opt.render_pages};
-        let r=if let Some(cached)=load_cached_layout(&layout_dir,pdf,opt.expected_pdf_sha256)?{
+        let r=if let Some(cached)=load_cached_layout(&layout_dir,pdf_sha.context("PDF fingerprint")?)?{
             cached
         }else{
-            prepare_pdf_layout(pdf,&layout_dir,"main",eff_render,opt.dpi,opt.expected_pdf_sha256)?
+            prepare_pdf_layout(pdf,&layout_dir,"main",render,opt.dpi,pdf_sha)?
         };
         figure_candidates=r["figure_candidates"].clone();
         pdf_summary=r;
     }
 
+    let pdf_ms=pdf_started.elapsed().as_millis();
+    let glossary_started=std::time::Instant::now();
     let mut matched_glossary=Value::Null;
     if let Some(gp)=opt.glossary_path{
         if gp.is_file(){
             let mut corpus=String::new();
             let tex_clean=tex_dir.join("clean-source.md");
-            if tex_clean.is_file(){corpus.push_str(&fs::read_to_string(&tex_clean)?);corpus.push('\n');}
+            if tex_ok && tex_clean.is_file(){corpus.push_str(&fs::read_to_string(&tex_clean)?);corpus.push('\n');}
             let pdf_clean=layout_dir.join("clean-layout.md");
-            if pdf_clean.is_file(){corpus.push_str(&fs::read_to_string(&pdf_clean)?);}
+            if opt.pdf_path.is_some() && pdf_clean.is_file(){corpus.push_str(&fs::read_to_string(&pdf_clean)?);}
             if !corpus.trim().is_empty(){
                 struct GlossaryAgg{
                     en:String,
@@ -1085,6 +1116,7 @@ pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{
         }
     }
 
+    let glossary_ms=glossary_started.elapsed().as_millis();
     let mut crop_regions = Vec::new();
     let mut labels = std::collections::BTreeMap::new();
     for candidate in figure_candidates.as_array().into_iter().flatten() {
@@ -1109,8 +1141,15 @@ pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{
             "priority_visual_review":duplicate_index.is_some() || candidate["confidence"]!="high"
         }));
     }
-    Ok(json!({
-        "schema_version":1,
+    let cached=pdf_summary["status"]=="cached";
+    let performed=|key:&str|if cached{0}else{pdf_summary["counts"][key].as_u64().unwrap_or(0)};
+    let metrics=json!({"tex_cache_hit":tex_summary["status"]=="cached","layout_cache_hit":cached,
+        "rendered_pages":performed("rendered_pages"),"ocr_pages":performed("ocr_pages"),"ocr_calls":performed("ocr_calls"),
+        "visual_required_count":pdf_summary["visual_required_count"]});
+    let timings=json!({"tex":tex_ms,"pdf_layout":pdf_ms,"pdf_detail":pdf_summary["timings_ms"],"glossary":glossary_ms,
+        "prepare_total":started.elapsed().as_millis()});
+    let report=json!({
+        "schema_version":1,"metrics":metrics,"timings_ms":timings,
         "status":"ok",
         "work_dir":path_text(&work)?,
         "tex_succeeded":tex_ok,
@@ -1122,7 +1161,22 @@ pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{
         "matched_glossary":matched_glossary,
         "source_fidelity":"not_assessed",
         "next_action":"Read the clean source and matched glossary; pass crop_regions directly to render_page_regions_batch and visually check its contact sheet.",
-    }))
+    });
+    if !compact{return Ok(report);}
+    let save=|name:&str,data:&Value|->Result<Value>{
+        let bytes=serde_json::to_vec_pretty(data)?;
+        let path=evidence.join(format!("{name}-{}.json",files::digest(&bytes)));
+        pipeline::publish(&path,&bytes)?;
+        check_ledger::bind_file(&path)
+    };
+    // The crop API accepts up to 32 regions per call.
+    let batches=crop_regions.chunks(32).map(|rows|save("crop-regions",&json!(rows))).collect::<Result<Vec<_>>>()?;
+    Ok(json!({"schema_version":1,"status":"ok","source_fidelity":"not_assessed","metrics":metrics,"timings_ms":timings,
+        "tex_status":tex_summary["status"],"tex_reason":tex_summary["reason"],"tex_clean_markdown":tex_summary["clean_markdown"],
+        "pdf_clean_markdown":pdf_summary["clean_markdown"],"visual_review_regions":pdf_summary["visual_review_regions"],
+        "ocr_verify_sheet":pdf_summary["ocr_verify_sheet"]["contact_sheet"]["asset"],"matched_glossary":matched_glossary,
+        "crop_count":crop_regions.len(),"crop_batches":batches,"crop_contact_sheet_destination":report["crop_contact_sheet_destination"],
+        "receipt":save("prepare-paper",&report)?}))
 }
 
 #[cfg(test)]
@@ -1214,6 +1268,17 @@ mod tests{
             glossary_path:Some(&gl_path),render_pages:"auto",dpi:72,expected_pdf_sha256:None,arxiv_timeout_seconds:5,
         }).unwrap();
         assert_eq!(prep_cached["pdf_layout"]["status"],"cached");
+        let compact=prepare_paper_with_output(PreparePaperOptions{
+            pdf_path:Some(&pdf),tex_target:Some(&tex_val),work_dir:&paper_work,
+            glossary_path:Some(&gl_path),render_pages:"auto",dpi:72,expected_pdf_sha256:None,arxiv_timeout_seconds:5,
+        },true).unwrap();
+        assert_eq!(compact["metrics"]["layout_cache_hit"],true);
+        assert_eq!(compact["metrics"]["rendered_pages"],0);
+        assert_eq!(compact["metrics"]["ocr_calls"],0);
+        let receipt=crate::pipeline::read_json(Path::new(compact["receipt"]["path"].as_str().unwrap())).unwrap();
+        assert_eq!(receipt["crop_regions"],prep["crop_regions"]);
+        assert!(compact.get("figure_candidates").is_none());
+        assert!(compact["pdf_clean_markdown"]["path"].is_string());
     }
 
     #[test]

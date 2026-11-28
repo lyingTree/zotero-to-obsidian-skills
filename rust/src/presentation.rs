@@ -142,8 +142,12 @@ fn scan(text:&str,line:usize,out:&mut Vec<Prompt>)->Result<()>{
         if all(header_label(),&v)?.len()>1{add(out,"HDR-C30",line,"HEADER_ITEMS_SAME_LINE",v.trim(),"题头元信息的一行包含多个带标签的项目；每个日期类别与 DOI 分别占一条引用行。");}
         if found(date_label(),&v)?{for m in all(date_placeholder(),&v)?{add(out,"HDR-C42",line,"HEADER_DATE_PLACEHOLDER",m.as_str(),"日期仍是占位文本；放大实际源页的日期区域核对可见值。若可见来源确实只有占位，保存该区域与具体观察后记录非问题依据。");}}
     }
-    for m in all(non_ascii_dash(),&v)?{add(out,"BODY-C173",line,"VISIBLE_DASH",m.as_str(),"核对该可见连接线是否应使用 ASCII -；不得修改链接目标。");}
     let prose=replace(inline_math(),&v,"ⓜ")?;
+    for m in all(non_ascii_dash(),&prose)?{
+        if syntax::classify_dash(&prose[..m.start()],m.as_str(),&prose[m.end()..])==syntax::Dash::Hyphen{
+            add(out,"BODY-C173",line,"VISIBLE_DASH",m.as_str(),"普通连字符可规范为 ASCII -。");
+        }
+    }
     for m in all(percent(),&prose)?{add(out,"BODY-C184",line,"PERCENT_OUTSIDE_MATH",m.as_str(),r"百分量整体置于数学环境，百分号写作 \%。");}
     for r in [quantity(),english_duration(),chinese_quantity(),century_duration()]{
         for c in captures(r,&prose)?{

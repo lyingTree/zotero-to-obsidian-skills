@@ -1,11 +1,13 @@
 ---
 name: literature-write2obsidian
-version: v2.1.2
+version: v2.1.3
 description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已完成的候选稿、资源和命名变更，备份后直接读取文件验证。支持仅规划或只提交，不负责提取、翻译和内容重写。
 ---
 
+每次启动本技能，从同组 `literature-zotero2obsidian` 目录执行 `scripts/ensure-runtime.ps1 -SkillFile <本文件绝对路径>`（Windows）或 `bash scripts/ensure-runtime.sh <本文件绝对路径>`（Linux/macOS）。仅使用脚本成功返回的同版本运行器。
+
 <!-- z2o:first-run:start -->
-从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)确认模板与术语表路径，配置成功后清理首次运行段。
 <!-- z2o:first-run:end -->
 
 # 规划目录与提交笔记
@@ -15,6 +17,8 @@ description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已�
 机械操作统一通过 [Rust 运行入口](../literature-zotero2obsidian/references/rust-entrypoints.md) 的 `z2o describe` / `z2o invoke` 执行。未通过实际验收的能力保持阻断或待核。
 
 每条规则的 ID 用于定位对应证据。
+
+候选稿已有流水线验收回执时，写库传 `acceptance_receipt`。候选字节发生变化后重新验收。
 
 ## 必要输入
 

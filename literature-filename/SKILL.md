@@ -1,11 +1,13 @@
 ---
 name: literature-filename
-version: v2.1.2
+version: v2.1.3
 description: 为文献生成“年份-作者-原文标题.md”命名计划，处理作者人数、非法字符、长度和身份冲突。用于独立命名或改名准备，实际移动交写入步骤执行。
 ---
 
+每次启动本技能，从同组 `literature-zotero2obsidian` 目录执行 `scripts/ensure-runtime.ps1 -SkillFile <本文件绝对路径>`（Windows）或 `bash scripts/ensure-runtime.sh <本文件绝对路径>`（Linux/macOS）。仅使用脚本成功返回的同版本运行器。
+
 <!-- z2o:first-run:start -->
-从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)确认模板与术语表路径，配置成功后清理首次运行段。
 <!-- z2o:first-run:end -->
 
 # 规范文件名

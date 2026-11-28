@@ -1,11 +1,13 @@
 ---
 name: literature-body-format
-version: v2.1.2
+version: v2.1.3
 description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段落、图表公式及参考文献编号。保留内容语义和既有锚点，不承担翻译或引用目标匹配。
 ---
 
+每次启动本技能，从同组 `literature-zotero2obsidian` 目录执行 `scripts/ensure-runtime.ps1 -SkillFile <本文件绝对路径>`（Windows）或 `bash scripts/ensure-runtime.sh <本文件绝对路径>`（Linux/macOS）。仅使用脚本成功返回的同版本运行器。
+
 <!-- z2o:first-run:start -->
-从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)确认模板与术语表路径，配置成功后清理首次运行段。
 <!-- z2o:first-run:end -->
 
 # 规范全文排版
@@ -218,7 +220,7 @@ Rich Table 使用 Rust  `format_helpers.build_rich_table_block`（`args` 为含�
 - [BODY-C170] 数学环境中的单位使用直立体。
 - [BODY-C171] 数值与直立单位之间使用细空格，如 `$28\,\mathrm{m\,s^{-1}}$`。
 - [BODY-C172] 笔记可见文本中的连字符统一为 ASCII `-`（U+002D），覆盖题头、正文、题注、表格、书目、SI 和链接显示文字。
-- [BODY-C173] 笔记可见文本中的范围连接线统一为 ASCII `-`。
+- [BODY-C173] 保留中英文破折号、不换行连字符和数学负号。数值间横线含义不明时保留原文并标记待核。
 - [BODY-C174] 笔记可见文本中的表格缺项标记统一为 ASCII `-`。
 - [BODY-C175] 字符规范化不得改动 URL。
 - [BODY-C176] 字符规范化不得改动路径。
@@ -400,7 +402,7 @@ Rich Table 的每张工作表分别检查 `title`。独立表标签使用 `**表
 - [ ] [BODY-A59] 公式锚点已对照差异核对。 <!-- check-type: offline_outcome -->
 - [ ] [BODY-A62] 公式未决项已记录。 <!-- check-type: offline_outcome -->
 - [ ] [BODY-A63] 可见文本连字符均为 ASCII `-`。 <!-- check-type: offline_outcome -->
-- [ ] [BODY-A64] 可见文本范围连接线均为 ASCII `-`。 <!-- check-type: offline_outcome -->
+- [ ] [BODY-A64] 已保留语义明确的破折号与负号，已标出含义不明的数值横线。 <!-- check-type: offline_outcome -->
 - [ ] [BODY-A65] 可见文本缺项标记均为 ASCII `-`。 <!-- check-type: offline_outcome -->
 - [ ] [BODY-A66] 可见文本没有 U+2013 残留。 <!-- check-type: offline_outcome -->
 - [ ] [BODY-A67] 公式范围语义正确。 <!-- check-type: offline_outcome -->

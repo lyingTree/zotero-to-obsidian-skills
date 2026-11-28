@@ -2,6 +2,11 @@
 set -euo pipefail
 
 version="${1:-}"
+if [[ -f "$version" ]]; then
+  version="$(awk 'NR==1 {sub(/\r$/, ""); if ($0!="---") exit 1; next}
+    {sub(/\r$/, "")} /^---$/ {closed=1; exit} /^version:[ \t]*/ {sub(/^version:[ \t]*/, ""); sub(/[ \t]+$/, ""); tag=$0; n++}
+    END {if (closed && n==1) print tag; else exit 1}' "$version")" || { echo "Invalid skill frontmatter" >&2; exit 1; }
+fi
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "Invalid z2o release tag" >&2; exit 1; }
 mode="${2:-runtime}"
 case "$mode" in runtime|ocr) ;; *) exit 2 ;; esac
@@ -67,11 +72,20 @@ hash_file() {
 runtime_ready() {
   local description
   [[ -x "$1" ]] && description="$("$1" --version 2>/dev/null)" &&
+    [[ "$description" =~ \"engine\"[[:space:]]*:[[:space:]]*\"rust\" ]] &&
     [[ "$description" =~ \"version\"[[:space:]]*:[[:space:]]*\""$version"\" ]]
 }
-if [[ -f "$runtime/ocr/package.json" ]]; then
-  [[ "$mode" != ocr ]] || exit 0
-  if runtime_ready "$installed"; then printf '%s\n' "$installed"; exit 0; fi
+if [[ "$mode" == ocr && -f "$runtime/ocr/package.json" ]]; then exit 0; fi
+if [[ "$mode" == runtime ]] && runtime_ready "$installed"; then
+  if [[ ! -f "$runtime/ocr/package.json" ]]; then
+    logdir="$skill_root/user/downloads/$version/$target"
+    if mkdir -p "$logdir"; then
+      nohup bash "$script" "$version" ocr </dev/null >>"$logdir/ocr.log" 2>&1 &
+    else
+      echo "OCR background log unavailable; runtime is ready" >&2
+    fi
+  fi
+  printf '%s\n' "$installed"; exit 0
 fi
 region="${Z2O_NETWORK_REGION:-}"
 if [[ -z "$region" ]]; then
@@ -88,7 +102,7 @@ else
 fi
 state="$skill_root/user/downloads/$version/$target/$host"
 mkdir -p "$state" "$runtime"
-lock="$(dirname -- "$state")/$mode.lock"
+lock="$skill_root/user/downloads/$target-$mode.lock"
 acquire_lock() {
   local owner
   for owner in "$lock"/[0-9]*; do

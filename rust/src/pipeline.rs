@@ -348,18 +348,30 @@ pub fn process(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,cont
 }
 pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,contract:&Value,
                             resource_root:Option<&Path>,options:ProcessOptions<'_>,progress:impl FnMut(usize,usize,&str))->Result<Value>{
-    Ok(process_with_timings(source,plan,content,output,contract,resource_root,options,progress)?.0)
+    Ok(process_with_timings(source,plan,content,output,contract,resource_root,options,false,progress)?.0)
+}
+fn resource_preflight(text:&str,root:&Path,started:std::time::Instant)->Result<Option<(Value,Value)>>{
+    let missing=acceptance::missing_resources(text,root)?;
+    if missing.is_empty(){return Ok(None);}
+    let timings=json!({"total":started.elapsed().as_millis()});
+    Ok(Some((json!({"schema_version":1,"status":"needs_resources","resource_root":path_text(root)?,
+        "issues":missing,"timings_ms":timings,"source_fidelity":"not_assessed"}),timings)))
 }
 pub(crate) fn process_with_timings(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,contract:&Value,
-                                   resource_root:Option<&Path>,options:ProcessOptions<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<(Value,Value)>{
+                                   resource_root:Option<&Path>,options:ProcessOptions<'_>,preflight_resources:bool,mut progress:impl FnMut(usize,usize,&str))->Result<(Value,Value)>{
     let started=std::time::Instant::now();
     if let Some(dest)=options.write_normalized_to{ensure_outside_vault(dest)?;}
-    let eng=engine()?;
     let source_path=source.map(files::canonical).transpose()?;
     let original=source_path.as_ref().map(fs::read).transpose()?;
     let base=if let Some(p)=&source_path{p.parent().context("source parent")?.to_path_buf()}else{std::env::current_dir()?};
     let contract=resolve_contract(contract,&base)?;
     let resource_root=acceptance::resolve(resource_root.unwrap_or(&base))?;
+    if preflight_resources{
+        if let Some(text)=original.as_deref().and_then(|bytes|std::str::from_utf8(bytes).ok()){
+            if let Some(issue)=resource_preflight(text,&resource_root,started)?{return Ok(issue);}
+        }
+    }
+    let eng=engine()?;
     let input=match (&source_path,&original){(Some(p),Some(b))=>json!({"path":path_text(p)?,"sha256":files::digest(b)}),_=>Value::Null};
     let mut request=json!({"schema_version":1,"mode":if source.is_some(){"markdown"}else{"structured"},"input":input,
         "plan":plan,"content":content,"contract":contract,"resource_root":path_text(&resource_root)?,"engine":eng});
@@ -392,6 +404,11 @@ pub(crate) fn process_with_timings(source:Option<&Path>,plan:&Value,content:&Val
         }
         rendering=Some(r);text
     };
+    if original.is_none() && preflight_resources{
+        if let Some(text)=raw.as_deref(){
+            if let Some(issue)=resource_preflight(text,&resource_root,started)?{return Ok(issue);}
+        }
+    }
     let norm_opts=normalize::Options{strip_display_trailing_punctuation:options.strip_display_trailing_punctuation,normalize_line_endings:options.force_lf};
     let conversion_started=std::time::Instant::now();
     let (raw_for_norm,tables_converted)=match (&raw,options.convert_markdown_tables){

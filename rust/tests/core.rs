@@ -347,6 +347,10 @@ fn native_normalizer_protects_and_replays(){
     assert_eq!(replay.iter().collect::<String>(),report["text"].as_str().unwrap());
     assert_eq!(normalize::normalize(report["text"].as_str().unwrap()).unwrap()["changes"],json!([]));
     assert_eq!(report["idempotent"],true);
+    let punctuation="甲——乙。English—aside. A–B, non‑breaking, $x−y$.";
+    assert_eq!(normalize::normalize(punctuation).unwrap()["text"],punctuation);
+    assert!(!z2o_native::presentation::lint(punctuation).unwrap().iter().any(|p|p.code=="VISIBLE_DASH"));
+    assert_eq!(normalize::normalize("well‐known").unwrap()["text"],"well-known");
     let protected=["2024年；12:45 UTC；UTC 1200 h；第3节；图2秒；A3m；1,250 kg；3±2 m；5–7 km；60 km/h；1.3e-4 m。",
         "\x60a 60 min\x60 和 \x60\x60含内部 \x60 81节 — 中 A\x60\x60",
         "https://host/中—A/60min DOI 10.1022/ab—6min",
@@ -984,4 +988,21 @@ fn native_translation_review_replays_explicit_decisions_and_pending_gate(){
     assert_eq!(fs::read(&prepared).unwrap(),before);
     fs::write(&candidate,"changed").unwrap();
     assert!(translation_writer::Writer::from_draft(&draft).is_err());
+}
+
+#[test]
+fn resource_preflight_lists_all_missing_files_before_creating_receipts(){
+    let tmp=tempdir().unwrap();
+    let source=tmp.path().join("candidate.md");
+    let output=tmp.path().join("pipeline");
+    fs::write(&source,"![[图一.png]]\n\n![two](figure%202.png)\n\n`![[example.png]]`\n").unwrap();
+    let result=call("note_pipeline.process_markdown",json!([source,output]),
+        json!({"compact":true,"preflight_resources":true,"resource_root":tmp.path()}));
+    assert_eq!(result["status"],"needs_resources");
+    let issues=result["issues"].as_array().unwrap();
+    assert_eq!(issues.len(),2);
+    assert_eq!(issues[0]["location"],"line 1: 图一.png");
+    assert_eq!(issues[1]["location"],"line 3: figure%202.png");
+    assert!(issues[1]["actual"].as_str().unwrap().ends_with("figure 2.png"));
+    assert!(!output.exists());
 }

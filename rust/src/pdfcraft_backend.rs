@@ -74,6 +74,7 @@ pub struct Backend{
     structural:Pdf,
     bytes:Arc<Vec<u8>>,
     renderer:PageRenderer,
+    transparent_renderer:Option<PageRenderer>,
     pages:Vec<PageInfo>,
     inspection_warnings:Vec<String>,
 }
@@ -96,11 +97,12 @@ impl Backend{
         let renderer=PageRenderer::new(bytes.clone(),RenderConfig{reject_oversize:true,system_fonts:false,..Default::default()});
         ensure!(renderer.page_count()==structural.len()&&info.pages.len()==structural.len(),
             "PdfCraft and the structural parser disagree about actual page count");
-        let engine=Self{source_path:p,source:before,structural,bytes:bytes.clone(),renderer,pages:info.pages,inspection_warnings:info.warnings};
+        let engine=Self{source_path:p,source:before,structural,bytes:bytes.clone(),renderer,transparent_renderer:None,pages:info.pages,inspection_warnings:info.warnings};
         engine.verify()?;Ok(engine)
     }
     pub fn len(&self)->usize{self.pages.len()}
     pub fn is_empty(&self)->bool{self.pages.is_empty()}
+    pub(crate) fn source_bytes(&self)->&[u8]{self.bytes.as_slice()}
     pub(crate) fn source_binding(&self)->&Value{&self.source}
     pub(crate) fn structure(&self,page:u64)->Result<Value>{
         let mut result=self.structural.index(page)?;
@@ -203,8 +205,8 @@ impl Backend{
         };
         let request=RenderRequest{page:index,kind:RequestKind::Pixels,tile,scale,tag:0,preview:false};
         let result=if transparent{
-            PageRenderer::new(self.bytes.clone(),RenderConfig{reject_oversize:true,system_fonts:false,transparent:true,..Default::default()})
-                .render(request)
+            self.transparent_renderer.get_or_insert_with(||PageRenderer::new(self.bytes.clone(),
+                RenderConfig{reject_oversize:true,system_fonts:false,transparent:true,..Default::default()})).render(request)
         }else{
             self.renderer.render(request)
         };

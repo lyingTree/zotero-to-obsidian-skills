@@ -99,7 +99,7 @@ impl Audit{
             }
         }Ok(())
     }
-    fn resource(&mut self,href:&str,line:usize,syntax:&str,hashes:&Map<String,Value>){
+    fn resource(&mut self,href:&str,line:usize,syntax:&str,hashes:&Map<String,Value>,presence_only:bool){
         let loc=format!("line {line}: {href}");
         let attempt=(||->Result<()>{
             let name=if syntax=="markdown"{
@@ -126,6 +126,10 @@ impl Audit{
             let within=resolved.as_ref().is_some_and(|p|p.starts_with(&self.root));
             if !self.check("RESOURCE_BOUNDARY",&loc,json!("within resource root"),json!(actual),Some(within)){return Ok(());}
             let p=resolved.unwrap();
+            if presence_only{
+                if !p.is_file(){self.check("RESOURCE_FILE",&loc,json!("existing file"),json!(p),Some(false));}
+                return Ok(());
+            }
             if !self.check("RESOURCE_FILE",&loc,json!(true),json!(p.is_file()),None){return Ok(());}
             let actual=self.hash_file(&p)?;
             if let Some(expected)=hashes.get(href){self.check("RESOURCE_HASH",&loc,expected.clone(),json!(actual),None);}
@@ -241,6 +245,14 @@ impl Audit{
         }hashes.as_object().unwrap().clone()
     }
 }
+pub(crate) fn missing_resources(text:&str,root:&Path)->Result<Vec<Value>>{
+    let mut audit=Audit{path:root.to_owned(),root:root.to_owned(),checks:vec![],prompts:vec![],hashes:HashMap::new()};
+    let hashes=Map::new();
+    for (href,line,syntax) in inventory::inspect(text)?.resources{
+        audit.resource(&href,line,&syntax,&hashes,true);
+    }
+    Ok(audit.checks.into_iter().filter(|check|check["status"]=="fail").collect())
+}
 pub fn accept(path:&Path,contract:&Value,resource_root:Option<&Path>,rendering:&Value)->Result<Value>{
     let mut audit=Audit{path:path.to_path_buf(),root:resource_root.unwrap_or_else(||path.parent().unwrap_or(Path::new("."))).to_path_buf(),
         checks:vec![],prompts:vec![],hashes:HashMap::new()};
@@ -288,7 +300,7 @@ pub fn accept(path:&Path,contract:&Value,resource_root:Option<&Path>,rendering:&
             let has_expectation=["required_units","required_anchors","counts","table_dimensions","resources"].iter().any(|k|contract.get(*k).is_some_and(|v|match v{Value::Array(a)=>!a.is_empty(),Value::Object(m)=>!m.is_empty(),Value::Null=>false,_=>true}));
             if has_expectation{coverage="verified_against_contract";}
         }else if !rendering.is_null(){audit.check("UNBOUND_MAPPING","rendering",json!("source-bound required units"),json!("no contract"),Some(false));}
-        for(href,line,syntax)in &inv.resources{audit.resource(href,*line,syntax,&hashes);}
+        for(href,line,syntax)in &inv.resources{audit.resource(href,*line,syntax,&hashes,false);}
         Ok(())
     })();
     if let Err(e)=result{audit.check("INPUT_INVALID","candidate or supplied evidence",json!("readable supported data"),json!(e.to_string()),Some(false));}

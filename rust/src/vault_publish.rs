@@ -685,8 +685,16 @@ pub fn plan_standalone(opt:StandalonePlanOptions<'_>,mut progress:impl FnMut(usi
             let decoded=percent_encoding::percent_decode_str(rem_href).decode_utf8()?.into_owned();
             ensure!(!rewrites.contains_key(&decoded),"Failed to rewrite all instances of conflicting asset {decoded}");
         }
-        crate::pipeline::publish_replace(&cp,rewritten_text.as_bytes())?;
-        candidate=check_ledger::bind_file(&cp)?;
+        // An immutable pipeline output may also be supplied directly as the candidate.
+        let result_file=cp.with_file_name("result.json");
+        if cp.file_name().is_some_and(|name|name=="normalized.md") && result_file.is_file(){
+            let staged=rr.join(format!("z2o-rewritten-{}.md",files::digest(rewritten_text.as_bytes())));
+            crate::pipeline::publish(&staged,rewritten_text.as_bytes())?;
+            candidate=check_ledger::bind_file(&staged)?;
+        }else{
+            crate::pipeline::publish_replace(&cp,rewritten_text.as_bytes())?;
+            candidate=check_ledger::bind_file(&cp)?;
+        }
     }
     ensure!(record(&note)?==existing,"Note target changed during read-only planning");
     let mut commit_kwargs=serde_json::Map::new();
@@ -756,7 +764,21 @@ pub struct PublishStandaloneOptions<'a>{
     pub report_output:Option<&'a Path>,
 }
 
-pub fn publish_standalone(opt:PublishStandaloneOptions<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+pub(crate) fn verify_acceptance(receipt:&Path,candidate_sha:&str)->Result<()>{
+    let result=crate::pipeline::read_json(receipt)?;
+    let directory=receipt.parent().context("pipeline receipt directory")?;
+    let acceptance=fs::read(directory.join("acceptance.json"))?;
+    ensure!(result["outputs"]["acceptance.json"]["sha256"]==files::digest(&acceptance),"Acceptance evidence differs from pipeline receipt");
+    let audit:Value=serde_json::from_slice(&acceptance)?;
+    ensure!(audit["mechanical_status"]=="pass","Candidate failed mechanical acceptance");
+    ensure!(result["outputs"]["normalized.md"]["sha256"]==candidate_sha && audit["inputs"]["candidate_sha256"]==candidate_sha,
+        "Planned note differs from accepted candidate; run the note pipeline on the final candidate before publishing");
+    Ok(())
+}
+pub fn publish_standalone(opt:PublishStandaloneOptions<'_>,progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    publish_standalone_checked(opt,None,progress)
+}
+pub(crate) fn publish_standalone_checked(opt:PublishStandaloneOptions<'_>,receipt:Option<&Path>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
     ensure!(opt.authorized,"Explicit write authorization required (authorized=true)");
     let root=actual_root(opt.vault).with_context(||format!("Invalid vault_root {}",opt.vault.display()))?;
     crate::pipeline::ensure_outside_vault(&opt.backup_root.join("probe"))?;
@@ -785,6 +807,7 @@ pub fn publish_standalone(opt:PublishStandaloneOptions<'_>,mut progress:impl FnM
     let kwargs=&plan["commit_request"]["kwargs"];
     let cand_path=path(&kwargs["candidate_path"])?;
     let cand_sha=kwargs["expected_candidate_sha256"].as_str().context("planned candidate_sha256")?;
+    if let Some(receipt)=receipt{verify_acceptance(receipt,cand_sha).with_context(||format!("Check acceptance for planned candidate {}",cand_path.display()))?;}
     let commit_res=commit(CommitOptions{
         vault:&root,
         backup_root:opt.backup_root,
@@ -844,6 +867,26 @@ mod tests{
     use super::*;
     use tempfile::tempdir;
 
+    #[test]
+    fn publish_requires_the_candidate_and_acceptance_bound_by_the_receipt(){
+        let tmp=tempfile::tempdir().unwrap();
+        let audit=tmp.path().join("acceptance.json");
+        let result=tmp.path().join("result.json");
+        let accepted=crate::files::digest(b"accepted");
+        let write_receipt=|status:&str|{
+            let bytes=serde_json::to_vec(&json!({"mechanical_status":status,"inputs":{"candidate_sha256":accepted}})).unwrap();
+            fs::write(&audit,&bytes).unwrap();
+            fs::write(&result,json!({"outputs":{"normalized.md":{"sha256":accepted},
+                "acceptance.json":{"sha256":crate::files::digest(&bytes)}}}).to_string()).unwrap();
+        };
+        write_receipt("pass");
+        verify_acceptance(&result,&accepted).unwrap();
+        assert!(verify_acceptance(&result,&crate::files::digest(b"edited")).is_err());
+        fs::write(&audit,b"{}").unwrap();
+        assert!(verify_acceptance(&result,&accepted).is_err());
+        write_receipt("fail");
+        assert!(verify_acceptance(&result,&accepted).is_err());
+    }
     #[test]
     fn standalone_planner_reuses_identical_disambiguates_conflicts_and_commits(){
         let dir=tempdir().unwrap();

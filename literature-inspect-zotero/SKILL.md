@@ -1,11 +1,13 @@
 ---
 name: literature-inspect-zotero
-version: v2.1.2
+version: v2.1.3
 description: 只读检查指定 Zotero 条目的完整可用信息、集合层级、文献语言、全文及补充附件。用于全文处理前取证，不负责翻译、分类修改或下载文献。
 ---
 
+每次启动本技能，从同组 `literature-zotero2obsidian` 目录执行 `scripts/ensure-runtime.ps1 -SkillFile <本文件绝对路径>`（Windows）或 `bash scripts/ensure-runtime.sh <本文件绝对路径>`（Linux/macOS）。仅使用脚本成功返回的同版本运行器。
+
 <!-- z2o:first-run:start -->
-从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)确认模板与术语表路径，配置成功后清理首次运行段。
 <!-- z2o:first-run:end -->
 
 # 读取条目与全文状态

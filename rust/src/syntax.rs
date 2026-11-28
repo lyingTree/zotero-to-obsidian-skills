@@ -167,3 +167,13 @@ pub fn decode_destination(text:&str)->String{
     }
     html_escape::decode_html_entities(&unescaped).into_owned()
 }
+
+#[derive(PartialEq,Eq)]
+pub(crate) enum Dash{Hyphen,Numeric,Preserve}
+
+pub(crate) fn classify_dash(before:&str,dash:&str,after:&str)->Dash{
+    let digit=|c:char|c.is_numeric();
+    if before.trim_end().chars().next_back().is_some_and(digit) && after.trim_start().chars().next().is_some_and(digit){
+        Dash::Numeric
+    }else if dash=="\u{2010}"{Dash::Hyphen}else{Dash::Preserve}
+}

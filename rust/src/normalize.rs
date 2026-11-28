@@ -354,9 +354,11 @@ impl<'a> Pass<'a>{
         }
         for m in rx!(r"[\u{2010}-\u{2015}]").find_iter(&text[a..b]){
             let start=a+m.start();let finish=a+m.end();
-            if rx!(r"\d\s*$").is_match(&text[self.offsets.previous(start,8).max(a)..start])&&rx!(r"^\s*\d").is_match(&text[finish..b]){
-                self.issue("AMBIGUOUS_RANGE",start,"保留数值之间的横线，待确认是范围还是减法。","review");
-            }else{self.edit(start,finish,"dash","-");}
+            match syntax::classify_dash(&text[a..start],m.as_str(),&text[finish..b]){
+                syntax::Dash::Numeric=>self.issue("AMBIGUOUS_RANGE",start,"保留数值之间的横线，待确认是范围还是减法。","review"),
+                syntax::Dash::Hyphen=>self.edit(start,finish,"dash","-"),
+                syntax::Dash::Preserve=>{}
+            }
         }
         let spaces=fx!(r"(?<=[\u{3400}-\u{9fff}]) +(?=[0-9A-Za-z$])|(?<=[0-9A-Za-z$]) +(?=[\u{3400}-\u{9fff}])");
         let mut pos=self.offsets.previous(a,1);let end=&text[..self.offsets.next(b,1)];

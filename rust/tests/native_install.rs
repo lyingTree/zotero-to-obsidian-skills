@@ -24,6 +24,9 @@ fn actual_offline_install_reuse_backup_and_tamper_protection(){
         fs::write(p.join("__PYCACHE__").join("reference.PYC"),b"legacy cache").unwrap();
         fs::write(p.join("nested").join("reference.md"),b"Keep documentation").unwrap();
     }
+    let scripts=source.join(SKILLS[0]).join("scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    for name in ["ensure-runtime.ps1","ensure-runtime.sh"]{fs::write(scripts.join(name),b"bootstrap fixture").unwrap();}
     let exe=Path::new(env!("CARGO_BIN_EXE_z2o"));
     let bundle=base.join("bundle");let result=success(run(exe,&["package",path(&source),path(&bundle)]));
     assert_eq!(result["skill_count"],12);
@@ -31,7 +34,8 @@ fn actual_offline_install_reuse_backup_and_tamper_protection(){
     let sha=files::snapshot(&manifest).unwrap()["sha256"].as_str().unwrap().to_owned();
     assert_eq!(result["package_manifest"]["sha256"],sha);
     let manifest_data:Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-    assert_eq!(manifest_data["script_files_included"],false);
+    assert_eq!(manifest_data["script_files_included"],true);
+    assert!(bundle.join("skills").join(SKILLS[0]).join("scripts/ensure-runtime.ps1").is_file());
     for &name in SKILLS{
         let skill=bundle.join("skills").join(name);
         assert!(!skill.join("reference.py").exists());
@@ -45,7 +49,7 @@ fn actual_offline_install_reuse_backup_and_tamper_protection(){
     }
     let installed=base.join("skills");fs::create_dir(&installed).unwrap();
     let old=installed.join(SKILLS[0]);fs::create_dir(&old).unwrap();
-    fs::write(old.join("SKILL.md"),format!("---\nname: {}\nversion: v{ENGINE_VERSION}\ndescription: legacy\n---\n",SKILLS[0])).unwrap();
+    fs::write(old.join("SKILL.md"),format!("---\nname: {}\nversion: v0.1.0\ndescription: legacy\n---\n",SKILLS[0])).unwrap();
     fs::write(old.join("local-user-data.md"),b"Keep this original user data").unwrap();
     fs::write(old.join("reference.py"),b"Legacy user installation").unwrap();
     let receipt=success(run(exe,&["install",path(&manifest),&sha,path(&installed)]));
@@ -160,6 +164,9 @@ fn all_in_one_package_with_bundled_ocr_installs_discovers_and_detects_tamper(){
     fs::write(ocr_dir.join("package.json"),&ocr_bytes).unwrap();
     fs::write(ocr_dir.join("package.sha256"),format!("{ocr_sha}\n")).unwrap();
 
+    let scripts=source.join(SKILLS[0]).join("scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    for name in ["ensure-runtime.ps1","ensure-runtime.sh"]{fs::write(scripts.join(name),b"bootstrap fixture").unwrap();}
     let exe=Path::new(env!("CARGO_BIN_EXE_z2o"));
     let bundle=base.join("bundle");
     let pkg=success(run(exe,&["package",path(&source),path(&bundle),"--ocr-bundle",path(&ocr_dir)]));
@@ -198,6 +205,8 @@ fn repository_skill_entrypoints_are_rust_only(){
     assert!(guide.is_file());
     for &name in SKILLS{
         let skill=fs::read_to_string(root.join(name).join("SKILL.md")).unwrap();
+        let always=skill.split("<!-- z2o:first-run:start -->").next().unwrap();
+        assert!(always.contains("ensure-runtime.ps1 -SkillFile") && always.contains("ensure-runtime.sh"),"missing persistent runtime check: {name}");
         assert!(skill.contains(&format!("version: {repo_ver}")),"missing version {repo_ver} in {name}");
         assert!(skill.contains("rust-entrypoints.md"),"missing rust entry guide: {name}");
         assert!(!skill.contains(".py)"),"legacy script link: {name}");

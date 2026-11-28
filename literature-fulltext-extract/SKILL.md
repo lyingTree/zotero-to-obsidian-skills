@@ -1,11 +1,13 @@
 ---
 name: literature-fulltext-extract
-version: v2.1.2
+version: v2.1.3
 description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF 按页 OCR 及 DOCX、HTML、EPUB、文本等格式，修复版面断行并保留来源定位。不负责翻译或写入 Obsidian。
 ---
 
+每次启动本技能，从同组 `literature-zotero2obsidian` 目录执行 `scripts/ensure-runtime.ps1 -SkillFile <本文件绝对路径>`（Windows）或 `bash scripts/ensure-runtime.sh <本文件绝对路径>`（Linux/macOS）。仅使用脚本成功返回的同版本运行器。
+
 <!-- z2o:first-run:start -->
-从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)确认模板与术语表路径，配置成功后清理首次运行段。
 <!-- z2o:first-run:end -->
 
 # 提取全文与段落
@@ -25,7 +27,7 @@ description: 将已确定的文献全文提取为原语言 Markdown，支持 PDF
 继续以现有逐页/结构清单与来源交付检查为机械证据；实际文件绑定使用 [确定性阶段辅助](../literature-zotero2obsidian/references/atomic-stage-checks.md)。页图内容是否正确与源单元是否完整仍须核对。
 
 1. 核对每份附件的来源身份。
-2. 优先调用复合入口 `prepare_source_inventory.prepare_paper`（传 `work_dir`、`pdf_path`、`tex_target`、`glossary_path`），一站完成 arXiv TeX 获取（自动转码非 UTF-8 源码）、`pdf-inspector` + `lopdf` 字体 CMap 质量预检、选择性 PDF 版面聚类、行末连字符愈合、内置 PP-OCRv6 乱码自动修复、生成 `clean-layout.md`、`ocr-verify-sheet.png`（如有 `<!-- VISUAL_REQUIRED: ... -->` 区域）、`figure_candidates` 与本篇 `matched-glossary.md`（若独立运行 PDF 阶段可调用 `prepare_pdf_layout`，默认 `render_pages: "selective"`；TeX 已成功时严禁全量渲染 `render_pages: "all"`）。
+2. 优先调用复合入口 `prepare_source_inventory.prepare_paper`（传 `compact: true`、`work_dir`、`pdf_path`、`tex_target`、`glossary_path`），一站完成 arXiv TeX 获取（自动转码非 UTF-8 源码）、`pdf-inspector` + `lopdf` 字体 CMap 质量预检、选择性 PDF 版面聚类、行末连字符愈合、内置 PP-OCRv6 乱码自动修复、生成 `clean-layout.md`、`ocr-verify-sheet.png`（如有 `<!-- VISUAL_REQUIRED: ... -->` 区域）、`figure_candidates` 与本篇 `matched-glossary.md`（若独立运行 PDF 阶段可调用 `prepare_pdf_layout`，默认 `render_pages: "selective"`；TeX 已成功时严禁全量渲染 `render_pages: "all"`）。
 3. 先在 `source-map.json`（或 `layout-blocks.json` / `tex-structure.json`）登记原文章节及对象清单；若 `clean-layout.md` 中存在 `<!-- VISUAL_REQUIRED: ... -->` 标记，必须对照 `ocr-verify-sheet.png` 或对应页图逐处核实并替换为核定原文，禁止残留该标记进入发布校验。
 4. 对照 `figure_candidates` 调用 `pdf_image_objects.render_page_regions_batch` 批量裁剪多个图件（支持 `auto_trim` 与 `contact_sheet_destination` 拼图）；仅在异常区域或边界有疑问时再单独调用 `render_page_region` / `inspect_crop_boundaries` 微调。
 5. 对照页图或 TeX 源码复核需要精确转录的字段与公式。

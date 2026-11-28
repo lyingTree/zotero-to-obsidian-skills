@@ -1,10 +1,18 @@
 #Requires -Version 5.1
 param(
-  [Parameter(Mandatory)][ValidatePattern('^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')][string]$Version,
+  [Parameter(Mandatory,ParameterSetName='Tag')][ValidatePattern('^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')][string]$Version,
+  [Parameter(Mandatory,ParameterSetName='Skill')][string]$SkillFile,
   [switch]$OcrWorker
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+if ($SkillFile) {
+  $text = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $SkillFile).ProviderPath)
+  $header = [regex]::Match($text, '(?s)\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)')
+  $tags = [regex]::Matches($header.Groups[1].Value, '(?m)^version:[ \t]*(v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)[ \t]*\r?$')
+  if ($tags.Count -ne 1) { throw "Missing or invalid skill version in $SkillFile" }
+  $Version = $tags[0].Groups[1].Value
+}
 $skillRoot = Split-Path -Parent $PSScriptRoot
 $runtime = Join-Path $skillRoot 'runtime'
 $installed = Join-Path $runtime 'z2o.exe'
@@ -58,10 +66,25 @@ function Test-Z2oRuntime([string]$Executable) {
     return $LASTEXITCODE -eq 0 -and $info.engine -ceq 'rust' -and $info.version -ceq $Version
   } catch { return $false }
 }
+function Start-OcrWorker([string]$LogDirectory, [string]$Region) {
+  $previousRegion = $env:Z2O_NETWORK_REGION
+  try {
+    [IO.Directory]::CreateDirectory($LogDirectory) | Out-Null
+    if ($Region) { $env:Z2O_NETWORK_REGION = $Region }
+    Start-Process -FilePath (Get-Process -Id $PID).Path -WindowStyle Hidden `
+      -ArgumentList '-NoProfile', '-File', ('"' + $PSCommandPath + '"'), '-Version', $Version, '-OcrWorker' `
+      -RedirectStandardOutput (Join-Path $LogDirectory ('ocr-' + $PID + '.out.log')) `
+      -RedirectStandardError (Join-Path $LogDirectory ('ocr-' + $PID + '.err.log'))
+  } catch { Write-Warning 'OCR background worker could not start. Re-run runtime setup to retry.' }
+  finally { $env:Z2O_NETWORK_REGION = $previousRegion }
+}
 $ocr = Join-Path $runtime 'ocr'
-if (Test-Path -LiteralPath (Join-Path $ocr 'package.json') -PathType Leaf) {
-  if ($OcrWorker) { return }
-  if (Test-Z2oRuntime $installed) { $installed; return }
+$ocrReady = Test-Path -LiteralPath (Join-Path $ocr 'package.json') -PathType Leaf
+if ($OcrWorker -and $ocrReady) { return }
+if (-not $OcrWorker -and (Test-Z2oRuntime $installed)) {
+  if (-not $ocrReady) { Start-OcrWorker (Join-Path $skillRoot "user/downloads/$Version/$target") $env:Z2O_NETWORK_REGION }
+  $installed
+  return
 }
 $region = $env:Z2O_NETWORK_REGION
 if (-not $region) {
@@ -80,7 +103,7 @@ $state = Join-Path $skillRoot "user/downloads/$Version/$target/$downloadHost"
 [IO.Directory]::CreateDirectory($state) | Out-Null
 [IO.Directory]::CreateDirectory($runtime) | Out-Null
 $mode = if ($OcrWorker) { 'ocr' } else { 'runtime' }
-$lockPath = Join-Path (Split-Path -Parent $state) "$mode.lock"
+$lockPath = Join-Path $skillRoot "user/downloads/$target-$mode.lock"
 $deadline = [DateTime]::UtcNow.AddMinutes(2)
 while ($true) {
   try { $lock = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None'); break }
@@ -109,19 +132,15 @@ try {
       $part = Join-Path $state 'z2o.part.exe'
       Receive-VerifiedAsset $name (Read-Checksum $name) $part 120
       if (-not (Test-Z2oRuntime $part)) { throw 'Downloaded z2o cannot start' }
-      if (Test-Path -LiteralPath $installed) { [IO.File]::Replace($part, $installed, $null) }
+      if (Test-Path -LiteralPath $installed) {
+        $backup = Join-Path $runtime ('z2o-backup-' + [guid]::NewGuid().ToString('N'))
+        [IO.File]::Replace($part, $installed, $backup)
+        [IO.File]::Delete($backup)
+      }
       else { [IO.File]::Move($part, $installed) }
     }
     if (-not $ready) {
-      $previousRegion = $env:Z2O_NETWORK_REGION
-      try {
-        $env:Z2O_NETWORK_REGION = $region
-        Start-Process -FilePath (Get-Process -Id $PID).Path -WindowStyle Hidden `
-          -ArgumentList '-NoProfile', '-File', ('"' + $PSCommandPath + '"'), '-Version', $Version, '-OcrWorker' `
-          -RedirectStandardOutput (Join-Path $state ('ocr-' + $PID + '.out.log')) `
-          -RedirectStandardError (Join-Path $state ('ocr-' + $PID + '.err.log'))
-      } catch { Write-Warning 'OCR background worker could not start. Re-run runtime setup to retry.' }
-      finally { $env:Z2O_NETWORK_REGION = $previousRegion }
+      Start-OcrWorker $state $region
     }
     $installed
     return

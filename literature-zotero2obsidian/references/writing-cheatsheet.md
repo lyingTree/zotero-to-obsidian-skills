@@ -6,11 +6,11 @@
 
 1. **定位二进制**：直查 `<主技能目录>/runtime/z2o.exe`（没有则查仓库根 `runtime/z2o.exe`）；**禁遍历源码/`target`，禁整份倾倒 `z2o describe`**。
 2. **单次预检**：`user_profile.preflight`（`query`/`item_key` + `create_work_dirs: true`）取 `naming_plan`（含 `and` / `et al`）、`suggested_asset_bucket_relative`（仅 `<第一作者>`）、`template_skeleton` 与 `work_dirs`。
-3. **源码与术语**：`prepare_source_inventory.prepare_paper`（`work_dir`、`pdf_path`、`tex_target`、`glossary_path`）。按 **400–600 行大块**通读 `clean-source.md`（或 `clean-layout.md`）与 `matched-glossary.md`。
-4. **批量裁图**：直接把 `prepare_paper.crop_regions` 作为 `regions`，把 `crop_contact_sheet_destination` 作为 `contact_sheet_destination`。最多每批 32 张，查看拼图并优先检查 `priority_visual_review`，只重裁异常图。SI 图用 `figS1` / `fig-s1`。
+3. **源码与术语**：`prepare_source_inventory.prepare_paper`（`compact: true`、`work_dir`、`pdf_path`、`tex_target`、`glossary_path`）。按 **400–600 行大块**通读 `clean-source.md`（或 `clean-layout.md`）与 `matched-glossary.md`。
+4. **批量裁图**：逐批将 `crop_batches` 的文件绑定作为 `regions`，各批使用独立的拼图文件名。最多每批 32 张，查看拼图并优先检查 `priority_visual_review`，只重裁异常图。SI 图用 `figS1` / `fig-s1`。
 5. **分段写完整 `candidate.md`**：先在草稿核对图注、公式、书目及来源疑点，再按第 2 节格式写完 `<work>/work/candidate.md`（**禁只写 PART 1 或留 `<!--PART-->` 占位符就结束**）。
-6. **机械规范化**：`note_pipeline.process_markdown`（`compact: true`、`write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）。根据 `summary.failed_checks` 集中修复，变更输入后才重跑。来源忠实度待核时对照原文。查询旧结果时读取回执，标点实验使用文本片段。
-7. **授权写库**：用户要求“处理/整理某文献到 Obsidian”（非仅要方案/审查/离线稿），**即已授权写库**，须调用 `vault_publish.publish_standalone`（`authorized: true`、`asset_source_dir`、`report_output`）写入并回读。草稿复核通过后发布一次。收到 `verified_file_write` 后直接汇报路径和资源数量。孤立资源清理仅按独立请求执行。
+6. **机械规范化**：`note_pipeline.process_markdown`（`preflight_resources: true`、`resource_root`、`compact: true`、`write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）。根据 `summary.failed_checks` 集中修复，变更输入后才重跑。来源忠实度待核时对照原文。查询旧结果时读取回执，标点实验使用文本片段。
+7. **授权写库**：用户要求“处理/整理某文献到 Obsidian”（非仅要方案/审查/离线稿），**即已授权写库**，须调用 `vault_publish.publish_standalone`（`acceptance_receipt` 取流水线 `receipt`、`authorized: true`、`asset_source_dir`、`report_output`）写入并回读。草稿复核通过后发布一次。收到 `verified_file_write` 后直接汇报路径和资源数量。孤立资源清理仅按独立请求执行。
 
 ## 2. 模板与排版精确语法（照抄即可）
 

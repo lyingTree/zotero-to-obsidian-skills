@@ -245,15 +245,9 @@ fn build_contact_sheet(tiles:&[(usize,image::RgbaImage)],columns_opt:Option<usiz
         }
         let (tw,th)=tile.dimensions();
         if tw>0&&th>0{
-            let max_w=f64::from(slot_w-16);
-            let max_h=f64::from(slot_h-16);
-            let scale=(max_w/f64::from(tw)).min(max_h/f64::from(th)).min(2.0);
-            let nw=((f64::from(tw)*scale).round() as u32).max(1).min(slot_w-12);
-            let nh=((f64::from(th)*scale).round() as u32).max(1).min(slot_h-12);
-            let resized=image::imageops::resize(tile,nw,nh,image::imageops::FilterType::Triangle);
-            let ox=sx+(slot_w-nw)/2;
-            let oy=sy+(slot_h-nh)/2;
-            image::imageops::overlay(&mut canvas,&resized,i64::from(ox),i64::from(oy));
+            let ox=sx+(slot_w-tw)/2;
+            let oy=sy+(slot_h-th)/2;
+            image::imageops::overlay(&mut canvas,tile,i64::from(ox),i64::from(oy));
         }
         for t in 0..2u32{
             for x in sx..sx+slot_w{
@@ -274,9 +268,13 @@ fn build_contact_sheet(tiles:&[(usize,image::RgbaImage)],columns_opt:Option<usiz
 }
 
 pub fn render_page_regions_batch(source:&Path,regions:&Value,opt:BatchRegionOptions<'_>)->Result<Value>{
+    let mut pdf=Backend::open(source,opt.expected)?;
+    render_regions_with_backend(&mut pdf,regions,opt)
+}
+
+pub(crate) fn render_regions_with_backend(pdf:&mut Backend,regions:&Value,opt:BatchRegionOptions<'_>)->Result<Value>{
     let rows=regions.as_array().filter(|a|!a.is_empty()).context("regions must be a nonempty array")?;
     ensure!(rows.len()<=32,"Batch crop size exceeds 32 regions per call");
-    let mut pdf=Backend::open(source,opt.expected)?;
     let original=path(&pdf.source_binding()["path"])?;
     let mut geom_cache=BTreeMap::<u64,(Value,Rect)>::new();
     let mut items=Vec::with_capacity(rows.len());
@@ -306,14 +304,17 @@ pub fn render_page_regions_batch(source:&Path,regions:&Value,opt:BatchRegionOpti
 
         let actual=expand(b,margin,bounds);
         let (mut bytes,mut meta)=pdf.raster(page,Some(actual),dpi,transparent)?;
-        let mut rgba=image::load_from_memory_with_format(&bytes,image::ImageFormat::Png)?.into_rgba8();
-        if auto_trim{
-            rgba=trim_rgba_margins(&rgba,6);
-            bytes.clear();
-            PngEncoder::new(&mut bytes).write_image(rgba.as_raw(),rgba.width(),rgba.height(),ExtendedColorType::Rgba8)?;
-            meta["trimmed_width"]=json!(rgba.width());
-            meta["trimmed_height"]=json!(rgba.height());
-        }
+        let rgba=if auto_trim || opt.contact_sheet_destination.is_some(){
+            let mut rgba=image::load_from_memory_with_format(&bytes,image::ImageFormat::Png)?.into_rgba8();
+            if auto_trim{
+                rgba=trim_rgba_margins(&rgba,6);
+                bytes.clear();
+                PngEncoder::new(&mut bytes).write_image(rgba.as_raw(),rgba.width(),rgba.height(),ExtendedColorType::Rgba8)?;
+                meta["trimmed_width"]=json!(rgba.width());
+                meta["trimmed_height"]=json!(rgba.height());
+            }
+            Some(rgba)
+        }else{None};
         if opt.overwrite{pipeline::publish_replace(&dest,&bytes)?;}else{pipeline::publish(&dest,&bytes)?;}
         let asset=check_ledger::bind_file(&dest)?;
         if row["priority_visual_review"].as_bool()==Some(true) {
@@ -332,10 +333,17 @@ pub fn render_page_regions_batch(source:&Path,regions:&Value,opt:BatchRegionOpti
             "alpha_min":meta["alpha_min"],
             "alpha_max":meta["alpha_max"],
         }));
-        tiles.push((idx+1,rgba));
+        if let Some(tile)=rgba.filter(|_|opt.contact_sheet_destination.is_some()){
+            let (w,h)=tile.dimensions();
+            let scale=(544.0/f64::from(w)).min(404.0/f64::from(h)).min(2.0);
+            let width=((f64::from(w)*scale).round() as u32).max(1);
+            let height=((f64::from(h)*scale).round() as u32).max(1);
+            tiles.push((idx+1,image::imageops::resize(&tile,width,height,image::imageops::FilterType::Triangle)));
+        }
     }
     pdf.verify()?;
 
+    pdf.verify()?;
     let contact_sheet=if let Some(cs_dest)=opt.contact_sheet_destination{
         ensure!(path(&json!(cs_dest.to_string_lossy().as_ref()))?!=original,"Contact sheet cannot overwrite source PDF");
         build_contact_sheet(&tiles,opt.contact_sheet_columns,cs_dest,opt.overwrite)?

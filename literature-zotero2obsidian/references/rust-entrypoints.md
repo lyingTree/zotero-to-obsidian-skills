@@ -1,13 +1,17 @@
 # Rust 运行入口
 
-机械操作统一使用当前安装主技能目录的 `runtime/z2o`（Windows 为 `runtime/z2o.exe`；若主技能目录下尚未放置则直接检查工作区根 `runtime/z2o[.exe]`）。**禁止遍历 `rust/src`、`target/` 或整个仓库寻找二进制**。
+机械操作统一使用技能启动时由 `ensure-runtime` 校验并返回的绝对路径。
 
 ## 统一协议
 
 每次 z2o 调用在 stderr 末行输出 `z2o_elapsed` JSON 事件和 `elapsed_ms`。保持 stdout 与 stderr 分开，stdout 仍是结果 JSON。 `note_pipeline.process_markdown` / `process_content` 支持 `compact: true`，直接返回 `summary`、候选稿路径、完整回执路径与各阶段耗时。查询现有产物时读取回执。
 
+来源准备传 `compact: true` 时，按返回的文件绑定读取清稿、术语表和完整回执。将 `crop_batches` 中的绑定逐个作为批量裁图的 `regions` 参数。PDF 阶段的页渲染和 OCR 推理耗时包含在逐页处理耗时内。
+
+候选流水线传 `preflight_resources: true` 和实际暂存根 `resource_root`。遇到 `needs_resources` 时按 `issues` 中的行号与解析路径修复。正式发布时将流水线的 `receipt` 作为 `acceptance_receipt` 传入 `publish_standalone` 或 `commit_markdown`。写库计划改写链接后须重新验收计划候选。
+
 需要精确 schema 时仅按操作名查询，**禁止常规流程整份倾倒 `z2o describe`（注意 `z2o describe` 不支持 `--output` 参数）**：
-- `z2o describe`：检查 `engine=rust`、`version=v2.1.2` 与全部注册 `operations`。
+- `z2o describe`：查看运行器版本及注册的操作清单。
 - `z2o describe <operation>`：查询单个操作的位置参数 `args`、关键字参数 `kwargs`、默认值、`request_template` 与核心复合接口的 `parameter_examples`（也可用 `z2o describe --all` 或 `z2o --help`）。
 - 只有 `describe` 中注册的操作才能调用。将 UTF-8 JSON 请求写到实际任务文件，或通过标准输入传给 `z2o invoke -`，例如：
 
@@ -27,7 +31,7 @@
 | Rust operation | args（依序） | kwargs |
 |---|---|---|
 | `user_profile.preflight` | 无 | `skill_root`（支持仓库根目录自动钻取）、`query`、`item_key`、`zotero_storage_dir`、`create_work_dirs`（默认 `false`；单次返回档案+Zotero+模板骨架+`naming_plan`+工作目录） |
-| `prepare_source_inventory.prepare_paper` | `work_dir` | `pdf_path`、`tex_target`、`glossary_path`、`render_pages`（默认 `"auto"`）、`dpi`、`expected_pdf_sha256`、`arxiv_timeout_seconds`（一站式 TeX+`pdf-inspector` 预检+PDF 版面+`ocr-verify-sheet.png`+`figure_candidates`+`matched-glossary.md`） |
+| `prepare_source_inventory.prepare_paper` | `work_dir` | `pdf_path`、`tex_target`、`glossary_path`、`render_pages`（默认 `"auto"`）、`dpi`、`expected_pdf_sha256`、`arxiv_timeout_seconds`、`compact`（一站式 TeX+`pdf-inspector` 预检+PDF 版面+`ocr-verify-sheet.png`+`figure_candidates`+`matched-glossary.md`） |
 | `prepare_source_inventory.inspect_pdf_quality` | `source_pdf` | `expected_source_sha256`（纯 Rust `pdf-inspector` + `lopdf` Type-3/CMap/乱码/表格/多栏诊断） |
 | `prepare_source_inventory.fetch_arxiv_tex` | `target`（arXiv ID/URL/DOI/item JSON）、`destination` | `source_id`（默认 `"main"`）、`pdf_path`、`timeout_seconds`、`compact`（默认 `true`） |
 | `prepare_source_inventory.prepare_pdf_layout` | `source_path`、`destination` | `source_id`、`render_pages`（`selective`\|`all`\|`none`，默认 `selective`）、`dpi`、`expected_source_sha256`（含 `pdf_quality`、`visual_required_items`、`ocr_verify_sheet`、`figure_candidates`） |

@@ -1,11 +1,13 @@
 ---
 name: literature-zotero2obsidian
-version: v2.1.2
+version: v2.1.3
 description: 编排 Zotero 全文到 Obsidian 文献笔记的完整流程，默认译为中文，支持保留原文、指定步骤、断点续做和逐篇验收。只改文件名、属性或链接时，转交对应子 skill。
 ---
 
+每次启动本技能，从同组 `literature-zotero2obsidian` 目录执行 `scripts/ensure-runtime.ps1 -SkillFile <本文件绝对路径>`（Windows）或 `bash scripts/ensure-runtime.sh <本文件绝对路径>`（Linux/macOS）。仅使用脚本成功返回的同版本运行器。
+
 <!-- z2o:first-run:start -->
-从本文件实际位置定位同级主技能，先按[首次运行](references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+按[首次运行](references/project-profile.md#magpie-首次运行)确认模板与术语表路径，配置成功后清理首次运行段。
 <!-- z2o:first-run:end -->
 
 # Zotero → Obsidian 文献流程
@@ -20,19 +22,17 @@ description: 编排 Zotero 全文到 Obsidian 文献笔记的完整流程，默�
 
 验收对象是 Markdown 文件及其引用资源。用户提供验收 Markdown 时，以其中的内容与格式要求逐项比较，并用原始文献核对事实。验收在文件层完成，以 Rust 回写与 SHA-256/`WRITE-A04`/`WRITE-A05` 回读为准；**写入返回 `verified_file_write` 即终态**，禁止调用 `obsidian` CLI 检查阅读视图、反向链接或客户端缓存。
 
-新建全文任务先单次调用 `user_profile.preflight`（`create_work_dirs: true`）取得目录与命名/模板骨架，再调用 `prepare_source_inventory.prepare_paper`（自动完成 TeX 探测、选择性 PDF 版面聚类、`figure_candidates` 提取与 `matched-glossary.md` 过滤），经 `pdf_image_objects.render_page_regions_batch` 批量裁图看拼图后撰写候选稿；随后调用 `note_pipeline.process_markdown`（开 `write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）或 `process_content`，最终由 `vault_publish.publish_standalone`（或 `plan_standalone` + `commit_markdown`）完成写库并直接汇报。
-
 只有恢复既有 `complete_pdf_candidate_v1` 工作目录时才沿用[完整候选的开始与收尾](references/complete-workflow.md)和 `resume_workflow()`。保留该旧入口的实际清单、队列和回执，不把新程序的机械状态套用到旧记录。
 
 ## 完整任务的完成入口
 
 1. 单次调用 `user_profile.preflight`（`query`/`item_key` + `create_work_dirs: true`）获取档案、Zotero 条目、`naming_plan`、`suggested_asset_bucket_relative` 与 `template_skeleton`。
 2. 读取[写作速查表](references/writing-cheatsheet.md)；仅在遇到特例时按需打开对应子 skill，禁止通读全部 11 个子 skill、41 KB+ 模板 JS 脚本或 328 KB 全量术语表。
-3. 调用 `prepare_source_inventory.prepare_paper` 准备源码（自动优先获取 arXiv TeX + 选择性 PDF 聚类 + 提取 `figure_candidates` + 输出本篇 `matched-glossary.md`）。
-4. 对照 `figure_candidates` 将 `crop_regions` 传给 `pdf_image_objects.render_page_regions_batch`，用 `crop_contact_sheet_destination` 生成拼图（默认 `transparent: true`、`auto_trim`），仅看拼图微调异常裁框；DOCX 调用 `prepare_sources`。
+3. 调用 `prepare_source_inventory.prepare_paper`（`compact: true`）准备源码（自动优先获取 arXiv TeX + 选择性 PDF 聚类 + 提取 `figure_candidates` + 输出本篇 `matched-glossary.md`）。
+4. 逐批将 `crop_batches` 中的文件绑定作为 `regions` 传给 `pdf_image_objects.render_page_regions_batch`，用 `crop_contact_sheet_destination` 生成拼图（多批时为各批指定独立文件名）（默认 `transparent: true`、`auto_trim`），仅看拼图微调异常裁框；DOCX 调用 `prepare_sources`。
 5. 按用户选择写完整译文或原文候选稿，在工作区核对译义、图注、公式和书目。需要篇外链接时调用 `vault_library.index`（`use_cache: true`）与 `vault_library.match_references_batch`，可使用[逐段复核入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)。
-6. 运行 `note_pipeline.process_markdown`（`compact: true`、`write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）。根据 `summary` 集中处理未决项。输入变更后才重跑，查看旧结果时读取回执。
-7. **默认已授权并必须写库收尾**：只要用户请求处理/整理某文献至 Obsidian（且未明确限制为仅要方案、审查或离线候选），请求本身即视为对 `[PIPE-C34]` 的授权；直接调用 `vault_publish.publish_standalone`（传 `authorized: true`、`asset_source_dir`、`report_output`）一次完成预检、冲突消歧、备份、写库与 SHA-256 回读，拿到 `verified_file_write` 后即汇报收工。**严禁仅写完部分 `candidate.md`、留有 `<!--PART-->` 占位符或未落盘 Obsidian `.md` 就提前结束对话**。
+6. 运行 `note_pipeline.process_markdown`（`preflight_resources: true`、`compact: true`、`write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）。明确传入附件暂存根 `resource_root`。返回 `needs_resources` 时按行号与路径一次补齐，再运行验收。根据 `summary` 集中处理未决项。输入变更后才重跑，查看旧结果时读取回执。
+7. **默认已授权并必须写库收尾**：只要用户请求处理/整理某文献至 Obsidian（且未明确限制为仅要方案、审查或离线候选），请求本身即视为对 `[PIPE-C34]` 的授权；直接调用 `vault_publish.publish_standalone`（传流水线返回的 `receipt` 作为 `acceptance_receipt`、`authorized: true`、`asset_source_dir`、`report_output`）一次完成预检、冲突消歧、备份、写库与 SHA-256 回读，拿到 `verified_file_write` 后即汇报收工。**严禁仅写完部分 `candidate.md`、留有 `<!--PART-->` 占位符或未落盘 Obsidian `.md` 就提前结束对话**。
 
 测试时按 PDF / DOCX 提取、标题、作者单位、翻译、段落拼接、引文身份、链接组装、图表公式、空行格式等环节持续报告具体问题。未观察到的起因保持未知；只有输出缺失不能直接归因到 PDF 提取。
 
@@ -121,10 +121,10 @@ description: 编排 Zotero 全文到 Obsidian 文献笔记的完整流程，默�
 ## 执行步骤
 
 1. **单次启动预检**：确认任务范围与配置，调用 `user_profile.preflight`（传 `query` / `item_key` + `create_work_dirs: true`）一次取得路径、Zotero 元数据、`naming_plan`、`suggested_asset_bucket_relative`、`template_skeleton` 与库外工作目录；仅在未初始化或字段失效时 `user_profile.patch`。先读[写作速查表](references/writing-cheatsheet.md)。
-2. **源码准备与术语匹配**：PDF / arXiv 条目优先调用 `prepare_source_inventory.prepare_paper`（传 `work_dir`、`pdf_path`、`tex_target`、`glossary_path`），一次性完成 TeX 源码获取、选择性 PDF 聚类、`figure_candidates` 提取与本篇 `matched-glossary.md` 生成；DOCX 调用 `prepare_sources`。
-3. **批量裁图与视觉拼图**：将 `figure_candidates` 传给 `pdf_image_objects.render_page_regions_batch`（默认 `transparent: true`、`auto_trim`，配 `contact_sheet_destination`），集中审阅拼图并仅按需微调个别裁框。
-4. **候选撰写与流水线验收**：按 `template_skeleton` 与 `matched-glossary.md` 撰写候选稿（普通表格可写 GFM 语法），调用 `note_pipeline.process_markdown`（开 `write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）或 `process_content`，仅核对返回的 `summary` 与未决位置；若需出链则用 `vault_library.index`（`use_cache: true`）+ `vault_library.match_references_batch`。
-5. **授权一步写库与收尾**：只要任务目标是处理/整理文献入库（未限缩为 `[PIPE-C35]` 离线候选/方案/审查），直接调用 `vault_publish.publish_standalone`（传 `authorized: true`、`asset_source_dir`、`report_output`），或 `plan_standalone` + `commit_markdown`。**必须实际生成 Obsidian 笔记并取得 `verified_file_write` 才可结束；返回后即进入终态，立即汇报实测路径与哈希收工。**
+2. **源码准备与术语匹配**：PDF / arXiv 条目优先调用 `prepare_source_inventory.prepare_paper`（传 `compact: true`、`work_dir`、`pdf_path`、`tex_target`、`glossary_path`），一次性完成 TeX 源码获取、选择性 PDF 聚类、`figure_candidates` 提取与本篇 `matched-glossary.md` 生成；DOCX 调用 `prepare_sources`。
+3. **批量裁图与视觉拼图**：逐批将 `crop_batches` 的文件绑定作为 `regions` 传给 `pdf_image_objects.render_page_regions_batch`（默认 `transparent: true`、`auto_trim`，配 `contact_sheet_destination`），集中审阅拼图并仅按需微调个别裁框。
+4. **候选撰写与流水线验收**：按 `template_skeleton` 与 `matched-glossary.md` 撰写候选稿（普通表格可写 GFM 语法），调用 `note_pipeline.process_markdown`（开 `preflight_resources: true`、`compact: true`、`write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）或 `process_content`，仅核对返回的 `summary` 与未决位置；若需出链则用 `vault_library.index`（`use_cache: true`）+ `vault_library.match_references_batch`。
+5. **授权一步写库与收尾**：只要任务目标是处理/整理文献入库（未限缩为 `[PIPE-C35]` 离线候选/方案/审查），直接调用 `vault_publish.publish_standalone`（传流水线返回的 `receipt` 作为 `acceptance_receipt`、`authorized: true`、`asset_source_dir`、`report_output`），或 `plan_standalone` + `commit_markdown`（同样传入 `acceptance_receipt`）。写库计划若改写附件链接，先对计划候选重新验收。**必须实际生成 Obsidian 笔记并取得 `verified_file_write` 才可结束；返回后即进入终态，立即汇报实测路径与哈希收工。**
 6. **旧工作目录兼容**：仅当恢复既有 `complete_pdf_candidate_v1` 工作目录时，按该目录已有台账继续步骤（第 1–11 步子 skill、逐段 `run.json` 与 `complete_workflow` 入口）。
 
 ## 禁止事项（效率与收尾铁律）

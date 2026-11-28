@@ -50,7 +50,7 @@ Rust 库随预编译运行器提供，ONNX Runtime 和模型由包含 OCR 的发
 ./install.sh "/path/to/your/agent/skills"
 ```
 
-脚本下载并校验平台包，安装技能、共享运行器和随包 OCR 资源。中国大陆出口 IP 使用 CNB，其他地区或探测失败时使用 GitHub。可通过环境变量 `Z2O_NETWORK_REGION` 手动指定地区，例如 `CN`。也可重新运行脚本恢复运行器。[CNB 发布包](https://cnb.cool/lyingTree/zotero-to-obsidian-skills/-/releases) · [GitHub 发布包](https://github.com/lyingTree/zotero-to-obsidian-skills/releases)
+脚本下载并校验平台包，安装技能、共享运行器和随包 OCR 资源。中国大陆出口 IP 使用 CNB，其他地区或探测失败时使用 GitHub。可通过环境变量 `Z2O_NETWORK_REGION` 手动指定地区，例如 `CN`。每次启动任一技能都会核对该技能声明的版本与本地 z2o 版本。缺失或不符时，自动下载、校验并切换到对应版本。[CNB 发布包](https://cnb.cool/lyingTree/zotero-to-obsidian-skills/-/releases) · [GitHub 发布包](https://github.com/lyingTree/zotero-to-obsidian-skills/releases)
 
 ## 模板与术语表
 

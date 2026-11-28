@@ -17,7 +17,6 @@ const BOUNDARY:&str="All-in-one offline Rust skill bundle. The twelve local skil
 const GUARD:&str="\n\n> **Rust runtime only**\n>\n> 机械操作统一使用主技能目录 literature-zotero2obsidian/runtime/z2o（Windows: z2o.exe）的 describe / invoke JSON 协议；参考 literature-zotero2obsidian/references/rust-entrypoints.md。\n\n";
 const FIRST_RUN_START:&str="<!-- z2o:first-run:start -->";
 const FIRST_RUN_END:&str="<!-- z2o:first-run:end -->";
-const MAGPIE_RUNTIME_SCRIPTS:&[&str]=&["scripts/ensure-runtime.ps1","scripts/ensure-runtime.sh"];
 type FileMap=BTreeMap<String,Value>;
 fn exe_name()->&'static str{if cfg!(windows){"z2o.exe"}else{"z2o"}}
 fn exe_relative()->String{format!("literature-zotero2obsidian/runtime/{}",exe_name())}
@@ -73,7 +72,7 @@ fn record(p:&Path)->Result<Value>{
     check_write::no_link(p)?;let v=files::snapshot(p)?;
     Ok(json!({"sha256":v["sha256"],"size":v["size"],"executable":exec_bit(&fs::metadata(p)?)}))
 }
-// Keep script files out of the packaged skill payload.
+// Exclude legacy Python implementations and their bytecode from the payload.
 // Match portable paths case-insensitively.
 fn disallowed_script_path(raw:&str)->bool{
     raw.split('/').any(|part|{
@@ -104,7 +103,7 @@ fn read_small(p:&Path,limit:u64)->Result<Vec<u8>>{
     check_write::no_link(p)?;ensure!(fs::metadata(p)?.len()<=limit,"Input exceeds size budget");
     let raw=fs::read(p)?;ensure!(raw.len() as u64<=limit,"Input exceeds size budget");Ok(raw)
 }
-fn skill_header(root:&Path,name:&str)->Result<(String,usize)>{
+fn skill_header(root:&Path,name:&str,require_current:bool)->Result<(String,usize)>{
     let p=root.join("SKILL.md");let text=String::from_utf8(read_small(&p,4*1024*1024)?)?;
     let first=text.strip_prefix('\u{feff}').unwrap_or(&text);
     let mut offset=text.len()-first.len();let mut lines=first.split_inclusive('\n');
@@ -114,7 +113,9 @@ fn skill_header(root:&Path,name:&str)->Result<(String,usize)>{
     for line in lines{offset+=line.len();if line.trim()=="---"{closed=true;break;}header.push_str(line);}
     ensure!(closed,"Unclosed skill frontmatter");
     let meta=crate::yaml_nodes::load(&header).map_err(|e|anyhow!("Invalid skill frontmatter: {}",e.message))?.value;
-    ensure!(meta["name"]==name,"Unexpected skill name in {}",p.display());Ok((text,offset))
+    ensure!(meta["name"]==name,"Unexpected skill name in {}",p.display());
+    ensure!(!require_current || meta["version"]==format!("v{ENGINE_VERSION}"),"Skill version differs from packaged runner in {}",p.display());
+    Ok((text,offset))
 }
 fn copy_file(source:&Path,dest:&Path,expected:&Value)->Result<()>{
     check_write::no_link(source)?;fs::create_dir_all(dest.parent().context("Destination parent")?)?;
@@ -150,14 +151,13 @@ pub fn package_with_ocr(source:&Path,destination:&Path,ocr_bundle:Option<&Path>,
     let stage=tempfile::Builder::new().prefix(".z2o-package-").tempdir_in(&parent)?;
     let payload=stage.path().join("skills");fs::create_dir(&payload)?;
     for(i,name)in SKILLS.iter().enumerate(){
-        let root=dir(&source.join(name),false)?;skill_header(&root,name)?;
+        let root=dir(&source.join(name),false)?;skill_header(&root,name,true)?;
         let m=scan(&root,true)?;
         ensure!(m.keys().all(|p|!p.starts_with("runtime/")),"Package input must be a repository skill, not an installed runtime");
-        let clean_files:FileMap=m.iter().filter(|(p,_)|!disallowed_script_path(p)
-            && !(*name==SKILLS[0]&&MAGPIE_RUNTIME_SCRIPTS.contains(&p.as_str())))
+        let clean_files:FileMap=m.iter().filter(|(p,_)|!disallowed_script_path(p))
             .map(|(p,r)|(p.clone(),r.clone())).collect();
         let dest=payload.join(name);fs::create_dir(&dest)?;copy_map(&root,&dest,&clean_files)?;
-        let (mut header,at)=skill_header(&dest,name)?;
+        let (mut header,at)=skill_header(&dest,name,true)?;
         // The offline bundle already supplies the runtime. Keep its installed hashes stable.
         if let Some(start)=header[at..].find(FIRST_RUN_START).map(|offset| at+offset){
             let end=start+header[start..].find(FIRST_RUN_END).context("Unclosed Magpie bootstrap block")?
@@ -202,10 +202,11 @@ pub fn package_with_ocr(source:&Path,destination:&Path,ocr_bundle:Option<&Path>,
     }
     let payload_files=scan(&payload,false)?;
     ensure!(payload_files.keys().all(|p|!disallowed_script_path(p)),"Disallowed script file in skill payload");
+    let includes_bootstrap=payload_files.contains_key("literature-zotero2obsidian/scripts/ensure-runtime.ps1") || payload_files.contains_key("literature-zotero2obsidian/scripts/ensure-runtime.sh");
     let manifest=json!({"schema_version":1,"bundle_kind":"rust_skill_bundle","qualified":true,
         "version":format!("v{ENGINE_VERSION}"),"engine_version":ENGINE_VERSION,"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,
         "skills":SKILLS,"runtime":exe_relative(),"ocr_bundled":ocr_bundled,"ocr_manifest_sha256":ocr_manifest_sha256,
-        "files":payload_files,"script_files_included":false,"boundary":BOUNDARY});
+        "files":payload_files,"script_files_included":includes_bootstrap,"boundary":BOUNDARY});
     let m=json_new(&stage.path().join("package.json"),&manifest)?;
     ensure!(!destination.exists()&&!destination.is_symlink(),"Bundle destination appeared during preparation");
     fs::rename(stage.path(),&destination).context("Cannot publish bundle directory")?;
@@ -226,8 +227,10 @@ fn load_manifest(manifest:&Path,expected:&str)->Result<(Value,FileMap)>{
         "Expected explicit qualified Rust skill bundle");
     ensure!(v["platform"]==std::env::consts::OS&&v["architecture"]==std::env::consts::ARCH&&v["engine_version"]==ENGINE_VERSION,
         "Bundle architecture, platform or engine version mismatch");
-    ensure!(v["skills"]==json!(SKILLS)&&v["runtime"]==exe_relative()&&v["script_files_included"]==false,"Bundle skill scope or runtime differs");
+    ensure!(v["skills"]==json!(SKILLS)&&v["runtime"]==exe_relative(),"Bundle skill scope or runtime differs");
     let table=v["files"].as_object().filter(|m|!m.is_empty()&&m.len()<=MAX_FILES).context("Bundle file list required")?;
+    let includes_bootstrap=table.contains_key("literature-zotero2obsidian/scripts/ensure-runtime.ps1") || table.contains_key("literature-zotero2obsidian/scripts/ensure-runtime.sh");
+    ensure!(v["script_files_included"]==includes_bootstrap,"Bundle bootstrap scripts differ from manifest");
     let mut total=0u64;let mut aliases=BTreeSet::new();let mut expected_files=BTreeMap::new();
     for(name,r)in table{
         relative(name)?;let skill=name.split('/').next().unwrap();
@@ -248,7 +251,7 @@ fn load_bundle(manifest:&Path,expected:&str)->Result<Bundle>{
     let (b,expected_files)=load_manifest(manifest,expected)?;
     let root=path(&b["path"])?;
     let payload=dir(&root.parent().context("Bundle directory")?.join("skills"),false)?;
-    for name in SKILLS{skill_header(&payload.join(name),name)?;}
+    for name in SKILLS{skill_header(&payload.join(name),name,true)?;}
     ensure!(scan(&payload,false)?==expected_files,"NATIVE_BUNDLE_FILE_MISMATCH: missing, added or changed asset");
     ensure!(check_ledger::bind_file(manifest)?==b,"Bundle manifest changed during verification");
     Ok(Bundle{binding:b,payload,files:expected_files})
@@ -263,7 +266,7 @@ fn skill_files(files:&FileMap,name:&str)->FileMap{
 }
 fn snapshot(p:&Path,name:&str)->Result<Option<FileMap>>{
     match fs::symlink_metadata(p){
-        Ok(_)=>{let root=dir(p,false)?;skill_header(&root,name)?;Ok(Some(scan(&root,false)?))},
+        Ok(_)=>{let root=dir(p,false)?;skill_header(&root,name,false)?;Ok(Some(scan(&root,false)?))},
         Err(e) if e.kind()==io::ErrorKind::NotFound=>Ok(None),
         Err(e)=>Err(e.into()),
     }

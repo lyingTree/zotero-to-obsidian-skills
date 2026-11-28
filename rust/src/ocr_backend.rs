@@ -439,6 +439,27 @@ impl Package{
         p.resources.remove("orientation");p.policy["table_cell_mode"]=json!(cell_mode);
         p.verify()?;Ok(p)
     }
+    // Some v2.1.2 packages passed their manifest checks but carried a truncated
+    // character list. Repair only those exact recognizer/dictionary pairs.
+    fn recover_dictionary(&mut self)->Result<()>{
+        let digest=|name:&str|self.resources.get(name).and_then(|v|v["sha256"].as_str());
+        let pair=(digest("recognizer"),digest("dictionary"));
+        let compressed:&[u8]=match pair{
+            (Some("9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6"),Some("82bc7cb4dec85cbfed52d63055b9f0a76055c89667cba20539c8bc41a35b4132"))=>include_bytes!("../ocr-dictionaries/tiny.txt.gz"),
+            (Some("9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba"),Some("45dc10e306b65acb6c98b628ffe9074ec5dbd03cafad3741d81be4ddd93ebe21"))=>include_bytes!("../ocr-dictionaries/medium.txt.gz"),
+            _=>return Ok(()),
+        };
+        let mut bytes=Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(compressed),&mut bytes)?;
+        let dir=std::env::temp_dir().join("z2o-ocr-dictionaries");
+        fs::create_dir_all(&dir)?;
+        real_directory(&dir)?;
+        let corrected=dir.join(format!("{}.txt",files::digest(&bytes)));
+        crate::pipeline::publish(&corrected,&bytes)?;
+        let original=self.resources.insert("dictionary".into(),binding(&corrected)?).context("OCR dictionary binding")?;
+        self.resources.insert("original_packaged_dictionary".into(),original);
+        Ok(())
+    }
     fn verify(&self)->Result<()>{
         for b in std::iter::once(&self.manifest).chain(self.resources.values()){
             let p=path(&b["path"])?;check_write::no_link(&p)?;
@@ -515,10 +536,11 @@ fn guarded<T>(f:impl FnOnce()->Result<T>)->Result<T>{
     catch_unwind(AssertUnwindSafe(f)).map_err(|_|anyhow!("OCR_ENGINE_PANIC: upstream inference did not complete"))?
 }
 impl Engine{
-    pub fn open(package:Package)->Result<Self>{
+    pub fn open(mut package:Package)->Result<Self>{
         guarded(||{
             ensure!(package.policy["memory_budget_available"]==true,"Insufficient available memory for OCR; free memory and retry");
             package.verify()?;
+            package.recover_dictionary()?;
             init_cpu(&package)?;
             let threads=package.policy["threads"].as_u64().unwrap() as usize;
             let mut ocr=OcrLite::new();
@@ -540,10 +562,18 @@ impl Engine{
         })
     }
     pub fn recognize_png(&mut self,png:&Path,expected_sha:Option<&str>)->Result<Value>{
+        self.package.verify()?;
+        let result=self.recognize_batch_image(png,expected_sha)?;
+        self.verify_batch()?;
+        Ok(result)
+    }
+    // A layout operation owns the loaded inference sessions and verifies the package
+    // once more before publishing its evidence. Each image retains its own hash checks.
+    pub(crate) fn verify_batch(&self)->Result<()>{self.package.verify()}
+    pub(crate) fn recognize_batch_image(&mut self,png:&Path,expected_sha:Option<&str>)->Result<Value>{
         guarded(||self.recognize(png,expected_sha))
     }
     fn recognize(&mut self,png:&Path,expected_sha:Option<&str>)->Result<Value>{
-        self.package.verify()?;
         ensure!(available().1>=512*1024*1024,"Insufficient free memory for another OCR page");
         let (mut img,source)=read_rgb(png,expected_sha)?;
         let (w,h)=img.dimensions();
@@ -584,7 +614,6 @@ impl Engine{
             ||b["box_score"].as_f64().is_none_or(|s|s<0.60)).map(|b|b["index"].clone()).collect();
         let text=blocks.iter().filter_map(|b|b["text"].as_str()).collect::<Vec<_>>().join("\n");
         let mojibake_audit=crate::mojibake::analyze_text(&text).to_json();
-        self.package.verify()?;
         ensure!(binding(png)?==source,"OCR source image changed during inference");
         Ok(json!({"schema_version":1,"source_image":source,"source_image_size":[w,h],
             "upright_image_size":[img.width(),img.height()],"observed_page_orientation_degrees":angle,

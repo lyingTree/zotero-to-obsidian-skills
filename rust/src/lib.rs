@@ -683,12 +683,13 @@ pub fn invoke(request: Value) -> Result<Value> {
             let force_lf=c.option("force_lf",json!(write_to.is_some())).as_bool().context("force_lf must be boolean")?;
             let convert_tables=c.option("convert_markdown_tables",json!(false)).as_bool().context("convert_markdown_tables must be boolean")?;
             let compact=c.option("compact",json!(false)).as_bool().context("compact must be boolean")?;
+            let preflight=c.option("preflight_resources",json!(false)).as_bool().context("preflight_resources must be boolean")?;
             c.finish()?;
             let (result,timings)=pipeline::process_with_timings(source.as_deref(),&plan,&content,&output,&contract,root.as_deref(),
                 pipeline::ProcessOptions{write_normalized_to:write_to.as_deref(),strip_display_trailing_punctuation:strip_punct,
-                    force_lf,convert_markdown_tables:convert_tables},
+                    force_lf,convert_markdown_tables:convert_tables},preflight,
                 runtime_reports::throttled_progress)?;
-            if compact {
+            if compact && result["status"]!="needs_resources" {
                 json!({"schema_version":result["schema_version"],"status":result["status"],
                     "source_fidelity":result["source_fidelity"],"summary":result["summary"],
                     "published_candidate":result["published_candidate"],"timings_ms":timings,
@@ -1225,6 +1226,11 @@ pub fn invoke(request: Value) -> Result<Value> {
         "pdf_image_objects.render_page_regions_batch" => {
             let source=path(&c.positional("source_pdf")?)?;
             let regions=c.required("regions")?;
+            let regions=if regions.is_object(){
+                let data=std::fs::read(path(&regions["path"])?)?;
+                ensure!(regions["sha256"]==files::digest(&data),"Crop manifest SHA-256 mismatch");
+                serde_json::from_slice(&data)?
+            }else{regions};
             let expected=c.option("expected_source_sha256",Value::Null);
             let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_source_sha256")?)};
             let overwrite=c.option("overwrite",json!(true)).as_bool().context("overwrite must be boolean")?;
@@ -1531,12 +1537,13 @@ pub fn invoke(request: Value) -> Result<Value> {
             let expected=c.option("expected_pdf_sha256",Value::Null);
             let expected=if expected.is_null(){None}else{Some(string(&expected,"expected_pdf_sha256")?)};
             let timeout=c.option("arxiv_timeout_seconds",json!(60)).as_u64().context("arxiv_timeout_seconds must be an integer")?;
+            let compact=c.option("compact",json!(false)).as_bool().context("compact must be boolean")?;
             c.finish()?;
-            pdf_layout::prepare_paper(pdf_layout::PreparePaperOptions{
+            pdf_layout::prepare_paper_with_output(pdf_layout::PreparePaperOptions{
                 pdf_path:pdf.as_deref(),tex_target:tex_opt,work_dir:&work_dir,
                 glossary_path:glossary.as_deref(),render_pages:&render,dpi,
                 expected_pdf_sha256:expected.as_deref(),arxiv_timeout_seconds:timeout,
-            })?
+            },compact)?
         }
         "vault_library.index" => {
             let root=path(&c.positional("vault_root")?)?;
@@ -1594,6 +1601,8 @@ pub fn invoke(request: Value) -> Result<Value> {
             let prior=c.required("expected_existing_sha256")?;
             let prior=if prior.is_null(){None}else{Some(string(&prior,"expected_existing_sha256")?)};
             let resources=c.required("resources")?;
+            let receipt=c.option("acceptance_receipt",Value::Null);
+            if !receipt.is_null(){vault_publish::verify_acceptance(&path(&receipt)?,&sha)?;}
             let scope=string(&c.required("scope")?,"scope")?;
             let authorized=c.required("authorized")?.as_bool().context("authorized must be boolean")?;
             let run=c.option("workflow_run",Value::Null);let run_sha=c.option("expected_run_sha256",Value::Null);
@@ -1665,15 +1674,17 @@ pub fn invoke(request: Value) -> Result<Value> {
             let reuse_identical=c.option("reuse_identical_assets",json!(true)).as_bool().context("reuse_identical_assets must be boolean")?;
             let disambiguate=c.option("disambiguate_conflicts",json!(true)).as_bool().context("disambiguate_conflicts must be boolean")?;
             let authorized=c.required("authorized")?.as_bool().context("authorized must be boolean")?;
+            let receipt=c.option("acceptance_receipt",Value::Null);
+            let receipt=if receipt.is_null(){None}else{Some(path(&receipt)?)};
             let rep_out=c.option("report_output",Value::Null);
             let rep_out=if rep_out.is_null(){None}else{Some(path(&rep_out)?)};
             c.finish()?;
-            vault_publish::publish_standalone(vault_publish::PublishStandaloneOptions{
+            vault_publish::publish_standalone_checked(vault_publish::PublishStandaloneOptions{
                 vault:&vault,backup_root:&backup,literature_relative:&literature,assets_relative:&assets,
                 note_relative:&note,candidate:&candidate,resource_root:&resource_root,asset_source_dir:asset_src.as_deref(),
                 expected_existing_sha:expected.as_deref(),reuse_identical_assets:reuse_identical,
                 disambiguate_conflicts:disambiguate,authorized,report_output:rep_out.as_deref(),
-            },runtime_reports::progress_line)?
+            },receipt.as_deref(),runtime_reports::progress_line)?
         }
         "native_runtime.package" => {
             let source=path(&c.positional("source_root")?)?;let dest=path(&c.positional("destination")?)?;

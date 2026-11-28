@@ -6,9 +6,8 @@
 
 宿主若仍载有旧入口，先确认磁盘上当前的 `SKILL.md` 仍有首次运行标记。清理标记只适用于 `.agent/skills` 或 `.agents/skills` 里的已安装技能。
 
-1. 从当前 `SKILL.md` 的实际目录找同级主技能，兼容 `.agent/skills` 和 `.agents/skills`。按 frontmatter 版本运行 `scripts/ensure-runtime.ps1 -Version <version>`（Windows）或 `bash scripts/ensure-runtime.sh <version>`（Linux/macOS）。脚本校验并安装独立 z2o，启动 OCR 后台下载后立即返回可执行文件路径。直接继续预检、来源准备和撰稿。脚本失败时报告错误，保留引导段供重试。
-2. 按下节发现实际 Obsidian 库。调用返回的 `z2o` 通过 `user_profile.load` 读取已保存的配置，显式传入当前主技能绝对路径作为 `skill_root`。按「模板与术语表配置」确认并保存路径。只有本次任务确实需要模板或术语表时，才因路径尚未确认而暂停；独立任务可继续，引导段留待配置完成。
-3. 运行器和路径配置均成功后，由 Agent 在同一技能根目录内逐个清理本组 12 个 `SKILL.md`。仅删除从 `<!-- z2o:first-run:start -->` 到 `<!-- z2o:first-run:end -->` 的完整区段及其紧随的空行。每个文件在同目录写入临时文件并原子替换，保留其余内容和换行，跳过没有标记的文件。仅处理本组技能目录内的实际文件。完成后继续原任务；若宿主仍缓存旧入口，以磁盘上的区段和已保存配置为准。
+1. 按下节发现实际 Obsidian 库。调用返回的 `z2o` 通过 `user_profile.load` 读取已保存的配置，显式传入当前主技能绝对路径作为 `skill_root`。按「模板与术语表配置」确认并保存路径。只有本次任务确实需要模板或术语表时，才因路径尚未确认而暂停；独立任务可继续，引导段留待配置完成。
+2. 运行器和路径配置均成功后，由 Agent 在同一技能根目录内逐个清理本组 12 个 `SKILL.md`。仅删除从 `<!-- z2o:first-run:start -->` 到 `<!-- z2o:first-run:end -->` 的完整区段及其紧随的空行。每个文件在同目录写入临时文件并原子替换，保留其余内容和换行，跳过没有标记的文件。仅处理本组技能目录内的实际文件。完成后继续原任务；若宿主仍缓存旧入口，以磁盘上的区段和已保存配置为准。
 
 脚本按直连出口 IP 选择 Release。中国大陆使用 CNB，其他地区或探测失败时使用 GitHub。可用 `Z2O_NETWORK_REGION` 手动指定地区。独立运行器、OCR 和 SHA-256 清单取自同一个发布源，后台工作沿用前台选择。下载支持断点续传和无进展超时，日志位于 `user/downloads/<version>/<target>/<cnb-or-github>/`。确需 OCR 时先完成可独立执行的环节，再检查日志和 `runtime/ocr/package.json`。重新运行引导命令可续传。[CNB Release](https://cnb.cool/lyingTree/zotero-to-obsidian-skills/-/releases)
 
