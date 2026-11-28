@@ -1,11 +1,11 @@
 ---
 name: literature-write2obsidian
-version: v2.1.1
+version: v2.1.2
 description: 按 Zotero 集合层级规划 Obsidian 文献路径，并提交已完成的候选稿、资源和命名变更，备份后直接读取文件验证。支持仅规划或只提交，不负责提取、翻译和内容重写。
 ---
 
 <!-- z2o:first-run:start -->
-若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
 <!-- z2o:first-run:end -->
 
 # 规划目录与提交笔记

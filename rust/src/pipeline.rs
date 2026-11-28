@@ -348,6 +348,7 @@ pub fn process(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,cont
 }
 pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,output:&Path,contract:&Value,
                             resource_root:Option<&Path>,options:ProcessOptions<'_>,mut progress:impl FnMut(usize,usize,&str))->Result<Value>{
+    let started=std::time::Instant::now();
     if let Some(dest)=options.write_normalized_to{ensure_outside_vault(dest)?;}
     let eng=engine()?;
     let source_path=source.map(files::canonical).transpose()?;
@@ -388,15 +389,16 @@ pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,outp
         rendering=Some(r);text
     };
     let norm_opts=normalize::Options{strip_display_trailing_punctuation:options.strip_display_trailing_punctuation,normalize_line_endings:options.force_lf};
+    let conversion_started=std::time::Instant::now();
     let (raw_for_norm,tables_converted)=match (&raw,options.convert_markdown_tables){
         (Some(s),true)=>{let (converted,count)=yaml_emit::convert_markdown_tables(s)?;(Some(converted),count)},
         _=> (raw.clone(),0),
     };
+    let normalization_started=std::time::Instant::now();
     let normalized=if let Some(s)=&raw_for_norm{
-        let n=normalize::normalize_with_options(s,norm_opts)?;
+        let (n,fixed_point)=normalize::normalize_with_replay_proof(s,norm_opts)?;
         let t=n["text"].as_str().context("normalized text")?;
-        let second=normalize::normalize_with_options(t,norm_opts)?;
-        ensure!(replay(s,&n["changes"])?==t&&second["text"]==t&&second["changes"].as_array().is_some_and(Vec::is_empty),
+        ensure!(fixed_point&&replay(s,&n["changes"])?==t,
             "Normalization failed replay or idempotence verification");
         let mut slim_n=n.clone();
         if let Some(obj)=slim_n.as_object_mut(){obj.remove("text");}
@@ -404,6 +406,7 @@ pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,outp
         publish_record(&directory,&mut receipts,"normalized.md",t.as_bytes())?;
         stage(&mut events,2,"verified",&mut progress);Some(n)
     }else{stage(&mut events,2,"blocked",&mut progress);None};
+    let mapping_started=std::time::Instant::now();
     let rendering=if let (Some(r),Some(n))=(rendering.as_ref(),normalized.as_ref()){
         match rebase(r,n){
             Ok(rebased)=>{
@@ -414,6 +417,7 @@ pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,outp
         }
     }else{stage(&mut events,3,"not_available",&mut progress);Value::Null};
     let note=directory.join("normalized.md");
+    let acceptance_started=std::time::Instant::now();
     let audit=if normalized.is_some(){
         let a=acceptance::accept(&note,&contract,Some(&resource_root),&rendering)?;
         publish_record(&directory,&mut receipts,"acceptance.json",&pretty(&a)?)?;
@@ -421,6 +425,7 @@ pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,outp
     }else{stage(&mut events,4,"blocked",&mut progress);None};
     let unsafe_parse=normalized.as_ref().and_then(|n|n["unresolved"].as_array()).is_some_and(|a|a.iter().any(|r|r["code"].as_str().is_some_and(|s|s.starts_with("UNCLOSED_")||s=="INTERACTING_RULES")));
     let status=if normalized.is_none(){"blocked"}else if audit.as_ref().is_some_and(|a|a["mechanical_status"]=="pass"&&a["source_coverage"]=="verified_against_contract")&&issues.is_empty()&&!unsafe_parse{"mechanical_pass"}else{"needs_attention"};
+    let readback_started=std::time::Instant::now();
     stage(&mut events,5,"committing",&mut progress);
     if let Some(a)=&audit{
         ensure!(acceptance::accept(&note,&contract,Some(&resource_root),&rendering)?==*a,
@@ -467,5 +472,14 @@ pub fn process_with_options(source:Option<&Path>,plan:&Value,content:&Value,outp
             result["published_candidate"]=json!({"written":false,"path":path_text(dest)?,"reason":"unsafe_parse"});
         }
     }
+    result["timings_ms"]=json!({
+        "input_and_render":conversion_started.duration_since(started).as_millis(),
+        "convert_tables":normalization_started.duration_since(conversion_started).as_millis(),
+        "normalize_and_replay":mapping_started.duration_since(normalization_started).as_millis(),
+        "rebase_mapping":acceptance_started.duration_since(mapping_started).as_millis(),
+        "accept":readback_started.duration_since(acceptance_started).as_millis(),
+        "readback_and_save":readback_started.elapsed().as_millis(),
+        "total":started.elapsed().as_millis()
+    });
     Ok(result)
 }

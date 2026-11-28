@@ -829,6 +829,7 @@ pub fn publish_standalone(opt:PublishStandaloneOptions<'_>,mut progress:impl FnM
         "vault_write_verified":true,
         "target_path":target_path,
         "note_sha256":note_sha256,
+        "resource_counts":{"created":created_count,"reused":reused_count},
         "candidate_rewritten":plan["candidate_rewritten"],
         "rewritten_assets":plan["rewritten_assets"],
         "commit":commit_res,

@@ -1,11 +1,11 @@
 ---
 name: literature-note-properties
-version: v2.1.1
+version: v2.1.2
 description: 按文献类型及既有模板构建或修复 Obsidian 文献 YAML 属性，保留人工自定义字段。只处理属性，不重写题头、正文或参考文献。
 ---
 
 <!-- z2o:first-run:start -->
-若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
 <!-- z2o:first-run:end -->
 
 # 构建笔记属性

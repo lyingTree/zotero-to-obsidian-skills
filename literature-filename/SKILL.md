@@ -1,11 +1,11 @@
 ---
 name: literature-filename
-version: v2.1.1
+version: v2.1.2
 description: 为文献生成“年份-作者-原文标题.md”命名计划，处理作者人数、非法字符、长度和身份冲突。用于独立命名或改名准备，实际移动交写入步骤执行。
 ---
 
 <!-- z2o:first-run:start -->
-若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
 <!-- z2o:first-run:end -->
 
 # 规范文件名

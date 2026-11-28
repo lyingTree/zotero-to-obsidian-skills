@@ -1,11 +1,11 @@
 ---
 name: literature-library-links
-version: v2.1.1
+version: v2.1.2
 description: 将文献参考条目与 Obsidian 文献库中已有笔记核对，建立有身份与版本证据的跨文件出链。保留完整书目显示文字，不凭相似题名强配、不创建缺失文献。
 ---
 
 <!-- z2o:first-run:start -->
-若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
 <!-- z2o:first-run:end -->
 
 # 建立参考文献到库内文件的出链

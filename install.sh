@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # All-in-one installer for the 12 literature-* skills, precompiled Rust runtime/z2o,
 # and bundled PP-OCRv6 OCR/layout/table runtime (when included in the release bundle)
-# from GitHub Releases.
+# from CNB or GitHub Releases.
 # No local compilation and no first-run OCR download prompts required.
 #
 # Usage: ./install.sh [skills-root] [version-tag]
@@ -44,19 +44,38 @@ case "$OS:$ARCH" in
     ;;
 esac
 
+RELEASE_ROOT="https://github.com/${REPO}/releases"
+if [[ "$REPO" == 'lyingTree/zotero-to-obsidian-skills' ]]; then
+  region="${Z2O_NETWORK_REGION:-}"
+  if [[ -z "$region" ]]; then
+    trace="$(curl --disable --noproxy '*' -fsS --connect-timeout 2 --max-time 3 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)" || trace=''
+    region="$(printf '%s\n' "$trace" | awk -F= '$1=="loc" && $2 ~ /^[A-Z][A-Z]$/ {print $2; exit}')"
+  fi
+  if [[ "$region" == [Cc][Nn] ]]; then
+    RELEASE_ROOT="https://cnb.cool/${REPO}/-/releases"
+  fi
+fi
+
 if [ -z "$VERSION" ] && [ -f "$SCRIPT_DIR/VERSION" ]; then
   VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION")"
 fi
 if [ -z "$VERSION" ]; then
-  VERSION="$(curl -fsSL -H "User-Agent: z2o-installer" "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 \
-    | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/')"
+  if [[ "$RELEASE_ROOT" == https://cnb.cool/* ]]; then
+    latest_url="$(curl --disable --noproxy '*' -fsSI --connect-timeout 10 --max-time 20 -o /dev/null -w '%{redirect_url}' "https://cnb.cool/${REPO}/-/badge/release.link")" || latest_url=''
+    if [[ "$latest_url" =~ ^"$RELEASE_ROOT"/tag/(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+      VERSION="${BASH_REMATCH[1]}"
+    fi
+  else
+    VERSION="$(curl -fsSL -H "User-Agent: z2o-installer" "https://api.github.com/repos/${REPO}/releases/latest" \
+      | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 \
+      | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/')" || VERSION=''
+  fi
 fi
 if [ -n "$VERSION" ] && [[ "$VERSION" != v* ]]; then
   VERSION="v$VERSION"
 fi
 if [ -z "$VERSION" ]; then
-  echo "Could not determine release version tag from VERSION file or GitHub releases." >&2
+  echo "Could not determine release version tag from VERSION file or ${RELEASE_ROOT}." >&2
   exit 1
 fi
 
@@ -69,11 +88,11 @@ sha256_file() {
 }
 
 ARCHIVE="z2o-skills-${TARGET}.tar.gz"
-BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+BASE_URL="${RELEASE_ROOT}/download/${VERSION}"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "==> Downloading ${ARCHIVE} and SHA256SUMS.txt from ${REPO}@${VERSION} ..."
+echo "==> Downloading ${ARCHIVE} and SHA256SUMS.txt from ${BASE_URL} ..."
 curl -fsSL "${BASE_URL}/${ARCHIVE}" -o "${TMP_DIR}/${ARCHIVE}"
 curl -fsSL "${BASE_URL}/SHA256SUMS.txt" -o "${TMP_DIR}/SHA256SUMS.txt"
 

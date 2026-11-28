@@ -7,7 +7,7 @@ use image::{ImageEncoder,ExtendedColorType,codecs::png::PngEncoder};
 use crate::{pdfcraft_backend::Backend,files,check_ledger,path,pipeline};
 const EDGES:[&str;4]=["top","right","bottom","left"];
 type Rect=[f64;4];
-fn coordinates()->Value{json!({"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"})}
+pub(crate) fn coordinates()->Value{json!({"space":"pdf_page","unit":"pt","origin":"top_left","x_axis":"right","y_axis":"down","rotation":"unrotated"})}
 fn rect(v:&Value)->Result<Rect>{
     let a=v.as_array().filter(|a|a.len()==4).context("bbox must contain four PDF points")?;
     let mut b=[0.;4];for (i,x) in a.iter().enumerate(){b[i]=x.as_f64().filter(|x|x.is_finite()).context("Invalid bbox")?;}
@@ -281,6 +281,7 @@ pub fn render_page_regions_batch(source:&Path,regions:&Value,opt:BatchRegionOpti
     let mut geom_cache=BTreeMap::<u64,(Value,Rect)>::new();
     let mut items=Vec::with_capacity(rows.len());
     let mut tiles=Vec::with_capacity(rows.len());
+    let mut priority_visual_review=Vec::new();
 
     for (idx,row) in rows.iter().enumerate(){
         let page=row["page_number"].as_u64().context("region.page_number must be an integer")?;
@@ -315,6 +316,9 @@ pub fn render_page_regions_batch(source:&Path,regions:&Value,opt:BatchRegionOpti
         }
         if opt.overwrite{pipeline::publish_replace(&dest,&bytes)?;}else{pipeline::publish(&dest,&bytes)?;}
         let asset=check_ledger::bind_file(&dest)?;
+        if row["priority_visual_review"].as_bool()==Some(true) {
+            priority_visual_review.push(json!({"index":idx+1,"label":row["label"],"page":page}));
+        }
         items.push(json!({
             "index":idx+1,
             "label":row.get("label").cloned().unwrap_or(Value::Null),
@@ -344,6 +348,7 @@ pub fn render_page_regions_batch(source:&Path,regions:&Value,opt:BatchRegionOpti
         "count":items.len(),
         "items":items,
         "contact_sheet":contact_sheet,
+        "priority_visual_review":priority_visual_review,
         "source_fidelity":"not_assessed",
         "evidence_boundary":"Batch crops rendered with optional auto_trim and numbered contact_sheet for visual inspection.",
     }))

@@ -350,6 +350,14 @@ jobs:
           else
             (cd "$bundle" && zip -qr "$dist/z2o-skills-${{ matrix.target }}.zip" package.json skills)
           fi
+          if [[ -f "$ocr_bundle/package.json" ]]; then
+            runtime="$bundle/skills/literature-zotero2obsidian/runtime"
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              powershell.exe -NoProfile -Command "Compress-Archive -Path '$runtime/ocr' -DestinationPath '$dist/z2o-ocr-${{ matrix.target }}.zip' -Force"
+            else
+              tar -czf "$dist/z2o-ocr-${{ matrix.target }}.tar.gz" -C "$runtime" ocr
+            fi
+          fi
       - name: Upload platform release distribution artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (Node 24)
         with:
@@ -395,6 +403,11 @@ jobs:
             aarch64-apple-darwin; do
             [[ -f "z2o-skills-${target}.zip" ]]
             [[ -f "z2o-skills-${target}.tar.gz" ]]
+            if [[ "$target" == *windows* ]]; then
+              [[ -f "z2o-ocr-${target}.zip" ]]
+            else
+              [[ -f "z2o-ocr-${target}.tar.gz" ]]
+            fi
           done
           chmod +x z2o-x86_64-unknown-linux-gnu z2o-aarch64-unknown-linux-gnu z2o-aarch64-apple-darwin
           sha256sum z2o-* > SHA256SUMS.txt

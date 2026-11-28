@@ -1,11 +1,11 @@
 ---
 name: literature-body-format
-version: v2.1.1
+version: v2.1.2
 description: 规范 Obsidian 文献正文的标题层级、间距、加粗、段落、图表公式及参考文献编号。保留内容语义和既有锚点，不承担翻译或引用目标匹配。
 ---
 
 <!-- z2o:first-run:start -->
-若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
 <!-- z2o:first-run:end -->
 
 # 规范全文排版

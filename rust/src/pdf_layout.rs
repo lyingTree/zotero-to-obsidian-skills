@@ -1085,6 +1085,30 @@ pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{
         }
     }
 
+    let mut crop_regions = Vec::new();
+    let mut labels = std::collections::BTreeMap::new();
+    for candidate in figure_candidates.as_array().into_iter().flatten() {
+        let Some(label) = candidate["suggested_fig_id"].as_str()
+            .filter(|label| label.starts_with("fig") && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        else { continue; };
+        let label_key = label.to_ascii_lowercase();
+        let duplicate_index = labels.get(&label_key).copied();
+        let filename = if let Some(first) = duplicate_index {
+            let first: &mut Value = &mut crop_regions[first];
+            first["priority_visual_review"] = json!(true);
+            format!("{label}--candidate-{}.png", crop_regions.len() + 1)
+        } else {
+            labels.insert(label_key, crop_regions.len());
+            format!("{label}.png")
+        };
+        crop_regions.push(json!({
+            "page_number":candidate["page"],"bbox":candidate["suggested_bbox"],
+            "coordinate_system":crate::pdf_boundary::coordinates(),"label":label,
+            "destination":path_text(&work.join("crops").join(filename))?,
+            "margin_pt":0,"dpi":300,"transparent":true,"auto_trim":true,
+            "priority_visual_review":duplicate_index.is_some() || candidate["confidence"]!="high"
+        }));
+    }
     Ok(json!({
         "schema_version":1,
         "status":"ok",
@@ -1093,9 +1117,11 @@ pub fn prepare_paper(opt:PreparePaperOptions<'_>)->Result<Value>{
         "tex":tex_summary,
         "pdf_layout":pdf_summary,
         "figure_candidates":figure_candidates,
+        "crop_regions":crop_regions,
+        "crop_contact_sheet_destination":path_text(&work.join("crop-contact-sheet.png"))?,
         "matched_glossary":matched_glossary,
         "source_fidelity":"not_assessed",
-        "next_action":"Read clean-source.md (if TeX succeeded) / clean-layout.md and matched-glossary.md; pass figure_candidates to pdf_image_objects.render_page_regions_batch for crop verification.",
+        "next_action":"Read the clean source and matched glossary; pass crop_regions directly to render_page_regions_batch and visually check its contact sheet.",
     }))
 }
 

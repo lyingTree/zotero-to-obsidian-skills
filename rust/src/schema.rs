@@ -406,6 +406,7 @@ const SCHEMAS: &[OpSchema] = &[
             opt_kw("strip_display_trailing_punctuation", "boolean", "false"),
             opt_kw("force_lf", "boolean", "write_normalized_to!=null"),
             opt_kw("convert_markdown_tables", "boolean", "false"),
+            opt_kw("compact", "boolean", "false"),
         ],
     },
     OpSchema {
@@ -419,6 +420,7 @@ const SCHEMAS: &[OpSchema] = &[
             opt_kw("strip_display_trailing_punctuation", "boolean", "false"),
             opt_kw("force_lf", "boolean", "write_normalized_to!=null"),
             opt_kw("convert_markdown_tables", "boolean", "false"),
+            opt_kw("compact", "boolean", "false"),
         ],
     },
     OpSchema {

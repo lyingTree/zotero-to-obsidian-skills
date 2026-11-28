@@ -2,7 +2,7 @@
 <#
   All-in-one installer for the 12 literature-* skills, precompiled Rust runtime/z2o.exe,
   and bundled PP-OCRv6 OCR/layout/table runtime (when included in the release bundle)
-  from GitHub Releases.
+  from CNB or GitHub Releases.
   No local compilation and no first-run OCR download prompts required.
 
   Usage:
@@ -36,6 +36,17 @@ switch ($arch) {
   default { throw "Unsupported Windows architecture: $arch (supported: X64, ARM64)" }
 }
 
+$releaseRoot = "https://github.com/$Repo/releases"
+if ($Repo -eq 'lyingTree/zotero-to-obsidian-skills') {
+  $region = $env:Z2O_NETWORK_REGION
+  if (-not $region -and (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
+    $trace = & curl.exe --disable --noproxy '*' -fsS --connect-timeout 2 --max-time 3 'https://www.cloudflare.com/cdn-cgi/trace' 2>$null
+    $location = @($trace) | Where-Object { $_ -cmatch '^loc=[A-Z]{2}$' } | Select-Object -First 1
+    if ($location) { $region = $location.Substring(4) }
+  }
+  if ($region -eq 'CN') { $releaseRoot = "https://cnb.cool/$Repo/-/releases" }
+}
+
 if (-not $Version) {
   $versionFile = Join-Path $PSScriptRoot "VERSION"
   if (Test-Path $versionFile) {
@@ -46,15 +57,22 @@ if ($Version -and -not $Version.StartsWith("v")) {
   $Version = "v$Version"
 }
 if (-not $Version) {
-  $releaseInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ "User-Agent" = "z2o-installer" }
-  $Version = $releaseInfo.tag_name
+  if ($releaseRoot.StartsWith('https://cnb.cool/')) {
+    $latestUrl = & curl.exe --disable --noproxy '*' -fsSI --connect-timeout 10 --max-time 20 --output NUL --write-out '%{redirect_url}' "https://cnb.cool/$Repo/-/badge/release.link"
+    if ($LASTEXITCODE -eq 0 -and $latestUrl -cmatch "^$([regex]::Escape($releaseRoot))/tag/(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$") {
+      $Version = $Matches[1]
+    }
+  } else {
+    $releaseInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ "User-Agent" = "z2o-installer" }
+    $Version = $releaseInfo.tag_name
+  }
 }
 if (-not $Version) {
-  throw "Could not determine release version tag."
+  throw "Could not determine release version tag from $releaseRoot."
 }
 
 $archiveName = "z2o-skills-$target.zip"
-$baseUrl = "https://github.com/$Repo/releases/download/$Version"
+$baseUrl = "$releaseRoot/download/$Version"
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("z2o-install-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
 
@@ -66,7 +84,7 @@ try {
   $archivePath = Join-Path $tmpRoot $archiveName
   $sumsPath = Join-Path $tmpRoot "SHA256SUMS.txt"
 
-  Write-Host "==> Downloading $archiveName and SHA256SUMS.txt from $Repo@$Version ..."
+  Write-Host "==> Downloading $archiveName and SHA256SUMS.txt from $baseUrl ..."
   Invoke-WebRequest -Uri "$baseUrl/$archiveName" -OutFile $archivePath -UseBasicParsing
   Invoke-WebRequest -Uri "$baseUrl/SHA256SUMS.txt" -OutFile $sumsPath -UseBasicParsing
 

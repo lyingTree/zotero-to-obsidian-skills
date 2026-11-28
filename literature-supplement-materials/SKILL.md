@@ -1,11 +1,11 @@
 ---
 name: literature-supplement-materials
-version: v2.1.1
+version: v2.1.2
 description: 提取并翻译 Zotero 条目的补充材料（SI 文本、图、表、视频），合并为正文后的补充材料章节；在第 8 步排版与第 9 步链接之前执行。
 ---
 
 <!-- z2o:first-run:start -->
-若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
 <!-- z2o:first-run:end -->
 
 # 处理补充材料

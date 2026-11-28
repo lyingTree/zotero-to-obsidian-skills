@@ -670,7 +670,7 @@ fn pass_line_endings(text:&str)->(String,Vec<Value>){
     (out,changes)
 }
 fn pass(text:&str,options:Options)->Result<(String,Vec<Value>,Vec<Value>)>{let mut pass=Pass::new(text,options);pass.scan()?;Ok(pass.finish())}
-fn stable(text:&str,options:Options)->Result<(String,Vec<Value>,Vec<Value>)>{
+fn stable(text:&str,options:Options)->Result<(String,Vec<Value>,Vec<Value>,bool)>{
     let owned;
     let mut prefix_changes=Vec::new();
     let work=if options.normalize_line_endings&&text.contains('\r'){
@@ -680,27 +680,40 @@ fn stable(text:&str,options:Options)->Result<(String,Vec<Value>,Vec<Value>)>{
         owned.as_str()
     }else{text};
     let(mut candidate,mut changes,mut issues)=pass(work,options)?;
+    if candidate==work&&changes.is_empty(){
+        prefix_changes.extend(changes);
+        return Ok((candidate,prefix_changes,issues,true));
+    }
     if !prefix_changes.is_empty(){
         prefix_changes.extend(changes);
         changes=prefix_changes;
     }
     for _ in 0..3{
         let(verified,more,_)=pass(&candidate,options)?;
-        if verified==candidate{return Ok((candidate,changes,issues));}
+        if verified==candidate{return Ok((candidate,changes,issues,more.is_empty()));}
         changes.extend(more);candidate=verified;
     }
     issues.push(json!({"code":"INTERACTING_RULES","line":1,"start":0,"message":"规则互相影响，保留整份输入。"}));
-    Ok((text.into(),vec![],issues))
+    Ok((text.into(),vec![],issues,false))
 }
 pub fn normalize(text:&str)->Result<Value>{
     normalize_with_options(text,Options::default())
 }
 pub fn normalize_with_options(text:&str,options:Options)->Result<Value>{
-    let(candidate,changes,unresolved)=stable(text,options)?;
-    let(verified,_,_)=stable(&candidate,options)?;
-    Ok(json!({"schema_version":1,"engine":"normalize_note","text":candidate,"changes":changes,"unresolved":unresolved,
+    Ok(normalize_with_replay_proof(text,options)?.0)
+}
+pub(crate) fn normalize_with_replay_proof(text:&str,options:Options)->Result<(Value,bool)>{
+    let(candidate,changes,unresolved,known_fixed)=stable(text,options)?;
+    // The last pass already proved that a verified fixed point needs no edits.
+    // Keep a separate probe for the exceptional interaction/zero-net-edit case.
+    let (idempotent,empty_replay)=if known_fixed {(true,true)}else{
+        let(verified,replay_changes,_,_)=stable(&candidate,options)?;
+        (candidate==verified,replay_changes.is_empty())
+    };
+    let report=json!({"schema_version":1,"engine":"normalize_note","text":candidate,"changes":changes,"unresolved":unresolved,
         "input_sha256":files::digest(text.as_bytes()),"output_sha256":files::digest(candidate.as_bytes()),
-        "idempotent":candidate==verified,"source_fidelity":"not_assessed"}))
+        "idempotent":idempotent,"source_fidelity":"not_assessed"});
+    Ok((report,idempotent&&empty_replay))
 }
 pub fn normalize_file(source:&Path,destination:&Path)->Result<Value>{
     ensure!(files::canonical(source)?!=dunce::canonicalize(destination).unwrap_or_else(|_|destination.to_path_buf()),"use a new candidate path");

@@ -1,11 +1,11 @@
 ---
 name: literature-zotero2obsidian
-version: v2.1.1
+version: v2.1.2
 description: 编排 Zotero 全文到 Obsidian 文献笔记的完整流程，默认译为中文，支持保留原文、指定步骤、断点续做和逐篇验收。只改文件名、属性或链接时，转交对应子 skill。
 ---
 
 <!-- z2o:first-run:start -->
-若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+从本文件实际位置定位同级主技能，先按[首次运行](references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
 <!-- z2o:first-run:end -->
 
 # Zotero → Obsidian 文献流程
@@ -29,9 +29,9 @@ description: 编排 Zotero 全文到 Obsidian 文献笔记的完整流程，默�
 1. 单次调用 `user_profile.preflight`（`query`/`item_key` + `create_work_dirs: true`）获取档案、Zotero 条目、`naming_plan`、`suggested_asset_bucket_relative` 与 `template_skeleton`。
 2. 读取[写作速查表](references/writing-cheatsheet.md)；仅在遇到特例时按需打开对应子 skill，禁止通读全部 11 个子 skill、41 KB+ 模板 JS 脚本或 328 KB 全量术语表。
 3. 调用 `prepare_source_inventory.prepare_paper` 准备源码（自动优先获取 arXiv TeX + 选择性 PDF 聚类 + 提取 `figure_candidates` + 输出本篇 `matched-glossary.md`）。
-4. 对照 `figure_candidates` 调用 `pdf_image_objects.render_page_regions_batch` 批量裁剪与导出拼图（默认 `transparent: true`、`auto_trim`），仅看拼图微调异常裁框；DOCX 调用 `prepare_sources`。
-5. 按用户选择撰写完整的译文或原文候选稿（普通表可写 GFM 表格），运行 `note_pipeline.process_markdown`（开启 `force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`），只核对返回的 `summary` 与未决位置；若需出链校验则使用 `vault_library.index`（`use_cache: true`）与 `vault_library.match_references_batch`。
-6. 对程序未判断的译义、图像裁剪内容和引文身份做来源核对；可使用[逐段复核入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)。
+4. 对照 `figure_candidates` 将 `crop_regions` 传给 `pdf_image_objects.render_page_regions_batch`，用 `crop_contact_sheet_destination` 生成拼图（默认 `transparent: true`、`auto_trim`），仅看拼图微调异常裁框；DOCX 调用 `prepare_sources`。
+5. 按用户选择写完整译文或原文候选稿，在工作区核对译义、图注、公式和书目。需要篇外链接时调用 `vault_library.index`（`use_cache: true`）与 `vault_library.match_references_batch`，可使用[逐段复核入口](../literature-translate-zh/references/translation-review.md#逐段待办与范围计划)。
+6. 运行 `note_pipeline.process_markdown`（`compact: true`、`write_normalized_to`、`force_lf: true`、`convert_markdown_tables: true`、`strip_display_trailing_punctuation: true`）。根据 `summary` 集中处理未决项。输入变更后才重跑，查看旧结果时读取回执。
 7. **默认已授权并必须写库收尾**：只要用户请求处理/整理某文献至 Obsidian（且未明确限制为仅要方案、审查或离线候选），请求本身即视为对 `[PIPE-C34]` 的授权；直接调用 `vault_publish.publish_standalone`（传 `authorized: true`、`asset_source_dir`、`report_output`）一次完成预检、冲突消歧、备份、写库与 SHA-256 回读，拿到 `verified_file_write` 后即汇报收工。**严禁仅写完部分 `candidate.md`、留有 `<!--PART-->` 占位符或未落盘 Obsidian `.md` 就提前结束对话**。
 
 测试时按 PDF / DOCX 提取、标题、作者单位、翻译、段落拼接、引文身份、链接组装、图表公式、空行格式等环节持续报告具体问题。未观察到的起因保持未知；只有输出缺失不能直接归因到 PDF 提取。

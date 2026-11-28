@@ -172,6 +172,14 @@ fn run()->Result<serde_json::Value>{
     }
 }
 fn main()->ExitCode{
+    struct RuntimeTimer(std::time::Instant);
+    impl Drop for RuntimeTimer {
+        fn drop(&mut self) {
+            let elapsed_ms = self.0.elapsed().as_millis();
+            let _ = writeln!(io::stderr().lock(), "{{\"event\":\"z2o_elapsed\",\"elapsed_ms\":{elapsed_ms}}}");
+        }
+    }
+    let _timer = RuntimeTimer(std::time::Instant::now());
     let result=run();
     match result{
         Ok(v)=>{

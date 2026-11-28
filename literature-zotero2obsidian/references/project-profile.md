@@ -4,11 +4,13 @@
 
 ## Magpie 首次运行
 
-宿主若仍载有旧入口，先确认磁盘上当前的 `SKILL.md` 仍有首次运行标记。
+宿主若仍载有旧入口，先确认磁盘上当前的 `SKILL.md` 仍有首次运行标记。清理标记只适用于 `.agent/skills` 或 `.agents/skills` 里的已安装技能。
 
-1. 以被调用的 `SKILL.md` 的实际位置确定项目的 `.agent/skills`，找到同级的 `literature-zotero2obsidian`。使用被调用技能 frontmatter 中的 `version`，确认与主技能版本一致。Windows 用 PowerShell 调用主技能的 `scripts/ensure-runtime.ps1 -Version <version>`，Linux 和 macOS 用 `bash <主技能>/scripts/ensure-runtime.sh <version>`。脚本验证本地 `z2o describe`，缺失或不可用时从对应版本的官方发布包补齐 `runtime/`，返回实际可执行文件的绝对路径。失败时说明原因，保留引导段供重试。
+1. 从当前 `SKILL.md` 的实际目录找同级主技能，兼容 `.agent/skills` 和 `.agents/skills`。按 frontmatter 版本运行 `scripts/ensure-runtime.ps1 -Version <version>`（Windows）或 `bash scripts/ensure-runtime.sh <version>`（Linux/macOS）。脚本校验并安装独立 z2o，启动 OCR 后台下载后立即返回可执行文件路径。直接继续预检、来源准备和撰稿。脚本失败时报告错误，保留引导段供重试。
 2. 按下节发现实际 Obsidian 库。调用返回的 `z2o` 通过 `user_profile.load` 读取已保存的配置，显式传入当前主技能绝对路径作为 `skill_root`。按「模板与术语表配置」确认并保存路径。只有本次任务确实需要模板或术语表时，才因路径尚未确认而暂停；独立任务可继续，引导段留待配置完成。
-3. 运行器和路径配置均成功后，由 Agent 在同一 `.agent/skills` 内逐个清理本组 12 个 `SKILL.md`。仅删除从 `<!-- z2o:first-run:start -->` 到 `<!-- z2o:first-run:end -->` 的完整区段及其紧随的空行。每个文件在同目录写入临时文件并原子替换，保留其余内容和换行，跳过没有标记的文件。仅处理本组技能目录内的实际文件。完成后继续原任务；若宿主仍缓存旧入口，以磁盘上的区段和已保存配置为准。
+3. 运行器和路径配置均成功后，由 Agent 在同一技能根目录内逐个清理本组 12 个 `SKILL.md`。仅删除从 `<!-- z2o:first-run:start -->` 到 `<!-- z2o:first-run:end -->` 的完整区段及其紧随的空行。每个文件在同目录写入临时文件并原子替换，保留其余内容和换行，跳过没有标记的文件。仅处理本组技能目录内的实际文件。完成后继续原任务；若宿主仍缓存旧入口，以磁盘上的区段和已保存配置为准。
+
+脚本按直连出口 IP 选择 Release。中国大陆使用 CNB，其他地区或探测失败时使用 GitHub。可用 `Z2O_NETWORK_REGION` 手动指定地区。独立运行器、OCR 和 SHA-256 清单取自同一个发布源，后台工作沿用前台选择。下载支持断点续传和无进展超时，日志位于 `user/downloads/<version>/<target>/<cnb-or-github>/`。确需 OCR 时先完成可独立执行的环节，再检查日志和 `runtime/ocr/package.json`。重新运行引导命令可续传。[CNB Release](https://cnb.cool/lyingTree/zotero-to-obsidian-skills/-/releases)
 
 ## 模板与术语表配置
 
@@ -51,9 +53,9 @@
 | `arxiv_tex_auto` | `true` | 预印本默认尝试 TeX 源辅助 |
 | `transparent_figure` | `preserve_original` | 透明插图保留原图/alpha，不合成白底 |
 
-### 内置 OCR 与零乱码视觉核对（开箱即用）
+### OCR 与视觉核对
 
-发行版在安装技能时已通过 `z2o package --ocr-bundle` 一并随 `runtime/z2o[.exe]` 落盘内置 PP-OCRv6（含版面与表格模型）至 `literature-zotero2obsidian/runtime/ocr/`，首次运行**不再询问**是否下载可选增强包：
+整包安装时已包含 PP-OCRv6、版面和表格模型。Magpie 首次运行时由后台补齐，同样使用 `literature-zotero2obsidian/runtime/ocr/`。
 
 - 文本质量正常的原生 PDF 直接使用纯 Rust `pdf-inspector` + PdfCraft 几何聚类与 arXiv TeX 辅助；遇到扫描页、缺字/Type 3 字体或乱码块时自动调用内置 PP-OCRv6（置信度阈值 `>= 0.92`）。
 - 对 2D 复杂公式、第 1 页作者/单位块及低置信/无法修复的乱码区域，自动生成 300 DPI `ocr-verify-sheet.png` 并在 `clean-layout.md` 中插入 `<!-- VISUAL_REQUIRED: ... -->` 标记，由宿主直接看图核对；未消解标记或任何乱码字符在写库校验阶段将被硬阻断。

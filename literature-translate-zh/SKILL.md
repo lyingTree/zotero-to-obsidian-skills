@@ -1,11 +1,11 @@
 ---
 name: literature-translate-zh
-version: v2.1.1
+version: v2.1.2
 description: 根据已核实的文献语言和项目术语表，将原文 Markdown 完整译成中文；中文文献复用原稿，混合文献按内容块分流。用于全文翻译或已有译文的指定部分修订。
 ---
 
 <!-- z2o:first-run:start -->
-若本文件位于项目的 `.agent/skills/本技能名/`，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
+从本文件实际位置定位同级主技能，先按[首次运行](../literature-zotero2obsidian/references/project-profile.md#magpie-首次运行)验证并在缺失时自动下载共享 `z2o`。然后确认模板和术语表路径，配置成功后移除本组入口中的首次运行段，再继续原任务。
 <!-- z2o:first-run:end -->
 
 # 按术语表翻译
